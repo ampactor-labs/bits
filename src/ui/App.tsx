@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Library } from './Library';
-import { Player } from './Player';
+import { Deck } from './Deck';
 
-type Screen = { kind: 'library' } | { kind: 'player'; file: File; name: string };
+type Screen = { kind: 'library' } | { kind: 'deck'; file: File; name: string; sourceId: string };
 
 export function App() {
   const [screen, setScreen] = useState<Screen>({ kind: 'library' });
@@ -12,15 +12,17 @@ export function App() {
       <header className="topbar">
         <span className="wordmark">BITS</span>
         <span className="spacer" />
-        {screen.kind === 'player' && (
+        {screen.kind === 'deck' && (
           <button onClick={() => setScreen({ kind: 'library' })}>library</button>
         )}
       </header>
       <main className="screen">
         {screen.kind === 'library' ? (
-          <Library onOpen={(file, name) => setScreen({ kind: 'player', file, name })} />
+          <Library
+            onOpen={(file, name, sourceId) => setScreen({ kind: 'deck', file, name, sourceId })}
+          />
         ) : (
-          <Player file={screen.file} name={screen.name} />
+          <Deck file={screen.file} name={screen.name} sourceId={screen.sourceId} />
         )}
       </main>
     </div>

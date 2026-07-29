@@ -6,7 +6,9 @@ Built for two people making skits together. Everything runs on-device in the bro
 
 ## Status
 
-Phase 0: import clips, play and scrub them inside an installable PWA, offline. The full ten-phase plan (ghosts, stop-motion, time-as-paint, rule chips, two-phone co-op) lives outside this repo for now; each phase ends with a skit we actually film.
+Phase 1: the deck is playable. Open a clip, hit roll, and perform: tap cuts (quantized to an onset grid computed from the clip's own audio), hold the left half to skip footage, hold the right half for slow motion, pinch to punch in, double-tap to reset the punch. Rolling from an earlier point truncates what came after, so undo is rewind. Render runs the same compiled program as the preview and hands the mp4 to the share sheet.
+
+The full ten-phase plan (ghosts, stop-motion, time-as-paint, rule chips, two-phone co-op) continues from here; each phase ends with a skit we actually film.
 
 ## Dev
 
@@ -14,16 +16,19 @@ Phase 0: import clips, play and scrub them inside an installable PWA, offline. T
     npm run dev        # serves at /bits/
     npm test           # engine tests (vitest)
     npm run build      # typecheck + production build to dist/
+    npm run test:e2e   # headless Chrome: synthesize -> perform -> render -> re-probe
     npm run lint
 
 Deploys to ampactor.dev/bits from main via GitHub Pages (.github/workflows/deploy.yml).
 
 ## Layout
 
-    src/engine/    recipe model: append-only event log, deterministic replay
-    src/media/     OPFS store, Mediabunny probe/decode
-    src/ui/        React chrome: library, player
+    src/engine/    recipe model, program compiler, onset detection
+    src/jam/       pointer-gesture state machine (pure, unit-tested)
+    src/media/     OPFS store, Mediabunny probe/decode, audio, offline render
+    src/ui/        React chrome: library, deck
     src/pwa/       service worker registration
+    src/e2e/       in-browser proof harness (?e2e)
     public/sw.js   precache + share-target service worker
 
 One UI rule worth knowing: semantic color pairs are blue vs orange, never red vs green.

@@ -15,7 +15,11 @@ function formatBytes(n: number): string {
   return `${Math.max(1, Math.round(n / 1e3))} KB`;
 }
 
-export function Library({ onOpen }: { onOpen: (file: File, name: string) => void }) {
+export function Library({
+  onOpen,
+}: {
+  onOpen: (file: File, name: string, sourceId: string) => void;
+}) {
   const [sources, setSources] = useState<StoredSource[] | null>(null);
   const [status, setStatus] = useState('');
   const pickerRef = useRef<HTMLInputElement>(null);
@@ -49,7 +53,7 @@ export function Library({ onOpen }: { onOpen: (file: File, name: string) => void
   };
 
   const open = async (s: StoredSource) => {
-    onOpen(await getSourceFile(s.id), s.name);
+    onOpen(await getSourceFile(s.id), s.name, s.id);
   };
 
   const remove = async (s: StoredSource) => {

@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "node tools/e2e/render-proof.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "format": "prettier --write src/"
@@ -26,6 +27,7 @@
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.9.6",
+    "puppeteer-core": "^25.4.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "vite": "^8.1.5",

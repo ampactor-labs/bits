@@ -14,3 +14,7 @@ createRoot(root).render(
 );
 
 registerServiceWorker();
+
+if (new URLSearchParams(location.search).has('e2e')) {
+  void import('./e2e/harness');
+}
