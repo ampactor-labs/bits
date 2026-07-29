@@ -16,7 +16,7 @@ describe('recipe v0', () => {
   it('roundtrips through serialize/parse identically', () => {
     let p = createProject('test bit');
     p = appendEvent(p, cut('e1', 1.5));
-    const speed: SpeedEvent = { kind: 'SPEED', id: 'e2', at: 2.0, rate: 0.25, attackS: 0.1 };
+    const speed: SpeedEvent = { kind: 'SPEED', id: 'e2', at: 2.0, rate: 0.25 };
     p = appendEvent(p, speed);
     expect(parseProject(serializeProject(p))).toEqual(p);
   });

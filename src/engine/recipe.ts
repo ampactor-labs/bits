@@ -22,16 +22,26 @@ interface EventBase {
   atQ?: number;
 }
 
+/** A cut marker: a beat on the scrub bar now, a segment boundary for arrange later. */
 export interface CutEvent extends EventBase {
   kind: 'CUT';
 }
 
+/** Edge event: this playback rate applies from `at` until the next SPEED edge.
+ *  rate 1 is realtime; 0.3 is slow motion; the default before any edge is 1. */
 export interface SpeedEvent extends EventBase {
   kind: 'SPEED';
   rate: number;
-  attackS: number;
 }
 
+/** The source span [at, endAt) is removed from the output. */
+export interface SkipEvent extends EventBase {
+  kind: 'SKIP';
+  endAt: number;
+}
+
+/** Automation sample: punch-in center (normalized source coords) and scale.
+ *  Values hold before the first and after the last sample, lerp between. */
 export interface ZoomEvent extends EventBase {
   kind: 'ZOOM';
   cx: number;
@@ -39,7 +49,7 @@ export interface ZoomEvent extends EventBase {
   scale: number;
 }
 
-export type RecipeEvent = CutEvent | SpeedEvent | ZoomEvent;
+export type RecipeEvent = CutEvent | SpeedEvent | SkipEvent | ZoomEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -107,6 +117,18 @@ export function parseProject(text: string): Project {
     const ev = e as Record<string, unknown>;
     if (typeof ev.kind !== 'string' || typeof ev.at !== 'number' || typeof ev.id !== 'string') {
       throw new Error('recipe: malformed event');
+    }
+    if (ev.kind === 'SPEED' && !(typeof ev.rate === 'number' && ev.rate > 0)) {
+      throw new Error('recipe: SPEED event needs a positive rate');
+    }
+    if (ev.kind === 'SKIP' && !(typeof ev.endAt === 'number' && ev.endAt > (ev.at as number))) {
+      throw new Error('recipe: SKIP event needs endAt after at');
+    }
+    if (
+      ev.kind === 'ZOOM' &&
+      !(typeof ev.cx === 'number' && typeof ev.cy === 'number' && typeof ev.scale === 'number')
+    ) {
+      throw new Error('recipe: ZOOM event needs cx, cy, scale');
     }
   }
   return raw as Project;
