@@ -1,0 +1,38 @@
+{
+  "name": "BITS",
+  "short_name": "BITS",
+  "description": "A video instrument. Perform the edit.",
+  "id": "/bits/",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#141210",
+  "theme_color": "#141210",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "share_target": {
+    "action": "share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "media",
+          "accept": ["video/*", "image/*"]
+        }
+      ]
+    }
+  }
+}
