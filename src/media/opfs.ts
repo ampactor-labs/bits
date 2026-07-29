@@ -82,6 +82,27 @@ export async function drainInbox(): Promise<number> {
   return moved;
 }
 
+const PROJECTS = 'projects';
+
+/** One project per source for now, keyed by the source's entry name. */
+export async function saveProjectJson(sourceId: string, json: string): Promise<void> {
+  const d = await dir(PROJECTS);
+  const handle = await d.getFileHandle(`${sourceId}.json`, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(json);
+  await writable.close();
+}
+
+export async function loadProjectJson(sourceId: string): Promise<string | null> {
+  const d = await dir(PROJECTS);
+  try {
+    const handle = await d.getFileHandle(`${sourceId}.json`);
+    return await (await handle.getFile()).text();
+  } catch {
+    return null;
+  }
+}
+
 export async function ensurePersistence(): Promise<boolean> {
   if (!navigator.storage.persist) return false;
   if (await navigator.storage.persisted()) return true;
