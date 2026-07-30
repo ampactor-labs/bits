@@ -67,6 +67,17 @@ export function polyArea(poly: Poly): number {
   return Math.abs(a) / 2;
 }
 
+export function polyCentroid(poly: Poly): { x: number; y: number } {
+  let cx = 0;
+  let cy = 0;
+  for (const [x, y] of poly) {
+    cx += x;
+    cy += y;
+  }
+  const n = Math.max(1, poly.length);
+  return { x: cx / n, y: cy / n };
+}
+
 /** Ray-cast point-in-polygon in puppet-local box coords. */
 export function pointInPoly(poly: Poly, x: number, y: number): boolean {
   let inside = false;

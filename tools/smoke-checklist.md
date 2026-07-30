@@ -18,10 +18,22 @@ Run on both phones after each push. All of it is one flow: make a real bit.
     shut during silence.
 11. Record a pass: audio plays, dragging feels springy (lag, lean, squash).
 12. Overdub: a second pass records while the first replays; both survive.
-13. Undo removes only the last move.
-14. Render completes with progress; the export matches the preview exactly:
-    motion, dangles, mouth timing, boil.
-15. Share hands the mp4 to a messaging app; voices are in sync.
-16. Airplane mode, relaunch: everything above still works offline.
+13. Talker rule: with both heads mouthed and each animated in its own pass,
+    only the one whose pass covers the moment flaps; before any passes, a
+    mouthed puppet flaps freely.
+14. Grab a snipped-off piece during a pass: it swings to follow the finger
+    and springs back after; the recorded swing replays.
+15. Eyes: googly pair tracks with a lag when the puppet moves.
+16. Scrub the playhead while idle: the stage previews that moment; record
+    punches in from there and earlier passes still replay underneath.
+17. 📷 snap opens the camera; the shot cuts out into a puppet.
+18. Undo steps back one move; redo brings it back; a new move clears redo.
+19. Rename on the bits list sticks.
+20. Render completes with progress and the screen stays awake; the export
+    matches the preview exactly: motion, dangles, mouths, eyes, boil.
+21. Share hands the mp4 to a messaging app; voices are in sync.
+22. Delete a bit from the list; its storage is reclaimed (add a big one,
+    delete it, storage settings show the drop).
+23. Airplane mode, relaunch: everything above still works offline.
 
 Record failures with phone model + Chrome version in an issue.

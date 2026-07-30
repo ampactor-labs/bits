@@ -6,7 +6,7 @@ import { boilNoise } from '../engine/puppet';
 import type { PuppetPose } from '../engine/show';
 import type { ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
-import type { MouthEvent, PuppetSpec } from '../engine/recipe';
+import type { EyesEvent, MouthEvent, PuppetSpec } from '../engine/recipe';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -20,6 +20,7 @@ export type StageImages = Map<string, ImageBitmap>;
 export interface PuppetVisual {
   pieces: PuppetPieces;
   mouth: MouthEvent | null;
+  eyes: EyesEvent | null;
 }
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -32,7 +33,7 @@ export function drawStage(
   poses: Map<string, PuppetPose>,
   images: StageImages,
   visuals: Map<string, PuppetVisual>,
-  mouthOpen: number,
+  mouthOpen: Map<string, number>,
   tS: number,
   seed: number,
 ): void {
@@ -63,9 +64,75 @@ export function drawStage(
     }
 
     if (visual.mouth) {
-      drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, mouthOpen);
+      drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, mouthOpen.get(puppet.id) ?? 0);
+    }
+    if (visual.eyes) {
+      drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed);
     }
     ctx.restore();
+  }
+}
+
+/** Googly eyes: sclera pair pinned to the puppet, pupils lagging its motion
+ *  with a little seeded jitter. Ride the containing piece like mouths do. */
+function drawEyes(
+  ctx: Ctx2D,
+  eyes: EyesEvent,
+  pieces: PuppetPieces,
+  pose: PuppetPose,
+  pw: number,
+  ph: number,
+  tS: number,
+  seed: number,
+): void {
+  ctx.save();
+  applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey);
+  const cx = (eyes.ex - 0.5) * pw;
+  const cy = (eyes.ey - 0.5) * ph;
+  const eyeR = (eyes.size * pw) / 4.4;
+  const gap = eyeR * 1.3;
+  const variant = Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS;
+  const lagX = clamp(-pose.root.vx * 0.05, -0.55, 0.55) * eyeR;
+  const lagY = clamp(-pose.root.vy * 0.05, -0.55, 0.55) * eyeR;
+  const jitX = boilNoise(seed, variant, 4242) * eyeR * 0.08;
+  const jitY = boilNoise(seed, variant, 5353) * eyeR * 0.08;
+
+  for (const side of [-1, 1]) {
+    const ex = cx + side * gap;
+    ctx.fillStyle = '#f4efe7';
+    ctx.beginPath();
+    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#17120e';
+    ctx.beginPath();
+    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+/** Shared by mouths and eyes: transform onto the piece containing the point. */
+function applyCarrierTransform(
+  ctx: Ctx2D,
+  pieces: PuppetPieces,
+  pose: PuppetPose,
+  pw: number,
+  ph: number,
+  lx: number,
+  ly: number,
+): void {
+  const carrier = pieces.children.find((c) => pointInPoly(c.poly, lx, ly));
+  if (carrier?.joint) {
+    const dangle = pose.dangles[carrier.snipIndex];
+    const jx = (carrier.joint.x - 0.5) * pw;
+    const jy = (carrier.joint.y - 0.5) * ph;
+    ctx.translate(jx, jy);
+    ctx.rotate(dangle?.angle ?? 0);
+    ctx.translate(-jx, -jy);
   }
 }
 
@@ -181,15 +248,7 @@ function drawMouth(
   open: number,
 ): void {
   ctx.save();
-  const carrier = pieces.children.find((c) => pointInPoly(c.poly, mouth.mx, mouth.my));
-  if (carrier?.joint) {
-    const dangle = pose.dangles[carrier.snipIndex];
-    const jx = (carrier.joint.x - 0.5) * pw;
-    const jy = (carrier.joint.y - 0.5) * ph;
-    ctx.translate(jx, jy);
-    ctx.rotate(dangle?.angle ?? 0);
-    ctx.translate(-jx, -jy);
-  }
+  applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my);
   const mx = (mouth.mx - 0.5) * pw;
   const my = (mouth.my - 0.5) * ph;
   const width = mouth.size * pw;

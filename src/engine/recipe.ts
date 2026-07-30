@@ -32,11 +32,13 @@ export interface CastEvent extends EventBase {
 
 /** One recorded grab: flat [t, x, y, ...] samples in show seconds and
  *  normalized stage coords, sorted by t. The newest pass covering a moment
- *  owns the puppet at that moment. */
+ *  owns its target. `piece` targets a snipped-off piece (by snip index):
+ *  the dangle's spring chases the performed point instead of resting. */
 export interface PassEvent extends EventBase {
   kind: 'PASS';
   puppetId: string;
   samples: number[];
+  piece?: number;
 }
 
 /** A scissor line across a puppet, in puppet-local box coords (0..1). The
@@ -62,13 +64,24 @@ export interface MouthEvent extends EventBase {
   size: number;
 }
 
+/** Googly eyes pinned at a puppet-local point; pupils lag the motion.
+ *  Latest EYES per puppet wins. */
+export interface EyesEvent extends EventBase {
+  kind: 'EYES';
+  puppetId: string;
+  ex: number;
+  ey: number;
+  /** Eye-pair width as a fraction of the puppet box width. */
+  size: number;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
   puppetId: string;
 }
 
-export type RecipeEvent = CastEvent | PassEvent | SnipEvent | MouthEvent | DropEvent;
+export type RecipeEvent = CastEvent | PassEvent | SnipEvent | MouthEvent | EyesEvent | DropEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -151,6 +164,9 @@ export function parseProject(text: string): Project {
           ev.samples.length % 3 === 0 &&
           ev.samples.every((n: unknown) => isNum(n));
         if (!ok) throw new Error('recipe: PASS event needs t,x,y sample triples');
+        if (ev.piece !== undefined && !(isNum(ev.piece) && ev.piece >= 0)) {
+          throw new Error('recipe: PASS piece must be a snip index');
+        }
         break;
       }
       case 'SNIP':
@@ -161,6 +177,11 @@ export function parseProject(text: string): Project {
       case 'MOUTH':
         if (!(isNum(ev.mx) && isNum(ev.my) && isNum(ev.size) && (ev.size as number) > 0)) {
           throw new Error('recipe: MOUTH event needs mx, my, positive size');
+        }
+        break;
+      case 'EYES':
+        if (!(isNum(ev.ex) && isNum(ev.ey) && isNum(ev.size) && (ev.size as number) > 0)) {
+          throw new Error('recipe: EYES event needs ex, ey, positive size');
         }
         break;
       case 'DROP':

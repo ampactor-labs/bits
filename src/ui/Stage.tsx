@@ -1,7 +1,8 @@
-// The stage: record the bit, cast puppets, perform in passes. Scissors split
-// a puppet where you draw the line and the far side dangles; a mouth pinned
-// on a puppet flaps with the voice track; two fingers resize and rotate
-// while idle; long-press drops a puppet from the cast.
+// The stage, whole instrument: record the bit, cast puppets (photo, snap,
+// doodle, backdrop), snip them apart, pin mouths and googly eyes, then
+// perform in passes from any point on the playhead. Grab a body or a
+// snipped-off piece; hold the talker and its mouth speaks. Two fingers
+// resize and rotate while idle; long-press drops from the cast.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -12,16 +13,18 @@ import {
   type CastEvent,
   type PassEvent,
   type Project,
+  type RecipeEvent,
 } from '../engine/recipe';
-import { computeEnvelope, openAt } from '../engine/envelope';
 import { detectOnsets } from '../engine/onsets';
-import { castOf, createShowSim, targetForPuppet, type ShowPuppet, type ShowSim } from '../engine/show';
+import { computeEnvelope } from '../engine/envelope';
+import { pointInPoly } from '../engine/pieces';
+import { castOf, createShowSim, type PuppetPose, type ShowPuppet, type ShowSim } from '../engine/show';
 import { AudioSourceHandle, JamAudio, mixdownMono } from '../media/audio';
 import { getAsset, saveAsset } from '../media/assets';
 import { makeCutout } from '../media/cutout';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
-import { renderShow, visualsOf, type RenderProgress } from '../media/render';
+import { mouthOpenMap, renderShow, visualsOf, type RenderProgress } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
 import { drawStage, loadStageImages, type PuppetVisual, type StageImages } from '../media/stageDraw';
 
@@ -34,16 +37,17 @@ type Mode =
   | 'recording'
   | 'doodling'
   | 'snipping'
-  | 'mouthing';
+  | 'mouthing'
+  | 'eyeing';
 
 interface Grab {
   puppetId: string;
+  piece: number | null;
   samples: number[];
   x: number;
   y: number;
 }
 
-/** Idle-time staging overrides, live while fingers are down. */
 interface StagingDrag {
   puppetId: string;
   x: number;
@@ -55,6 +59,7 @@ interface StagingDrag {
 
 const newId = () => crypto.randomUUID().slice(0, 8);
 const LONG_PRESS_MS = 650;
+const HOLD_SAMPLE_S = 0.25;
 
 export function Stage({ showId }: { showId: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,6 +74,7 @@ export function Stage({ showId }: { showId: string }) {
   const [rendering, setRendering] = useState<RenderProgress | null>(null);
   const [rendered, setRendered] = useState<File | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
+  const [redoCount, setRedoCount] = useState(0);
 
   const audioBlobRef = useRef<Blob | null>(null);
   const envelopeRef = useRef<Float32Array>(new Float32Array(0));
@@ -77,13 +83,18 @@ export function Stage({ showId }: { showId: string }) {
   const imagesRef = useRef<StageImages>(new Map());
   const visualsRef = useRef<Map<string, PuppetVisual>>(new Map());
   const simRef = useRef<ShowSim | null>(null);
-  const lastStatesRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
   const grabRef = useRef<Grab | null>(null);
   const stagingRef = useRef<StagingDrag | null>(null);
   const strokeRef = useRef<number[][]>([]);
   const snipStrokeRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const redoRef = useRef<RecipeEvent[]>([]);
+  const playheadRef = useRef(0);
+  const clockFromRef = useRef(0);
   const wallStartRef = useRef(0);
+  const seekSimAtRef = useRef(-1);
+  const lastSeekDrawRef = useRef(0);
   const rafRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(true);
@@ -104,16 +115,25 @@ export function Stage({ showId }: { showId: string }) {
     }, 400);
   }, [showId]);
 
-  const commit = useCallback(
-    (mutate: (p: Project) => Project) => {
+  const applyProject = useCallback(
+    (mutate: (p: Project) => Project, clearRedo: boolean) => {
       projectRef.current = mutate(projectRef.current);
       visualsRef.current = visualsOf(projectRef.current);
       setProjectSnap(projectRef.current);
       setRendered(null);
+      if (clearRedo) {
+        redoRef.current = [];
+        setRedoCount(0);
+      }
       dirtyRef.current = true;
       persistSoon();
     },
     [persistSoon],
+  );
+
+  const commit = useCallback(
+    (mutate: (p: Project) => Project) => applyProject(mutate, true),
+    [applyProject],
   );
 
   const reloadImages = useCallback(async () => {
@@ -169,19 +189,40 @@ export function Stage({ showId }: { showId: string }) {
     };
   }, [showId, reloadImages, analyzeAudio]);
 
+  const currentClock = useCallback((): number => {
+    const audio = jamRef.current?.positionS();
+    if (audio !== null && audio !== undefined) return audio;
+    return clockFromRef.current + (performance.now() - wallStartRef.current) / 1000;
+  }, []);
+
   const commitGrab = useCallback(() => {
     const grab = grabRef.current;
     grabRef.current = null;
-    if (!grab || grab.samples.length < 6) return;
-    const pass: PassEvent = {
-      kind: 'PASS',
-      id: newId(),
-      at: grab.samples[0]!,
-      puppetId: grab.puppetId,
-      samples: grab.samples,
-    };
+    if (!grab) return;
+    const dur = projectRef.current.audio?.durationS ?? 0;
+    const clock = Math.min(dur, Math.max(0, currentClock()));
+    const lastT = grab.samples[grab.samples.length - 3]!;
+    if (clock - lastT > 1 / 120) grab.samples.push(clock, grab.x, grab.y);
+    if (grab.samples.length < 6) return;
+    const pass: PassEvent =
+      grab.piece === null
+        ? {
+            kind: 'PASS',
+            id: newId(),
+            at: grab.samples[0]!,
+            puppetId: grab.puppetId,
+            samples: grab.samples,
+          }
+        : {
+            kind: 'PASS',
+            id: newId(),
+            at: grab.samples[0]!,
+            puppetId: grab.puppetId,
+            samples: grab.samples,
+            piece: grab.piece,
+          };
     commit((p) => appendEvent(p, pass));
-  }, [commit]);
+  }, [commit, currentClock]);
 
   useEffect(() => {
     commitGrabRef.current = commitGrab;
@@ -197,19 +238,29 @@ export function Stage({ showId }: { showId: string }) {
   }, []);
 
   const start = (recording: boolean) => {
-    if (!projectRef.current.audio) return;
+    const dur = projectRef.current.audio?.durationS ?? 0;
+    if (dur <= 0) return;
     setRendered(null);
-    simRef.current = createShowSim(projectRef.current, 0, (id, tt) => {
+    let from = playheadRef.current;
+    if (from >= dur - 0.05) from = 0;
+    playheadRef.current = from;
+
+    const sim = createShowSim(projectRef.current, 0, (id, piece, tt) => {
       const grab = grabRef.current;
-      if (grab && grab.puppetId === id) return { x: grab.x, y: grab.y };
-      return targetForPuppet(projectRef.current, id, tt);
+      if (grab && grab.puppetId === id && grab.piece === piece && tt >= grab.samples[0]!) {
+        return { x: grab.x, y: grab.y };
+      }
+      return null;
     });
+    sim.advanceTo(from);
+    simRef.current = sim;
+    clockFromRef.current = from;
     wallStartRef.current = performance.now() + 50;
-    void jamRef.current?.play(0);
+    void jamRef.current?.play(from);
     setModeBoth(recording ? 'recording' : 'playing');
   };
 
-  // Frame loop: clock, simulation, drawing.
+  // Frame loop: clock, simulation, drawing, seek previews, hold sampling.
   useEffect(() => {
     const loop = () => {
       rafRef.current = requestAnimationFrame(loop);
@@ -232,15 +283,21 @@ export function Stage({ showId }: { showId: string }) {
       const dur = project.audio?.durationS ?? 0;
 
       if (m === 'playing' || m === 'recording') {
-        const now = (performance.now() - wallStartRef.current) / 1000;
-        const clock = Math.max(0, Math.min(dur, now));
+        const now = currentClock();
+        const clock = Math.max(clockFromRef.current, Math.min(dur, now));
+        playheadRef.current = clock;
         setT(clock);
+
+        const grab = grabRef.current;
+        if (m === 'recording' && grab) {
+          const lastT = grab.samples[grab.samples.length - 3]!;
+          if (clock - lastT >= HOLD_SAMPLE_S) grab.samples.push(clock, grab.x, grab.y);
+        }
+
         const sim = simRef.current;
         if (sim) {
           const poses = sim.advanceTo(clock);
-          lastStatesRef.current = new Map(
-            [...poses].map(([id, p]) => [id, { x: p.root.x, y: p.root.y }]),
-          );
+          lastPosesRef.current = poses;
           drawStage(
             ctx,
             W,
@@ -249,7 +306,7 @@ export function Stage({ showId }: { showId: string }) {
             poses,
             imagesRef.current,
             visualsRef.current,
-            openAt(envelopeRef.current, clock),
+            mouthOpenMap(project, visualsRef.current, envelopeRef.current, clock),
             clock,
             project.seed,
           );
@@ -258,8 +315,15 @@ export function Stage({ showId }: { showId: string }) {
         return;
       }
 
-      if (dirtyRef.current) {
+      // Idle: throttled re-sim when the playhead moved, else draw on dirty.
+      const wantSeekSim =
+        m === 'idle' &&
+        seekSimAtRef.current !== playheadRef.current &&
+        performance.now() - lastSeekDrawRef.current > 150;
+      if (dirtyRef.current || wantSeekSim) {
         dirtyRef.current = false;
+        seekSimAtRef.current = playheadRef.current;
+        lastSeekDrawRef.current = performance.now();
         let cast = castOf(project);
         const staging = stagingRef.current;
         if (staging) {
@@ -273,10 +337,8 @@ export function Stage({ showId }: { showId: string }) {
           );
         }
         const sim = createShowSim({ ...project, events: applyStagingCast(project, staging) });
-        const poses = sim.states();
-        lastStatesRef.current = new Map(
-          [...poses].map(([id, p]) => [id, { x: p.root.x, y: p.root.y }]),
-        );
+        const poses = sim.advanceTo(playheadRef.current);
+        lastPosesRef.current = poses;
         drawStage(
           ctx,
           W,
@@ -285,8 +347,8 @@ export function Stage({ showId }: { showId: string }) {
           poses,
           imagesRef.current,
           visualsRef.current,
-          0,
-          0,
+          mouthOpenMap(project, visualsRef.current, envelopeRef.current, playheadRef.current),
+          playheadRef.current,
           project.seed,
         );
         if (modeRef.current === 'doodling') drawStrokes(ctx, W, H, strokeRef.current);
@@ -305,7 +367,7 @@ export function Stage({ showId }: { showId: string }) {
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [stop]);
+  }, [stop, currentClock]);
 
   // Pointer handling.
   useEffect(() => {
@@ -321,22 +383,9 @@ export function Stage({ showId }: { showId: string }) {
       };
     };
 
-    const hitPuppet = (x: number, y: number): ShowPuppet | null => {
-      const cast = castOf(projectRef.current);
-      for (let i = cast.length - 1; i >= 0; i--) {
-        const p = cast[i]!;
-        if (p.back) continue;
-        const s = lastStatesRef.current.get(p.id);
-        if (!s) continue;
-        const hw = Math.max(0.06, (p.spec.w * p.home.scale) / 2);
-        const hh = Math.max(0.06, (p.spec.h * p.home.scale) / 2);
-        if (Math.abs(x - s.x) <= hw && Math.abs(y - s.y) <= hh) return p;
-      }
-      return null;
-    };
-
     const toLocal = (p: ShowPuppet, x: number, y: number) => {
-      const s = lastStatesRef.current.get(p.id) ?? { x: p.home.x, y: p.home.y };
+      const pose = lastPosesRef.current.get(p.id);
+      const s = pose?.root ?? { x: p.home.x, y: p.home.y };
       const c = Math.cos(-p.home.rot);
       const sn = Math.sin(-p.home.rot);
       const dx = x - s.x;
@@ -347,11 +396,61 @@ export function Stage({ showId }: { showId: string }) {
       };
     };
 
+    /** Hit a puppet and, when the point lands on a snipped-off piece, which
+     *  piece (accounting for its current swing). */
+    const hitTest = (x: number, y: number): { puppet: ShowPuppet; piece: number | null } | null => {
+      const cast = castOf(projectRef.current);
+      for (let i = cast.length - 1; i >= 0; i--) {
+        const p = cast[i]!;
+        if (p.back) continue;
+        const local = toLocal(p, x, y);
+        const visual = visualsRef.current.get(p.id);
+        const pose = lastPosesRef.current.get(p.id);
+        if (visual && pose) {
+          for (const child of visual.pieces.children) {
+            const dangle = pose.dangles[child.snipIndex]?.angle ?? 0;
+            const j = child.joint!;
+            const ca = Math.cos(-dangle);
+            const sa = Math.sin(-dangle);
+            const rx = j.x + (local.x - j.x) * ca - (local.y - j.y) * sa;
+            const ry = j.y + (local.x - j.x) * sa + (local.y - j.y) * ca;
+            if (pointInPoly(child.poly, rx, ry)) return { puppet: p, piece: child.snipIndex };
+          }
+          if (pointInPoly(visual.pieces.root.poly, local.x, local.y)) {
+            return { puppet: p, piece: null };
+          }
+        }
+        const hw = Math.max(0.06, (p.spec.w * p.home.scale) / 2);
+        const hh = Math.max(0.06, (p.spec.h * p.home.scale) / 2);
+        const s = pose?.root ?? { x: p.home.x, y: p.home.y };
+        if (Math.abs(x - s.x) <= hw && Math.abs(y - s.y) <= hh) return { puppet: p, piece: null };
+      }
+      return null;
+    };
+
     const clearLongPress = () => {
       if (longPressRef.current) {
         clearTimeout(longPressRef.current);
         longPressRef.current = null;
       }
+    };
+
+    const placeFeature = (kind: 'MOUTH' | 'EYES', x: number, y: number) => {
+      const hit = hitTest(x, y);
+      if (!hit) return;
+      const local = toLocal(hit.puppet, x, y);
+      const lx = Math.min(1, Math.max(0, local.x));
+      const ly = Math.min(1, Math.max(0, local.y));
+      commit((p) =>
+        appendEvent(
+          p,
+          kind === 'MOUTH'
+            ? { kind, id: newId(), at: 0, puppetId: hit.puppet.id, mx: lx, my: ly, size: 0.24 }
+            : { kind, id: newId(), at: 0, puppetId: hit.puppet.id, ex: lx, ey: ly, size: 0.3 },
+        ),
+      );
+      vibrate(15);
+      setModeBoth('idle');
     };
 
     const down = (e: PointerEvent) => {
@@ -371,30 +470,24 @@ export function Stage({ showId }: { showId: string }) {
         return;
       }
       if (m === 'mouthing') {
-        const hit = hitPuppet(x, y);
-        if (hit) {
-          const local = toLocal(hit, x, y);
-          commit((p) =>
-            appendEvent(p, {
-              kind: 'MOUTH',
-              id: newId(),
-              at: 0,
-              puppetId: hit.id,
-              mx: Math.min(1, Math.max(0, local.x)),
-              my: Math.min(1, Math.max(0, local.y)),
-              size: 0.24,
-            }),
-          );
-          vibrate(15);
-          setModeBoth('idle');
-        }
+        placeFeature('MOUTH', x, y);
+        return;
+      }
+      if (m === 'eyeing') {
+        placeFeature('EYES', x, y);
         return;
       }
       if (m === 'recording') {
-        const hit = hitPuppet(x, y);
+        const hit = hitTest(x, y);
         if (hit) {
-          const clock = Math.max(0, (performance.now() - wallStartRef.current) / 1000);
-          grabRef.current = { puppetId: hit.id, samples: [clock, x, y], x, y };
+          const clock = Math.max(0, currentClock());
+          grabRef.current = {
+            puppetId: hit.puppet.id,
+            piece: hit.piece,
+            samples: [clock, x, y],
+            x,
+            y,
+          };
         }
         return;
       }
@@ -411,21 +504,23 @@ export function Stage({ showId }: { showId: string }) {
           clearLongPress();
           return;
         }
-        const hit = hitPuppet(x, y);
+        const hit = hitTest(x, y);
         if (hit) {
           stagingRef.current = {
-            puppetId: hit.id,
-            x: hit.home.x,
-            y: hit.home.y,
-            scale: hit.home.scale,
-            rot: hit.home.rot,
+            puppetId: hit.puppet.id,
+            x: hit.puppet.home.x,
+            y: hit.puppet.home.y,
+            scale: hit.puppet.home.scale,
+            rot: hit.puppet.home.rot,
             pinch: null,
           };
           dirtyRef.current = true;
           clearLongPress();
           longPressRef.current = setTimeout(() => {
             stagingRef.current = null;
-            commit((p) => appendEvent(p, { kind: 'DROP', id: newId(), at: 0, puppetId: hit.id }));
+            commit((p) =>
+              appendEvent(p, { kind: 'DROP', id: newId(), at: 0, puppetId: hit.puppet.id }),
+            );
             vibrate(40);
           }, LONG_PRESS_MS);
         }
@@ -459,7 +554,7 @@ export function Stage({ showId }: { showId: string }) {
       }
       if (m === 'recording' && grabRef.current) {
         const grab = grabRef.current;
-        const clock = Math.max(0, (performance.now() - wallStartRef.current) / 1000);
+        const clock = Math.max(0, currentClock());
         const lastT = grab.samples[grab.samples.length - 3]!;
         if (clock - lastT >= 1 / 60) grab.samples.push(clock, x, y);
         grab.x = x;
@@ -473,7 +568,10 @@ export function Stage({ showId }: { showId: string }) {
           const [a, b] = [...pointers.values()];
           const dist = Math.hypot(a!.x - b!.x, a!.y - b!.y) || 0.01;
           const angle = Math.atan2(b!.y - a!.y, b!.x - a!.x);
-          staging.scale = Math.min(4, Math.max(0.2, staging.pinch.baseScale * (dist / staging.pinch.baseDist)));
+          staging.scale = Math.min(
+            4,
+            Math.max(0.2, staging.pinch.baseScale * (dist / staging.pinch.baseDist)),
+          );
           staging.rot = staging.pinch.baseRot + (angle - staging.pinch.baseAngle);
         } else if (pointers.size === 1) {
           staging.x = x;
@@ -494,16 +592,16 @@ export function Stage({ showId }: { showId: string }) {
         const midX = (s.x0 + s.x1) / 2;
         const midY = (s.y0 + s.y1) / 2;
         const lineLen = Math.hypot(s.x1 - s.x0, s.y1 - s.y0);
-        const hit = hitPuppet(midX, midY);
+        const hit = hitTest(midX, midY);
         if (hit && lineLen > 0.03) {
-          const a = toLocal(hit, s.x0, s.y0);
-          const b = toLocal(hit, s.x1, s.y1);
+          const a = toLocal(hit.puppet, s.x0, s.y0);
+          const b = toLocal(hit.puppet, s.x1, s.y1);
           commit((p) =>
             appendEvent(p, {
               kind: 'SNIP',
               id: newId(),
               at: 0,
-              puppetId: hit.id,
+              puppetId: hit.puppet.id,
               x0: a.x,
               y0: a.y,
               x1: b.x,
@@ -552,7 +650,7 @@ export function Stage({ showId }: { showId: string }) {
       frame.removeEventListener('pointerup', up);
       frame.removeEventListener('pointercancel', up);
     };
-  }, [commit]);
+  }, [commit, currentClock]);
 
   // The bit: mic recording.
   const recordBit = async () => {
@@ -580,14 +678,17 @@ export function Stage({ showId }: { showId: string }) {
     jamRef.current = new JamAudio(handle.makeSink());
     await analyzeAudio(blob);
     commit((p) => ({ ...p, audio: { assetId, durationS: durationRecorded } }));
+    playheadRef.current = 0;
+    setT(0);
     setModeBoth('idle');
   };
 
   // Casting.
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const snapInputRef = useRef<HTMLInputElement>(null);
   const backdropInputRef = useRef<HTMLInputElement>(null);
 
-  const onPhotoPicked = async (files: FileList | null) => {
+  const castPhoto = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
     const cutout = await makeCutout(file);
@@ -682,15 +783,29 @@ export function Stage({ showId }: { showId: string }) {
   };
 
   const undo = () => {
-    if (projectRef.current.events.length === 0) return;
-    commit((p) => ({ ...p, events: p.events.slice(0, -1) }));
+    const events = projectRef.current.events;
+    if (events.length === 0) return;
+    const popped = events[events.length - 1]!;
+    redoRef.current.push(popped);
+    setRedoCount(redoRef.current.length);
+    applyProject((p) => ({ ...p, events: p.events.slice(0, -1) }), false);
+    void reloadImages();
+  };
+
+  const redo = () => {
+    const event = redoRef.current.pop();
+    if (!event) return;
+    setRedoCount(redoRef.current.length);
+    applyProject((p) => appendEvent(p, event), false);
     void reloadImages();
   };
 
   const doRender = async () => {
     if (rendering) return;
     stop();
+    let wakeLock: WakeLockSentinel | null = null;
     try {
+      wakeLock = (await navigator.wakeLock?.request('screen').catch(() => null)) ?? null;
       const out = await renderShow({
         audioBlob: audioBlobRef.current,
         project: projectRef.current,
@@ -703,7 +818,13 @@ export function Stage({ showId }: { showId: string }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRendering(null);
+      void wakeLock?.release().catch(() => {});
     }
+  };
+
+  const seek = (v: number) => {
+    playheadRef.current = v;
+    setT(v);
   };
 
   const fmt = (s: number) =>
@@ -740,6 +861,7 @@ export function Stage({ showId }: { showId: string }) {
         {mode === 'recording' && <span className="recdot">●</span>}
         {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
         {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
+        {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
       </div>
 
       {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
@@ -757,6 +879,17 @@ export function Stage({ showId }: { showId: string }) {
                 className="fill"
                 style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }}
               />
+              <input
+                className="seek"
+                type="range"
+                min={0}
+                max={durationS || 1}
+                step={0.01}
+                value={t}
+                disabled={busy}
+                onChange={(e) => seek(Number(e.target.value))}
+                aria-label="playhead"
+              />
             </div>
             <span className="time">
               {fmt(t)} / {fmt(durationS)}
@@ -771,10 +904,14 @@ export function Stage({ showId }: { showId: string }) {
                 keep it
               </button>
             </div>
-          ) : mode === 'snipping' || mode === 'mouthing' ? (
+          ) : mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' ? (
             <div className="transport">
               <span className="status">
-                {mode === 'snipping' ? 'scissors out' : 'placing a mouth'}
+                {mode === 'snipping'
+                  ? 'scissors out'
+                  : mode === 'mouthing'
+                    ? 'placing a mouth'
+                    : 'placing eyes'}
               </span>
               <button onClick={() => setModeBoth('idle')}>cancel</button>
             </div>
@@ -802,15 +939,29 @@ export function Stage({ showId }: { showId: string }) {
                 <button onClick={undo} disabled={projectSnap.events.length === 0}>
                   undo
                 </button>
+                <button onClick={redo} disabled={redoCount === 0}>
+                  redo
+                </button>
               </div>
-              <div className="transport">
+              <div className="transport wrap">
                 <input
                   ref={photoInputRef}
                   type="file"
                   accept="image/*"
                   hidden
                   onChange={(e) => {
-                    void onPhotoPicked(e.target.files);
+                    void castPhoto(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <input
+                  ref={snapInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  hidden
+                  onChange={(e) => {
+                    void castPhoto(e.target.files);
                     e.target.value = '';
                   }}
                 />
@@ -827,6 +978,9 @@ export function Stage({ showId }: { showId: string }) {
                 <button disabled={busy} onClick={() => photoInputRef.current?.click()}>
                   + puppet
                 </button>
+                <button disabled={busy} onClick={() => snapInputRef.current?.click()}>
+                  📷 snap
+                </button>
                 <button disabled={busy} onClick={startDoodle}>
                   + doodle
                 </button>
@@ -834,12 +988,24 @@ export function Stage({ showId }: { showId: string }) {
                   + backdrop
                 </button>
               </div>
-              <div className="transport">
-                <button disabled={busy || puppets.length === 0} onClick={() => setModeBoth('snipping')}>
+              <div className="transport wrap">
+                <button
+                  disabled={busy || puppets.length === 0}
+                  onClick={() => setModeBoth('snipping')}
+                >
                   ✂ snip
                 </button>
-                <button disabled={busy || puppets.length === 0} onClick={() => setModeBoth('mouthing')}>
+                <button
+                  disabled={busy || puppets.length === 0}
+                  onClick={() => setModeBoth('mouthing')}
+                >
                   mouth
+                </button>
+                <button
+                  disabled={busy || puppets.length === 0}
+                  onClick={() => setModeBoth('eyeing')}
+                >
+                  eyes
                 </button>
                 <span className="spacer" />
                 {rendered ? (
@@ -862,7 +1028,7 @@ export function Stage({ showId }: { showId: string }) {
                 {puppets.length} in the cast · {passCount} pass{passCount === 1 ? '' : 'es'}
                 {puppets.length === 0 ? ' · add a puppet to start' : ''}
                 {puppets.length > 0 && passCount === 0
-                  ? ' · drag to place · two fingers resize · hold to drop'
+                  ? ' · drag to place · hold the talker while recording and its mouth speaks'
                   : ''}
               </div>
             </>

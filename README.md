@@ -2,13 +2,13 @@
 
 A puppet-show instrument for phones. You don't animate a scene with timelines and keyframes; you put on the show. Record the bit first (the voices, the argument, the dumb song), cast puppets from photos of yourselves or finger doodles, then perform in passes like a musician overdubs tracks: hit record, drag one puppet while the audio and every earlier pass play back, stop, layer the next one. Spring physics is the inbetweener: you supply intent, the simulation supplies lag, lean, squash, and settle.
 
-Then the scissors come out. Draw a line across a puppet and it splits where you cut: the far side hangs from the line's midpoint and dangles with the motion, paper-doll style. Pin a mouth on anything and it flaps with the loudness of the voice track. Doodles boil (three seeded jitter variants) so a single drawing never sits still. Backdrops drop in from the camera roll; two fingers resize and rotate anything; a long press drops a puppet from the cast.
+Then the scissors come out. Draw a line across a puppet and it splits where you cut: the far side hangs from the line's midpoint and dangles with the motion, paper-doll style — and you can grab the piece itself in a pass and puppet it directly. Pin a mouth on anything and it flaps with the voice track; once a puppet has passes, it only talks while one of them covers the moment, so holding the talker is how you say who's speaking. Googly eyes lag the motion. Doodles boil. Backdrops drop in from the camera roll or straight from the camera; two fingers resize and rotate anything; long press drops a puppet; the playhead scrubs and passes punch in anywhere.
 
-Everything lands in an append-only recipe; the same recipe simulates to the same frames (bit-exact, fixed-step grid), so preview and render agree. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage. No uploads, no accounts, no generated pixels.
+Everything lands in an append-only recipe with undo and redo; the same recipe simulates to the same frames (bit-exact, fixed-step grid), so preview and render agree, and the preview clock rides the AudioContext so mouths flap on the audio's time. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage with asset cleanup on delete. No uploads, no accounts, no generated pixels.
 
 ## Status
 
-The full instrument is live: bit, cast, snip, mouth, backdrop, passes, undo, render, share. Next organs: viseme-grade lip sync (Rhubarb-wasm), perform-with-your-body limb passes (MediaPipe pose), ARAP mesh warp for bendy puppets, and recipe-in-export remixing.
+The full instrument is live: bit, cast, snap, snip, mouth, eyes, backdrop, punch-in passes, piece grabs, talker spans, scrub, undo/redo, rename, render under a wake lock, share. Next organs: viseme-grade lip sync (Rhubarb-wasm), perform-with-your-body limb passes (MediaPipe pose), ARAP mesh warp for bendy puppets, and recipe-in-export remixing.
 
 ## Dev
 

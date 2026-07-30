@@ -16,7 +16,7 @@ import {
 import { computeEnvelope, openAt } from '../engine/envelope';
 import { splitPieces } from '../engine/pieces';
 import type { Project } from '../engine/recipe';
-import { castOf, createShowSim, mouthOf, snipsOf } from '../engine/show';
+import { castOf, createShowSim, eyesOf, mouthOf, snipsOf, talkOpenFor } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from './audio';
 import { drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
@@ -44,9 +44,25 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
     visuals.set(p.id, {
       pieces: splitPieces(snipsOf(project, p.id)),
       mouth: mouthOf(project, p.id),
+      eyes: eyesOf(project, p.id),
     });
   }
   return visuals;
+}
+
+/** Per-puppet mouth openness at t: envelope gated by the talk-span rule. */
+export function mouthOpenMap(
+  project: Project,
+  visuals: Map<string, PuppetVisual>,
+  envelope: Float32Array,
+  t: number,
+): Map<string, number> {
+  const open = new Map<string, number>();
+  const envOpen = openAt(envelope, t);
+  for (const [id, v] of visuals) {
+    if (v.mouth) open.set(id, talkOpenFor(project, id, envOpen, t));
+  }
+  return open;
 }
 
 export async function renderShow(options: RenderShowOptions): Promise<File> {
@@ -100,7 +116,18 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     for (let i = 0; i < frameCount; i++) {
       const t = (i + 0.5) / fps;
       const poses = sim.advanceTo(t);
-      drawStage(ctx, outW, outH, cast, poses, images, visuals, openAt(envelope, t), t, project.seed);
+      drawStage(
+        ctx,
+        outW,
+        outH,
+        cast,
+        poses,
+        images,
+        visuals,
+        mouthOpenMap(project, visuals, envelope, t),
+        t,
+        project.seed,
+      );
       await videoSource.add(i / fps, 1 / fps);
       if (i % 10 === 0) progress({ phase: 'video', fraction: i / frameCount });
     }

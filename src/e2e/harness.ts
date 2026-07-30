@@ -80,12 +80,21 @@ function scriptedShow(): Project {
       },
       { kind: 'SNIP', id: 's1', at: 0, puppetId: 'hero', x0: 0, y0: 0.3, x1: 1, y1: 0.28 },
       { kind: 'MOUTH', id: 'm1', at: 0, puppetId: 'hero', mx: 0.5, my: 0.15, size: 0.3 },
+      { kind: 'EYES', id: 'ey1', at: 0, puppetId: 'hero', ex: 0.5, ey: 0.08, size: 0.3 },
       {
         kind: 'PASS',
         id: 'p1',
         at: 0.2,
         puppetId: 'hero',
         samples: [0.2, 0.3, 0.4, 1.0, 0.8, 0.5, 1.8, 0.3, 0.8],
+      },
+      {
+        kind: 'PASS',
+        id: 'p2',
+        at: 0.4,
+        puppetId: 'hero',
+        piece: 0,
+        samples: [0.4, 0.5, 0.1, 1.2, 0.7, 0.2],
       },
       { kind: 'DROP', id: 'd1', at: 0, puppetId: 'dood' },
       {

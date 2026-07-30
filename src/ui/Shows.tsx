@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
-import { parseProject } from '../engine/recipe';
-import { deleteProject, ensurePersistence, listProjectIds, loadProjectJson } from '../media/opfs';
+import { parseProject, serializeProject } from '../engine/recipe';
+import { deleteAsset } from '../media/assets';
+import {
+  deleteProject,
+  ensurePersistence,
+  listProjectIds,
+  loadProjectJson,
+  saveProjectJson,
+} from '../media/opfs';
 
 const SHOW_PREFIX = 'show-';
 
@@ -47,9 +54,39 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
 
   const newShow = () => onOpen(`${SHOW_PREFIX}${Date.now()}`);
 
+  /** Deleting a show also collects its audio and cutout assets, so OPFS
+   *  doesn't fill with orphans. */
   const remove = async (id: string) => {
+    const json = await loadProjectJson(id);
+    if (json) {
+      try {
+        const p = parseProject(json);
+        const assetIds = new Set<string>();
+        if (p.audio) assetIds.add(p.audio.assetId);
+        for (const e of p.events) {
+          if (e.kind === 'CAST' && e.puppet.type === 'cutout') assetIds.add(e.puppet.assetId);
+        }
+        for (const assetId of assetIds) await deleteAsset(assetId);
+      } catch {
+        // Unparseable: delete the project file alone.
+      }
+    }
     await deleteProject(id);
     setRows(await loadRows());
+  };
+
+  const rename = async (id: string, current: string) => {
+    const title = window.prompt('name this bit', current)?.trim();
+    if (!title) return;
+    const json = await loadProjectJson(id);
+    if (!json) return;
+    try {
+      const p = parseProject(json);
+      await saveProjectJson(id, serializeProject({ ...p, title }));
+      setRows(await loadRows());
+    } catch {
+      // Unparseable: leave it be.
+    }
   };
 
   return (
@@ -73,6 +110,16 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
               <span className="size">
                 {r.passes} pass{r.passes === 1 ? '' : 'es'}
               </span>
+              <button
+                className="delete"
+                aria-label={`rename ${r.title}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void rename(r.id, r.title);
+                }}
+              >
+                ✎
+              </button>
               <button
                 className="delete"
                 aria-label={`delete ${r.title}`}

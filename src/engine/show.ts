@@ -1,7 +1,8 @@
 // Show evaluation: CAST and PASS events become puppet motion over the audio
 // spine. Passes are looper tracks: the newest pass covering a moment supplies
-// the finger target; the spring supplies the life. Snipped pieces dangle on
-// damped angular springs driven by the root's acceleration.
+// the target; the spring supplies the life. Root passes drag the body;
+// piece passes swing a snipped-off piece toward the performed point. A
+// mouthed puppet talks while one of its passes covers the moment.
 
 import {
   PUPPET_DT,
@@ -10,7 +11,8 @@ import {
   type PuppetState,
   type PuppetTarget,
 } from './puppet';
-import type { MouthEvent, PassEvent, Project, PuppetSpec, SnipEvent } from './recipe';
+import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
+import type { EyesEvent, MouthEvent, PassEvent, Project, PuppetSpec, SnipEvent } from './recipe';
 
 export interface ShowPuppet {
   id: string;
@@ -33,6 +35,9 @@ const DANGLE_K = 42;
 const DANGLE_D = 6.5;
 const DANGLE_COUPLE = 1.1;
 const DANGLE_MAX = 1.1;
+const PIECE_K = 140;
+const PIECE_D = 15;
+const PIECE_MAX = 2.2;
 
 /** Cast in draw order: backdrops first, then puppets, newest CAST in front.
  *  A DROP removes; a later CAST revives (and fronts). */
@@ -70,6 +75,15 @@ export function mouthOf(project: Project, puppetId: string): MouthEvent | null {
   return out;
 }
 
+/** Latest eyes win; null when the puppet has none. */
+export function eyesOf(project: Project, puppetId: string): EyesEvent | null {
+  let out: EyesEvent | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'EYES' && e.puppetId === puppetId) out = e;
+  }
+  return out;
+}
+
 export function passesFor(project: Project, puppetId: string): PassEvent[] {
   return project.events.filter(
     (e): e is PassEvent => e.kind === 'PASS' && e.puppetId === puppetId,
@@ -100,9 +114,7 @@ export function passTarget(pass: PassEvent, t: number): PuppetTarget | null {
   return { x: s[s.length - 2]!, y: s[s.length - 1]! };
 }
 
-/** The newest pass covering t owns the puppet; older passes fill the gaps. */
-export function targetForPuppet(project: Project, puppetId: string, t: number): PuppetTarget | null {
-  const passes = passesFor(project, puppetId);
+function newestCovering(passes: PassEvent[], t: number): PuppetTarget | null {
   for (let i = passes.length - 1; i >= 0; i--) {
     const target = passTarget(passes[i]!, t);
     if (target) return target;
@@ -110,50 +122,140 @@ export function targetForPuppet(project: Project, puppetId: string, t: number): 
   return null;
 }
 
+/** The newest ROOT pass covering t owns the body; older passes fill gaps. */
+export function targetForPuppet(project: Project, puppetId: string, t: number): PuppetTarget | null {
+  return newestCovering(
+    passesFor(project, puppetId).filter((p) => p.piece === undefined),
+    t,
+  );
+}
+
+/** A mouthed puppet talks while any of its passes covers t. A puppet with no
+ *  passes at all talks freely, so a fresh cast flaps the moment it's mouthed. */
+export function talkOpenFor(project: Project, puppetId: string, envOpen: number, t: number): number {
+  const passes = passesFor(project, puppetId);
+  if (passes.length === 0) return envOpen;
+  return passes.some((p) => passCovers(p, t)) ? envOpen : 0;
+}
+
 export interface ShowSim {
   advanceTo(t: number): Map<string, PuppetPose>;
   states(): Map<string, PuppetPose>;
 }
 
-export type TargetProvider = (puppetId: string, t: number) => PuppetTarget | null;
+/** Live-override targets: `piece` is null for the body, a snip index for a
+ *  dangling piece. */
+export type TargetProvider = (
+  puppetId: string,
+  piece: number | null,
+  t: number,
+) => PuppetTarget | null;
+
+interface PieceGeom {
+  restAngle: number;
+  joint: { x: number; y: number };
+}
 
 /** Incremental simulator on the global fixed-step grid: whole steps only, so
  *  every advance schedule runs the identical sequence and replay stays
- *  bit-exact. Seek by rebuilding. */
+ *  bit-exact. Seek backward by rebuilding and fast-forwarding. */
 export function createShowSim(project: Project, fromT = 0, targets?: TargetProvider): ShowSim {
   const cast = castOf(project);
   const poses = new Map<string, PuppetPose>();
+
+  // Precomputed per puppet: pass tables (root and per-piece) and piece
+  // geometry, so the hot loop never rescans the event log.
+  const rootPasses = new Map<string, PassEvent[]>();
+  const piecePasses = new Map<string, Map<number, PassEvent[]>>();
+  const pieceGeoms = new Map<string, Map<number, PieceGeom>>();
+  const pieceCount = new Map<string, number>();
+
   for (const p of cast) {
+    const snips = snipsOf(project, p.id);
+    pieceCount.set(p.id, snips.length);
     poses.set(p.id, {
       root: restingPuppet(p.home.x, p.home.y),
-      dangles: snipsOf(project, p.id).map(() => ({ angle: 0, angVel: 0 })),
+      dangles: snips.map(() => ({ angle: 0, angVel: 0 })),
     });
+    const all = passesFor(project, p.id);
+    rootPasses.set(
+      p.id,
+      all.filter((e) => e.piece === undefined),
+    );
+    const byPiece = new Map<number, PassEvent[]>();
+    for (const e of all) {
+      if (e.piece === undefined) continue;
+      const list = byPiece.get(e.piece) ?? [];
+      list.push(e);
+      byPiece.set(e.piece, list);
+    }
+    piecePasses.set(p.id, byPiece);
+
+    const pieces: PuppetPieces = splitPieces(snips);
+    const geoms = new Map<number, PieceGeom>();
+    for (const child of pieces.children) {
+      const centroid = polyCentroid(child.poly);
+      const joint = child.joint!;
+      const vx = (centroid.x - joint.x) * p.spec.w * p.home.scale;
+      const vy = (centroid.y - joint.y) * p.spec.h * p.home.scale;
+      geoms.set(child.snipIndex, { restAngle: Math.atan2(vy, vx), joint });
+    }
+    pieceGeoms.set(p.id, geoms);
   }
+
   let stepIndex = Math.floor(fromT / PUPPET_DT);
+
+  const rootTarget = (p: ShowPuppet, t: number): PuppetTarget | null => {
+    if (targets) {
+      const live = targets(p.id, null, t);
+      if (live) return live;
+    }
+    return newestCovering(rootPasses.get(p.id) ?? [], t);
+  };
+
+  const pieceTarget = (p: ShowPuppet, piece: number, t: number): PuppetTarget | null => {
+    if (targets) {
+      const live = targets(p.id, piece, t);
+      if (live) return live;
+    }
+    return newestCovering(piecePasses.get(p.id)?.get(piece) ?? [], t);
+  };
 
   return {
     advanceTo(t: number) {
       const targetStep = Math.floor(t / PUPPET_DT);
       if (targetStep > stepIndex) {
-        const provider: TargetProvider = targets ?? ((id, tt) => targetForPuppet(project, id, tt));
         for (const p of cast) {
           if (p.back) continue;
           const pose = poses.get(p.id)!;
           let root = pose.root;
           const dangles = pose.dangles.map((d) => ({ ...d }));
+          const geoms = pieceGeoms.get(p.id)!;
           for (let k = stepIndex; k < targetStep; k++) {
-            const next = stepPuppet(root, provider(p.id, k * PUPPET_DT));
+            const tt = k * PUPPET_DT;
+            const next = stepPuppet(root, rootTarget(p, tt));
             const ax = (next.vx - root.vx) / PUPPET_DT;
-            for (const d of dangles) {
-              const acc = -DANGLE_K * d.angle - DANGLE_D * d.angVel - DANGLE_COUPLE * ax;
-              d.angVel += acc * PUPPET_DT;
-              d.angle += d.angVel * PUPPET_DT;
-              if (d.angle > DANGLE_MAX) {
-                d.angle = DANGLE_MAX;
-                d.angVel = Math.min(0, d.angVel);
-              } else if (d.angle < -DANGLE_MAX) {
-                d.angle = -DANGLE_MAX;
-                d.angVel = Math.max(0, d.angVel);
+            for (let di = 0; di < dangles.length; di++) {
+              const d = dangles[di]!;
+              const geom = geoms.get(di);
+              const performed = geom ? pieceTarget(p, di, tt) : null;
+              if (performed && geom) {
+                // Chase the performed point: desired angle from the joint's
+                // world position, minus the piece's rest direction.
+                const jw = jointWorld(next, p, geom.joint);
+                const desired = normalizeAngle(
+                  Math.atan2(performed.y - jw.y, performed.x - jw.x) -
+                    (geom.restAngle + next.angle + p.home.rot),
+                );
+                const acc = PIECE_K * (desired - d.angle) - PIECE_D * d.angVel;
+                d.angVel += acc * PUPPET_DT;
+                d.angle += d.angVel * PUPPET_DT;
+                d.angle = clampSwing(d, PIECE_MAX);
+              } else {
+                const acc = -DANGLE_K * d.angle - DANGLE_D * d.angVel - DANGLE_COUPLE * ax;
+                d.angVel += acc * PUPPET_DT;
+                d.angle += d.angVel * PUPPET_DT;
+                d.angle = clampSwing(d, DANGLE_MAX);
               }
             }
             root = next;
@@ -168,4 +270,35 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
       return poses;
     },
   };
+}
+
+function jointWorld(
+  root: PuppetState,
+  p: ShowPuppet,
+  joint: { x: number; y: number },
+): { x: number; y: number } {
+  const lx = (joint.x - 0.5) * p.spec.w * p.home.scale;
+  const ly = (joint.y - 0.5) * p.spec.h * p.home.scale;
+  const a = root.angle + p.home.rot;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return { x: root.x + lx * c - ly * s, y: root.y + lx * s + ly * c };
+}
+
+function normalizeAngle(a: number): number {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+function clampSwing(d: DangleState, max: number): number {
+  if (d.angle > max) {
+    d.angVel = Math.min(0, d.angVel);
+    return max;
+  }
+  if (d.angle < -max) {
+    d.angVel = Math.max(0, d.angVel);
+    return -max;
+  }
+  return d.angle;
 }

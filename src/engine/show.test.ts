@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { boilNoise, restingPuppet, simulatePuppetSteps, stepPuppet } from './puppet';
-import { castOf, createShowSim, mouthOf, passTarget, targetForPuppet } from './show';
+import {
+  castOf,
+  createShowSim,
+  eyesOf,
+  mouthOf,
+  passTarget,
+  talkOpenFor,
+  targetForPuppet,
+} from './show';
 import { splitPieces, polyArea } from './pieces';
 import { computeEnvelope, openAt } from './envelope';
 import { appendEvent, createProject, type Project, type RecipeEvent } from './recipe';
@@ -92,13 +100,36 @@ describe('cast order and lifecycle', () => {
     expect(castOf(proj).map((p) => p.id)).toEqual(['bg', 'front']);
   });
 
-  it('latest mouth wins', () => {
+  it('latest mouth and eyes win', () => {
     const proj = show([
       cast('a'),
       { kind: 'MOUTH', id: 'm1', at: 0, puppetId: 'a', mx: 0.5, my: 0.2, size: 0.2 },
       { kind: 'MOUTH', id: 'm2', at: 0, puppetId: 'a', mx: 0.4, my: 0.3, size: 0.25 },
+      { kind: 'EYES', id: 'e1', at: 0, puppetId: 'a', ex: 0.5, ey: 0.1, size: 0.3 },
     ]);
     expect(mouthOf(proj, 'a')?.id).toBe('m2');
+    expect(eyesOf(proj, 'a')?.id).toBe('e1');
+  });
+});
+
+describe('talk spans', () => {
+  it('a puppet with no passes talks freely; with passes, only during them', () => {
+    const bare = show([cast('a')]);
+    expect(talkOpenFor(bare, 'a', 0.8, 3)).toBe(0.8);
+
+    const performed = show([cast('a'), pass('p', 'a', [1, 0.5, 0.5, 2, 0.6, 0.5])]);
+    expect(talkOpenFor(performed, 'a', 0.8, 1.5)).toBe(0.8);
+    expect(talkOpenFor(performed, 'a', 0.8, 3)).toBe(0);
+  });
+
+  it('piece passes count as talking too', () => {
+    const proj = show([
+      cast('a'),
+      { kind: 'SNIP', id: 's', at: 0, puppetId: 'a', x0: 0, y0: 0.3, x1: 1, y1: 0.3 },
+      { kind: 'PASS', id: 'pp', at: 1, puppetId: 'a', piece: 0, samples: [1, 0.5, 0.1, 2, 0.6, 0.1] },
+    ]);
+    expect(talkOpenFor(proj, 'a', 1, 1.5)).toBe(1);
+    expect(talkOpenFor(proj, 'a', 1, 2.5)).toBe(0);
   });
 });
 
@@ -157,6 +188,30 @@ describe('show simulation with dangles', () => {
     const b = createShowSim(snipped());
     b.advanceTo(2.3);
     expect(a.states().get('a')).toEqual(b.states().get('a'));
+  });
+
+  it('a piece pass swings the dangle toward the performed point', () => {
+    // Puppet at rest; top strip snipped; the piece pass pulls the strip
+    // sideways, so the dangle angle must leave rest and hold well past
+    // what passive coupling ever reaches, then settle back after.
+    const proj = show([
+      cast('a', 0.5, 0.5),
+      { kind: 'SNIP', id: 's', at: 0, puppetId: 'a', x0: 0, y0: 0.3, x1: 1, y1: 0.3 },
+      {
+        kind: 'PASS',
+        id: 'pp',
+        at: 0.2,
+        puppetId: 'a',
+        piece: 0,
+        samples: [0.2, 0.62, 0.5, 1.5, 0.62, 0.5],
+      },
+    ]);
+    const sim = createShowSim(proj);
+    sim.advanceTo(1.2);
+    const held = sim.states().get('a')!.dangles[0]!.angle;
+    expect(Math.abs(held)).toBeGreaterThan(0.5);
+    sim.advanceTo(6);
+    expect(Math.abs(sim.states().get('a')!.dangles[0]!.angle)).toBeLessThan(0.05);
   });
 });
 

@@ -87,8 +87,17 @@ export class JamAudio {
   private gain: GainNode | null = null;
   private token = 0;
   private scheduled = new Set<AudioBufferSourceNode>();
+  private clock: { from: number; anchor: number } | null = null;
 
   constructor(private readonly sink: AudioBufferSink) {}
+
+  /** Current playback position on the AudioContext clock; null when stopped.
+   *  The preview loop uses this so mouths flap on the audio's time, not the
+   *  compositor's. */
+  positionS(): number | null {
+    if (!this.clock || !this.ctx) return null;
+    return this.clock.from + (this.ctx.currentTime - this.clock.anchor);
+  }
 
   async play(fromSrcT: number): Promise<void> {
     this.stop();
@@ -102,6 +111,7 @@ export class JamAudio {
     const ctx = this.ctx;
     const gain = this.gain!;
     const anchor = ctx.currentTime + 0.05;
+    if (token === this.token) this.clock = { from: fromSrcT, anchor };
 
     for await (const { buffer, timestamp } of this.sink.buffers(fromSrcT)) {
       if (token !== this.token) return;
@@ -129,6 +139,7 @@ export class JamAudio {
 
   stop(): void {
     this.token += 1;
+    this.clock = null;
     for (const node of this.scheduled) {
       try {
         node.stop();
