@@ -1,14 +1,12 @@
 # BITS
 
-A video instrument for phones. CapCut is a document editor: footage is text and you sit and revise it. BITS is the other thing: footage plays, your fingers are mapped to moves (tap cuts, hold slows, pinch punches in), and the performance is the edit. Every gesture lands in an append-only recipe; same recipe over same sources renders the same frames, so any export can reopen as the moves that made it.
+A puppet-show instrument for phones. You don't animate a scene with timelines and keyframes; you put on the show. Record the bit first (the voices, the argument, the dumb song), cast puppets from photos of yourselves or finger doodles, then perform in passes like a musician overdubs tracks: hit record, drag one puppet while the audio and every earlier pass play back, stop, layer the next one. Spring physics is the inbetweener: you supply intent, the simulation supplies lag, lean, squash, and settle. Doodles boil (three seeded jitter variants) so a single drawing never sits still.
 
-Built for two people making skits together. Everything runs on-device in the browser: WebCodecs for decode/encode, Mediabunny for containers, OPFS for storage. No uploads, no accounts, no generated pixels.
+Everything lands in an append-only recipe; the same recipe simulates to the same frames, so preview and render agree exactly. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage. No uploads, no accounts, no generated pixels.
 
 ## Status
 
-Phase 1: the deck is playable. Open a clip, hit roll, and perform: tap cuts (quantized to an onset grid computed from the clip's own audio), hold the left half to skip footage, hold the right half for slow motion, pinch to punch in, double-tap to reset the punch. Rolling from an earlier point truncates what came after, so undo is rewind. Render runs the same compiled program as the preview and hands the mp4 to the share sheet.
-
-The full ten-phase plan (ghosts, stop-motion, time-as-paint, rule chips, two-phone co-op) continues from here; each phase ends with a skit we actually film.
+The show slice is live: record the bit, cast from camera roll or doodle, record passes, undo a pass, render to a portrait mp4 with the audio passed through, share. The earlier clip deck (perform cuts over footage) survives under "clips"; its engine (onset grid, program compiler, render pipeline) is what the show is built on. Next organs, in rough order: pinned spring limbs, loudness-driven mouth flaps, loop scenes that chain, and cutouts of arbitrary objects.
 
 ## Dev
 
@@ -23,12 +21,13 @@ Deploys to ampactor.dev/bits from main via GitHub Pages (.github/workflows/deplo
 
 ## Layout
 
-    src/engine/    recipe model, program compiler, onset detection
+    src/engine/    recipe model, program compiler, onsets, puppet springs, show sim
     src/jam/       pointer-gesture state machine (pure, unit-tested)
-    src/media/     OPFS store, Mediabunny probe/decode, audio, offline render
-    src/ui/        React chrome: library, deck
+    src/media/     OPFS + assets, Mediabunny probe/decode, mic, cutouts, renderers
+    src/ui/        React chrome: shows, stage, clips library, deck
     src/pwa/       service worker registration
     src/e2e/       in-browser proof harness (?e2e)
     public/sw.js   precache + share-target service worker
+    tools/         asset staging, e2e driver, device checklist
 
 One UI rule worth knowing: semantic color pairs are blue vs orange, never red vs green.

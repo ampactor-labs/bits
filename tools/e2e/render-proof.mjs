@@ -83,6 +83,24 @@ try {
     `found ${result.onsetsInFixture.length} at ${result.onsetsInFixture.map((t) => t.toFixed(2)).join(', ')}`,
   );
   check('rendered file has bytes', result.renderedBytes > 10000, `${result.renderedBytes} bytes`);
+
+  const showResult = await page.evaluate(() => window.__bitsE2E.runShow());
+  check(
+    'show renders to the length of its audio spine',
+    Math.abs(showResult.renderedDurationS - showResult.audioDurationS) < 0.2,
+    `audio ${showResult.audioDurationS.toFixed(3)}s, rendered ${showResult.renderedDurationS.toFixed(3)}s`,
+  );
+  check(
+    'show renders portrait at the requested size',
+    showResult.renderedWidth === 360 && showResult.renderedHeight === 640,
+    `${showResult.renderedWidth}x${showResult.renderedHeight}`,
+  );
+  check(
+    'show render has real bytes',
+    showResult.renderedBytes > 20000,
+    `${showResult.renderedBytes} bytes`,
+  );
+
   check('no page errors', pageErrors.length === 0, pageErrors.join('; '));
 } catch (err) {
   check('e2e run completed', false, String(err));

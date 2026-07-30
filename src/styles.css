@@ -246,6 +246,94 @@ button.toggled {
   white-space: nowrap;
 }
 
+.showstage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 10px;
+}
+
+.stagebox {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: 9 / 16;
+  align-self: center;
+  max-width: 100%;
+  background: #101010;
+  border-radius: 14px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  border: 2px solid transparent;
+  transition: border-color 120ms;
+}
+
+.stagebox.mode-recording {
+  border-color: var(--accent);
+}
+
+.stagebox.mode-doodling {
+  border-color: var(--accent-2);
+}
+
+.stagebox canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.stage-cta {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--muted);
+}
+
+.stage-cta .live {
+  color: var(--accent);
+}
+
+.recdot {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  color: var(--accent);
+  animation: pulse 1s infinite;
+  pointer-events: none;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.showbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.showbar .progress {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.showbar .fill {
+  height: 100%;
+  background: var(--accent);
+}
+
 .transport {
   display: flex;
   align-items: center;

@@ -29,6 +29,14 @@ interface E2EResult {
   renderedBytes: number;
 }
 
+interface ShowE2EResult {
+  audioDurationS: number;
+  renderedDurationS: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  renderedBytes: number;
+}
+
 const BEEPS = [0.25, 0.75, 1.25, 1.75];
 
 async function makeFixtureClip(durS = 2, fps = 30): Promise<File> {
@@ -118,10 +126,93 @@ async function run(): Promise<E2EResult> {
   return result;
 }
 
+async function makeFixtureAudio(durS = 2): Promise<File> {
+  const target = new BufferTarget();
+  const output = new Output({ format: new Mp4OutputFormat(), target });
+  const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) ?? 'opus';
+  const src = new AudioBufferSource({ codec, bitrate: QUALITY_MEDIUM });
+  output.addAudioTrack(src);
+  await output.start();
+  const sampleRate = 48000;
+  const buf = new AudioBuffer({ length: durS * sampleRate, sampleRate, numberOfChannels: 1 });
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = 0.2 * Math.sin((2 * Math.PI * 220 * i) / sampleRate);
+  }
+  await src.add(buf);
+  src.close();
+  await output.finalize();
+  return new File([target.buffer!], 'bit-audio.mp4', { type: 'video/mp4' });
+}
+
+/** The puppet-show pipeline, end to end: audio spine, cast, a recorded pass,
+ *  spring simulation, render, re-probe. */
+async function runShow(): Promise<ShowE2EResult> {
+  const audio = await makeFixtureAudio();
+  const probeAudio = await (await import('../media/audio')).AudioSourceHandle.open(audio);
+  const audioDurationS = probeAudio ? await probeAudio.duration() : 0;
+  probeAudio?.dispose();
+
+  const base = createProject('e2e show');
+  const project: Project = {
+    ...base,
+    events: [
+      {
+        kind: 'CAST',
+        id: 'c1',
+        at: 0,
+        puppetId: 'hero',
+        puppet: { type: 'rect', color: '#f0883e', w: 0.2, h: 0.12 },
+        x: 0.2,
+        y: 0.2,
+        scale: 1,
+      },
+      {
+        kind: 'CAST',
+        id: 'c2',
+        at: 0,
+        puppetId: 'dood',
+        puppet: { type: 'doodle', strokes: [[0, 0, 1, 0.5, 0, 1]], w: 0.2, h: 0.2 },
+        x: 0.7,
+        y: 0.7,
+        scale: 1,
+      },
+      {
+        kind: 'PASS',
+        id: 'p1',
+        at: 0.2,
+        puppetId: 'hero',
+        samples: [0.2, 0.2, 0.2, 1.0, 0.8, 0.5, 1.8, 0.3, 0.8],
+      },
+    ],
+  };
+
+  const rendered = await (await import('../media/render')).renderShow({
+    audioBlob: audio,
+    project,
+    getAssetBlob: async () => {
+      throw new Error('no assets in this fixture');
+    },
+    width: 360,
+    height: 640,
+  });
+
+  const probe = await VideoSourceHandle.open(rendered);
+  const result: ShowE2EResult = {
+    audioDurationS,
+    renderedDurationS: probe.durationS,
+    renderedWidth: probe.width,
+    renderedHeight: probe.height,
+    renderedBytes: rendered.size,
+  };
+  probe.dispose();
+  return result;
+}
+
 declare global {
   interface Window {
-    __bitsE2E: { run: () => Promise<E2EResult> };
+    __bitsE2E: { run: () => Promise<E2EResult>; runShow: () => Promise<ShowE2EResult> };
   }
 }
 
-window.__bitsE2E = { run };
+window.__bitsE2E = { run, runShow };

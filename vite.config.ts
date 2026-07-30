@@ -21,7 +21,10 @@ function precacheManifest(): Plugin {
         }
       };
       walk(dist);
-      const list = files.filter((f) => f !== 'sw.js' && f !== 'precache.json');
+      // mediapipe wasm is ~11MB: runtime-cached on first cutout, not precached.
+      const list = files.filter(
+        (f) => f !== 'sw.js' && f !== 'precache.json' && !f.startsWith('mediapipe/'),
+      );
       writeFileSync(join(dist, 'precache.json'), JSON.stringify({ files: list }));
     },
   };

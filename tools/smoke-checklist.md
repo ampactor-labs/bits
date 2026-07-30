@@ -25,4 +25,18 @@ Phase 1 checks (the deck):
     sound present at normal speed).
 17. The status line's out-duration matches the exported clip's length.
 
+Show checks (the stage):
+
+18. New bit: mic permission prompts once; recording captures; done lands on the stage.
+19. Photo puppet: a person photo cuts out clean (background gone); a random object
+    falls back to the whole frame instead of failing.
+20. Doodle: finger drawing keeps; the lines visibly boil while playing.
+21. Drag a puppet while idle: it moves and stays; reopen the bit and it's still there.
+22. Record a pass: audio plays, dragging feels springy (lag, lean, squash on yanks).
+23. Overdub: second pass records while the first plays back; both survive replay.
+24. Undo removes the last pass only.
+25. Render completes with progress; the export has the voices in sync and the
+    motion matches what was performed, boil and all.
+26. Share hands the mp4 to a messaging app.
+
 Record failures with phone model + Chrome version in an issue.
