@@ -49,7 +49,32 @@ export interface ZoomEvent extends EventBase {
   scale: number;
 }
 
-export type RecipeEvent = CutEvent | SpeedEvent | SkipEvent | ZoomEvent;
+/** What a puppet is made of. rect exists for tests and fixtures. */
+export type PuppetSpec =
+  | { type: 'cutout'; assetId: string; w: number; h: number }
+  | { type: 'doodle'; strokes: number[][]; w: number; h: number }
+  | { type: 'rect'; color: string; w: number; h: number };
+
+/** A puppet joins the cast with a home pose (normalized stage coords). */
+export interface CastEvent extends EventBase {
+  kind: 'CAST';
+  puppetId: string;
+  puppet: PuppetSpec;
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** One recorded performance pass: flat [t, x, y, ...] samples in show seconds
+ *  and normalized stage coords, sorted by t. The pass covers [first t, last t];
+ *  the newest pass covering a moment owns the puppet at that moment. */
+export interface PassEvent extends EventBase {
+  kind: 'PASS';
+  puppetId: string;
+  samples: number[];
+}
+
+export type RecipeEvent = CutEvent | SpeedEvent | SkipEvent | ZoomEvent | CastEvent | PassEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -60,6 +85,8 @@ export interface Project {
   seed: number;
   sources: SourceRef[];
   events: RecipeEvent[];
+  /** The show's audio spine: the bit, recorded first. */
+  audio?: { assetId: string; durationS: number };
 }
 
 export function createProject(title: string, now = new Date()): Project {
@@ -129,6 +156,28 @@ export function parseProject(text: string): Project {
       !(typeof ev.cx === 'number' && typeof ev.cy === 'number' && typeof ev.scale === 'number')
     ) {
       throw new Error('recipe: ZOOM event needs cx, cy, scale');
+    }
+    if (
+      ev.kind === 'CAST' &&
+      !(
+        typeof ev.puppetId === 'string' &&
+        typeof ev.puppet === 'object' &&
+        ev.puppet !== null &&
+        typeof ev.x === 'number' &&
+        typeof ev.y === 'number' &&
+        typeof ev.scale === 'number'
+      )
+    ) {
+      throw new Error('recipe: CAST event needs puppetId, puppet, x, y, scale');
+    }
+    if (ev.kind === 'PASS') {
+      const ok =
+        typeof ev.puppetId === 'string' &&
+        Array.isArray(ev.samples) &&
+        ev.samples.length >= 3 &&
+        ev.samples.length % 3 === 0 &&
+        ev.samples.every((n: unknown) => typeof n === 'number');
+      if (!ok) throw new Error('recipe: PASS event needs puppetId and t,x,y sample triples');
     }
   }
   return raw as Project;
