@@ -21,9 +21,11 @@ import {
   type VoiceMoment,
   type VoiceTrack,
 } from '../engine/envelope';
+import { detectOnsets } from '../engine/onsets';
 import { splitPieces } from '../engine/pieces';
 import type { Project } from '../engine/recipe';
 import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
+import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
 import { AudioSourceHandle, mixdownMono } from './audio';
 import { drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
@@ -104,6 +106,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 
   const mix = options.audioBlob ? await mixdownMono(options.audioBlob) : null;
   const voice = mix ? computeVoiceTrack(mix.samples, mix.sampleRate) : EMPTY_VOICE;
+  const onsets = mix ? detectOnsets(mix.samples, mix.sampleRate) : [];
+  const wires = effectiveWires(project);
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -126,6 +130,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     for (let i = 0; i < frameCount; i++) {
       const t = (i + 0.5) / fps;
       const poses = sim.advanceTo(t);
+      const mods = new Map<string, WireMods>();
+      for (const p of cast) {
+        mods.set(p.id, wireModsFor(wires, p.id, voice, onsets, t, project.seed));
+      }
       drawStage(
         ctx,
         outW,
@@ -137,6 +145,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
         voiceMap(project, visuals, voice, t),
         t,
         project.seed,
+        mods,
+        trailStrength(wires, voice, onsets, t),
       );
       await videoSource.add(i / fps, 1 / fps);
       if (i % 10 === 0) progress({ phase: 'video', fraction: i / frameCount });

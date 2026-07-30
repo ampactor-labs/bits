@@ -87,6 +87,21 @@ export interface EyesEvent extends EventBase {
   size: number;
 }
 
+export type WireSource = 'on' | 'voice' | 'beat';
+export type WireTarget = 'bounce' | 'shake' | 'lean' | 'trails';
+
+/** A modulation wire: a signal patched into a property. puppetId '' targets
+ *  the stage itself (trails). Latest wire per (puppet, source, target) wins;
+ *  amount 0 unplugs. Sources are deterministic (the recorded voice track and
+ *  its beat grid), so wired shows replay and render bit-true. */
+export interface WireEvent extends EventBase {
+  kind: 'WIRE';
+  puppetId: string;
+  source: WireSource;
+  target: WireTarget;
+  amount: number;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
@@ -100,6 +115,7 @@ export type RecipeEvent =
   | MouthEvent
   | EyesEvent
   | PinEvent
+  | WireEvent
   | DropEvent;
 
 export interface Project {
@@ -214,6 +230,18 @@ export function parseProject(text: string): Project {
           throw new Error('recipe: PIN event needs px, py');
         }
         break;
+      case 'WIRE': {
+        const srcOk = ev.source === 'on' || ev.source === 'voice' || ev.source === 'beat';
+        const tgtOk =
+          ev.target === 'bounce' ||
+          ev.target === 'shake' ||
+          ev.target === 'lean' ||
+          ev.target === 'trails';
+        if (!(srcOk && tgtOk && isNum(ev.amount) && ev.amount >= 0 && ev.amount <= 1)) {
+          throw new Error('recipe: WIRE event needs a source, target, and amount in 0..1');
+        }
+        break;
+      }
       case 'DROP':
         break;
       default:

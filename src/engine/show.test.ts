@@ -19,6 +19,7 @@ import {
   SHAPE_WIDE,
 } from './envelope';
 import { deformGrid, makeWarpGrid, mlsSimilarity } from './warp';
+import { beatPulse, effectiveWires, trailStrength, wireModsFor } from './wires';
 import { appendEvent, createProject, type Project, type RecipeEvent } from './recipe';
 
 const STEPS_PER_S = 120;
@@ -343,6 +344,68 @@ describe('pins in the sim', () => {
     ]);
     const sim = createShowSim(proj);
     expect(sim.states().get('a')!.pins).toHaveLength(0);
+  });
+});
+
+describe('wires', () => {
+  const wire = (puppetId: string, source: 'on' | 'voice' | 'beat', target: 'bounce' | 'shake' | 'lean' | 'trails', amount: number): RecipeEvent => ({
+    kind: 'WIRE',
+    id: `w${Math.random().toString(36).slice(2, 8)}`,
+    at: 0,
+    puppetId,
+    source,
+    target,
+    amount,
+  });
+
+  it('latest wire wins and amount 0 unplugs', () => {
+    const proj = show([
+      cast('a'),
+      wire('a', 'voice', 'bounce', 0.5),
+      wire('a', 'voice', 'bounce', 1),
+      wire('a', 'voice', 'shake', 0.5),
+      wire('a', 'voice', 'shake', 0),
+    ]);
+    const wires = effectiveWires(proj);
+    expect(wires.size).toBe(1);
+  });
+
+  it('beat pulses decay after each onset and are silent before the first', () => {
+    const onsets = [1, 2];
+    expect(beatPulse(onsets, 0.5)).toBe(0);
+    expect(beatPulse(onsets, 1)).toBeCloseTo(1, 9);
+    expect(beatPulse(onsets, 1.3)).toBeLessThan(0.2);
+    expect(beatPulse(onsets, 2)).toBeCloseTo(1, 9);
+  });
+
+  it('mods are bounded, deterministic, and identity when unwired', () => {
+    const voice = computeVoiceTrack(
+      (() => {
+        const s = new Float32Array(48000);
+        for (let i = 0; i < s.length; i++) s[i] = 0.8 * Math.sin((2 * Math.PI * 300 * i) / 48000);
+        return s;
+      })(),
+      48000,
+    );
+    const proj = show([
+      cast('a'),
+      wire('a', 'voice', 'bounce', 1),
+      wire('a', 'voice', 'shake', 1),
+      wire('', 'on', 'trails', 0.5),
+    ]);
+    const wires = effectiveWires(proj);
+    const m1 = wireModsFor(wires, 'a', voice, [], 0.5, 7);
+    expect(m1).toEqual(wireModsFor(wires, 'a', voice, [], 0.5, 7));
+    expect(m1.scaleMul).toBeGreaterThan(1);
+    expect(m1.scaleMul).toBeLessThan(1.4);
+    expect(Math.abs(m1.dx)).toBeLessThan(0.031);
+    expect(wireModsFor(wires, 'unwired', voice, [], 0.5, 7)).toEqual({
+      scaleMul: 1,
+      dx: 0,
+      dy: 0,
+      dAngle: 0,
+    });
+    expect(trailStrength(wires, voice, [], 0.5)).toBe(0.5);
   });
 });
 

@@ -34,6 +34,15 @@ import { makeCutout } from '../media/cutout';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
 import { PoseDriver } from '../media/pose';
+import {
+  effectiveWires,
+  trailStrength,
+  wireAmount,
+  wireModsFor,
+  type WireMap,
+  type WireMods,
+} from '../engine/wires';
+import type { WireSource, WireTarget } from '../engine/recipe';
 import { voiceMap, renderShow, visualsOf, type RenderProgress } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
 import { drawStage, loadStageImages, type PuppetVisual, type StageImages } from '../media/stageDraw';
@@ -101,6 +110,7 @@ export function Stage({ showId }: { showId: string }) {
   const micRef = useRef<MicRecorder | null>(null);
   const imagesRef = useRef<StageImages>(new Map());
   const visualsRef = useRef<Map<string, PuppetVisual>>(new Map());
+  const wiresRef = useRef<WireMap>(new Map());
   const simRef = useRef<ShowSim | null>(null);
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
   const grabRef = useRef<Grab | null>(null);
@@ -144,6 +154,7 @@ export function Stage({ showId }: { showId: string }) {
     (mutate: (p: Project) => Project, clearRedo: boolean) => {
       projectRef.current = mutate(projectRef.current);
       visualsRef.current = visualsOf(projectRef.current);
+      wiresRef.current = effectiveWires(projectRef.current);
       setProjectSnap(projectRef.current);
       setRendered(null);
       if (clearRedo) {
@@ -190,6 +201,7 @@ export function Stage({ showId }: { showId: string }) {
         }
       }
       visualsRef.current = visualsOf(projectRef.current);
+      wiresRef.current = effectiveWires(projectRef.current);
       setProjectSnap(projectRef.current);
       if (projectRef.current.audio) {
         audioBlobRef.current = await getAsset(projectRef.current.audio.assetId);
@@ -371,17 +383,27 @@ export function Stage({ showId }: { showId: string }) {
         if (sim) {
           const poses = sim.advanceTo(clock);
           lastPosesRef.current = poses;
+          const cast = castOf(project);
+          const mods = new Map<string, WireMods>();
+          for (const p of cast) {
+            mods.set(
+              p.id,
+              wireModsFor(wiresRef.current, p.id, voiceRef.current, onsets, clock, project.seed),
+            );
+          }
           drawStage(
             ctx,
             W,
             H,
-            castOf(project),
+            cast,
             poses,
             imagesRef.current,
             visualsRef.current,
             voiceMap(project, visualsRef.current, voiceRef.current, clock),
             clock,
             project.seed,
+            mods,
+            trailStrength(wiresRef.current, voiceRef.current, onsets, clock),
           );
         }
         if (now >= dur) stop();
@@ -412,6 +434,20 @@ export function Stage({ showId }: { showId: string }) {
         const sim = createShowSim({ ...project, events: applyStagingCast(project, staging) });
         const poses = sim.advanceTo(playheadRef.current);
         lastPosesRef.current = poses;
+        const idleMods = new Map<string, WireMods>();
+        for (const p of cast) {
+          idleMods.set(
+            p.id,
+            wireModsFor(
+              wiresRef.current,
+              p.id,
+              voiceRef.current,
+              onsets,
+              playheadRef.current,
+              project.seed,
+            ),
+          );
+        }
         drawStage(
           ctx,
           W,
@@ -423,6 +459,7 @@ export function Stage({ showId }: { showId: string }) {
           voiceMap(project, visualsRef.current, voiceRef.current, playheadRef.current),
           playheadRef.current,
           project.seed,
+          idleMods,
         );
         // Pin rings, visible while staging and pinning.
         for (const p of cast) {
@@ -453,7 +490,7 @@ export function Stage({ showId }: { showId: string }) {
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [stop, currentClock]);
+  }, [stop, currentClock, onsets]);
 
   // Pointer handling.
   useEffect(() => {
@@ -937,6 +974,20 @@ export function Stage({ showId }: { showId: string }) {
 
   const bringForward = (p: ShowPuppet) => recastWith(p, {});
 
+  /** Tap-to-cycle wire matrix: off, gentle, wild, off. */
+  const cycleWire = (pid: string, source: WireSource, target: WireTarget) => {
+    const cur = wireAmount(wiresRef.current, pid, source, target);
+    const next = cur === 0 ? 0.5 : cur === 0.5 ? 1 : 0;
+    commit((p) =>
+      appendEvent(p, { kind: 'WIRE', id: newId(), at: 0, puppetId: pid, source, target, amount: next }),
+    );
+  };
+
+  const wireLevel = (pid: string, source: WireSource, target: WireTarget) => {
+    const a = wireAmount(effectiveWires(projectSnap), pid, source, target);
+    return a === 0 ? '' : a === 0.5 ? ' ·' : ' ··';
+  };
+
   const sendToBack = (p: ShowPuppet) => {
     // Re-cast everyone else in their current order; the target stays put and
     // ends up drawn first among the non-backdrops.
@@ -1229,17 +1280,39 @@ export function Stage({ showId }: { showId: string }) {
           </div>
 
           {selected && (
-            <div className="kitrow">
-              <span className="status">rail order is layer order</span>
+            <>
+              <div className="kitrow">
+                <span className="status">rail order is layer order</span>
+                {!selected.back && (
+                  <>
+                    <button onClick={() => bringForward(selected)}>front</button>
+                    <button onClick={() => sendToBack(selected)}>back</button>
+                  </>
+                )}
+                <button onClick={() => centerOnStage(selected)}>center</button>
+                <button onClick={() => dropPuppet(selected)}>drop</button>
+              </div>
               {!selected.back && (
-                <>
-                  <button onClick={() => bringForward(selected)}>front</button>
-                  <button onClick={() => sendToBack(selected)}>back</button>
-                </>
+                <div className="kitrow">
+                  <span className="status">wires</span>
+                  <button onClick={() => cycleWire(selected.id, 'voice', 'bounce')}>
+                    🗣 bounce{wireLevel(selected.id, 'voice', 'bounce')}
+                  </button>
+                  <button onClick={() => cycleWire(selected.id, 'voice', 'shake')}>
+                    🗣 shake{wireLevel(selected.id, 'voice', 'shake')}
+                  </button>
+                  <button onClick={() => cycleWire(selected.id, 'voice', 'lean')}>
+                    🗣 lean{wireLevel(selected.id, 'voice', 'lean')}
+                  </button>
+                  <button onClick={() => cycleWire(selected.id, 'beat', 'bounce')}>
+                    🥁 bounce{wireLevel(selected.id, 'beat', 'bounce')}
+                  </button>
+                  <button onClick={() => cycleWire(selected.id, 'beat', 'shake')}>
+                    🥁 shake{wireLevel(selected.id, 'beat', 'shake')}
+                  </button>
+                </div>
               )}
-              <button onClick={() => centerOnStage(selected)}>center</button>
-              <button onClick={() => dropPuppet(selected)}>drop</button>
-            </div>
+            </>
           )}
 
           <div className="kitrow">
@@ -1257,6 +1330,9 @@ export function Stage({ showId }: { showId: string }) {
             </button>
             <button disabled={puppets.length === 0} onClick={() => enterMode('bodyAssign')}>
               🧍 body
+            </button>
+            <button onClick={() => cycleWire('', 'on', 'trails')}>
+              trails{wireLevel('', 'on', 'trails')}
             </button>
             <button
               disabled={projectSnap.events.length === 0}

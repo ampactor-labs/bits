@@ -108,6 +108,8 @@ function scriptedShow(): Project {
         scale: 1.4,
         rot: -0.2,
       },
+      { kind: 'WIRE', id: 'w1', at: 0, puppetId: 'hero', source: 'voice', target: 'bounce', amount: 1 },
+      { kind: 'WIRE', id: 'w2', at: 0, puppetId: '', source: 'on', target: 'trails', amount: 0.6 },
       { kind: 'PIN', id: 'pin1', at: 0, puppetId: 'dood', px: 0.5, py: 0.1 },
       {
         kind: 'PASS',

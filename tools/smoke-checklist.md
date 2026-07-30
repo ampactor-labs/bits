@@ -16,6 +16,9 @@ Run on both phones after each push. All of it is one flow: make a real bit.
     chip still shows it and "center" brings it back. Record a pass where it
     enters from the wings.
 7c. Rail order reads back-to-front; "front" and "back" reorder correctly.
+7d. Wires: select a chip, tap 🗣 bounce twice (wild): the puppet pulses with
+    the voices; 🥁 shake kicks on the beats; "trails" in the tools row leaves
+    ghost streaks behind motion. All of it survives into the render.
 8. Long-press a puppet: it drops from the cast; undo brings it back.
 9. Snip: draw a line across a puppet; the far side falls into a dangling piece
    that swings when you shake the puppet.

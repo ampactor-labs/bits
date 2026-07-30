@@ -12,6 +12,7 @@ import {
   type VoiceMoment,
 } from '../engine/envelope';
 import { deformGrid, makeWarpGrid, mlsSimilarity, type Pt } from '../engine/warp';
+import type { WireMods } from '../engine/wires';
 import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
 
 export const STAGE_BG = '#101010';
@@ -45,9 +46,22 @@ export function drawStage(
   voices: Map<string, VoiceMoment>,
   tS: number,
   seed: number,
+  mods: Map<string, WireMods> = new Map(),
+  trailKeep = 0,
 ): void {
-  ctx.fillStyle = STAGE_BG;
-  ctx.fillRect(0, 0, W, H);
+  // Trails: leave a fading ghost of the previous frame instead of a clean
+  // wipe (the TouchDesigner feedback-loop trick, canvas edition). The first
+  // beats always wipe fully so renders start from black.
+  const keep = tS < 0.08 ? 0 : Math.min(0.92, trailKeep);
+  if (keep > 0) {
+    ctx.fillStyle = STAGE_BG;
+    ctx.globalAlpha = 1 - keep;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   for (const puppet of cast) {
     if (puppet.back) {
@@ -61,10 +75,12 @@ export function drawStage(
     const pw = puppet.spec.w * W * puppet.home.scale;
     const ph = puppet.spec.h * H * puppet.home.scale;
 
+    const mod = mods.get(puppet.id);
     ctx.save();
-    ctx.translate(s.x * W, s.y * H);
-    ctx.rotate(s.angle + puppet.home.rot);
-    ctx.scale(1 + s.squash, 1 - s.squash);
+    ctx.translate((s.x + (mod?.dx ?? 0)) * W, (s.y + (mod?.dy ?? 0)) * H);
+    ctx.rotate(s.angle + puppet.home.rot + (mod?.dAngle ?? 0));
+    const wireScale = mod?.scaleMul ?? 1;
+    ctx.scale((1 + s.squash) * wireScale, (1 - s.squash) * wireScale);
 
     // Pinned cutouts bend through the MLS warp; everything else draws as
     // scissored pieces (a single uncut piece is the trivial case).
