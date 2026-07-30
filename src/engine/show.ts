@@ -1,34 +1,73 @@
-// Show evaluation: turns CAST and PASS events into puppet motion over the
-// audio spine. Passes are looper tracks: for each puppet, the newest pass
-// covering a moment supplies the finger target; the spring does the rest.
+// Show evaluation: CAST and PASS events become puppet motion over the audio
+// spine. Passes are looper tracks: the newest pass covering a moment supplies
+// the finger target; the spring supplies the life. Snipped pieces dangle on
+// damped angular springs driven by the root's acceleration.
 
 import {
   PUPPET_DT,
   restingPuppet,
-  simulatePuppetSteps,
+  stepPuppet,
   type PuppetState,
   type PuppetTarget,
 } from './puppet';
-import type { PassEvent, Project, PuppetSpec } from './recipe';
+import type { MouthEvent, PassEvent, Project, PuppetSpec, SnipEvent } from './recipe';
 
 export interface ShowPuppet {
   id: string;
   spec: PuppetSpec;
-  home: { x: number; y: number; scale: number };
+  home: { x: number; y: number; scale: number; rot: number };
+  back: boolean;
 }
 
+export interface DangleState {
+  angle: number;
+  angVel: number;
+}
+
+export interface PuppetPose {
+  root: PuppetState;
+  dangles: DangleState[];
+}
+
+const DANGLE_K = 42;
+const DANGLE_D = 6.5;
+const DANGLE_COUPLE = 1.1;
+const DANGLE_MAX = 1.1;
+
+/** Cast in draw order: backdrops first, then puppets, newest CAST in front.
+ *  A DROP removes; a later CAST revives (and fronts). */
 export function castOf(project: Project): ShowPuppet[] {
-  const out = new Map<string, ShowPuppet>();
+  const map = new Map<string, ShowPuppet>();
   for (const e of project.events) {
     if (e.kind === 'CAST') {
-      out.set(e.puppetId, {
+      map.delete(e.puppetId);
+      map.set(e.puppetId, {
         id: e.puppetId,
         spec: e.puppet,
-        home: { x: e.x, y: e.y, scale: e.scale },
+        home: { x: e.x, y: e.y, scale: e.scale, rot: e.rot },
+        back: e.back === true,
       });
+    } else if (e.kind === 'DROP') {
+      map.delete(e.puppetId);
     }
   }
-  return [...out.values()];
+  const all = [...map.values()];
+  return [...all.filter((p) => p.back), ...all.filter((p) => !p.back)];
+}
+
+export function snipsOf(project: Project, puppetId: string): SnipEvent[] {
+  return project.events.filter(
+    (e): e is SnipEvent => e.kind === 'SNIP' && e.puppetId === puppetId,
+  );
+}
+
+/** Latest mouth wins; null when the puppet has none. */
+export function mouthOf(project: Project, puppetId: string): MouthEvent | null {
+  let out: MouthEvent | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'MOUTH' && e.puppetId === puppetId) out = e;
+  }
+  return out;
 }
 
 export function passesFor(project: Project, puppetId: string): PassEvent[] {
@@ -71,19 +110,25 @@ export function targetForPuppet(project: Project, puppetId: string, t: number): 
   return null;
 }
 
-/** Incremental simulator: advance monotonically, seek by rebuilding. */
 export interface ShowSim {
-  advanceTo(t: number): Map<string, PuppetState>;
-  states(): Map<string, PuppetState>;
+  advanceTo(t: number): Map<string, PuppetPose>;
+  states(): Map<string, PuppetPose>;
 }
 
 export type TargetProvider = (puppetId: string, t: number) => PuppetTarget | null;
 
+/** Incremental simulator on the global fixed-step grid: whole steps only, so
+ *  every advance schedule runs the identical sequence and replay stays
+ *  bit-exact. Seek by rebuilding. */
 export function createShowSim(project: Project, fromT = 0, targets?: TargetProvider): ShowSim {
   const cast = castOf(project);
-  const states = new Map<string, PuppetState>();
-  for (const p of cast) states.set(p.id, restingPuppet(p.home.x, p.home.y));
-  // Whole steps on the global grid; see simulatePuppetSteps for why.
+  const poses = new Map<string, PuppetPose>();
+  for (const p of cast) {
+    poses.set(p.id, {
+      root: restingPuppet(p.home.x, p.home.y),
+      dangles: snipsOf(project, p.id).map(() => ({ angle: 0, angVel: 0 })),
+    });
+  }
   let stepIndex = Math.floor(fromT / PUPPET_DT);
 
   return {
@@ -92,18 +137,35 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
       if (targetStep > stepIndex) {
         const provider: TargetProvider = targets ?? ((id, tt) => targetForPuppet(project, id, tt));
         for (const p of cast) {
-          const state = states.get(p.id)!;
-          states.set(
-            p.id,
-            simulatePuppetSteps(state, stepIndex, targetStep, (tt) => provider(p.id, tt)),
-          );
+          if (p.back) continue;
+          const pose = poses.get(p.id)!;
+          let root = pose.root;
+          const dangles = pose.dangles.map((d) => ({ ...d }));
+          for (let k = stepIndex; k < targetStep; k++) {
+            const next = stepPuppet(root, provider(p.id, k * PUPPET_DT));
+            const ax = (next.vx - root.vx) / PUPPET_DT;
+            for (const d of dangles) {
+              const acc = -DANGLE_K * d.angle - DANGLE_D * d.angVel - DANGLE_COUPLE * ax;
+              d.angVel += acc * PUPPET_DT;
+              d.angle += d.angVel * PUPPET_DT;
+              if (d.angle > DANGLE_MAX) {
+                d.angle = DANGLE_MAX;
+                d.angVel = Math.min(0, d.angVel);
+              } else if (d.angle < -DANGLE_MAX) {
+                d.angle = -DANGLE_MAX;
+                d.angVel = Math.max(0, d.angVel);
+              }
+            }
+            root = next;
+          }
+          poses.set(p.id, { root, dangles });
         }
         stepIndex = targetStep;
       }
-      return states;
+      return poses;
     },
     states() {
-      return states;
+      return poses;
     },
   };
 }

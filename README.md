@@ -1,12 +1,14 @@
 # BITS
 
-A puppet-show instrument for phones. You don't animate a scene with timelines and keyframes; you put on the show. Record the bit first (the voices, the argument, the dumb song), cast puppets from photos of yourselves or finger doodles, then perform in passes like a musician overdubs tracks: hit record, drag one puppet while the audio and every earlier pass play back, stop, layer the next one. Spring physics is the inbetweener: you supply intent, the simulation supplies lag, lean, squash, and settle. Doodles boil (three seeded jitter variants) so a single drawing never sits still.
+A puppet-show instrument for phones. You don't animate a scene with timelines and keyframes; you put on the show. Record the bit first (the voices, the argument, the dumb song), cast puppets from photos of yourselves or finger doodles, then perform in passes like a musician overdubs tracks: hit record, drag one puppet while the audio and every earlier pass play back, stop, layer the next one. Spring physics is the inbetweener: you supply intent, the simulation supplies lag, lean, squash, and settle.
 
-Everything lands in an append-only recipe; the same recipe simulates to the same frames, so preview and render agree exactly. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage. No uploads, no accounts, no generated pixels.
+Then the scissors come out. Draw a line across a puppet and it splits where you cut: the far side hangs from the line's midpoint and dangles with the motion, paper-doll style. Pin a mouth on anything and it flaps with the loudness of the voice track. Doodles boil (three seeded jitter variants) so a single drawing never sits still. Backdrops drop in from the camera roll; two fingers resize and rotate anything; a long press drops a puppet from the cast.
+
+Everything lands in an append-only recipe; the same recipe simulates to the same frames (bit-exact, fixed-step grid), so preview and render agree. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage. No uploads, no accounts, no generated pixels.
 
 ## Status
 
-The show slice is live: record the bit, cast from camera roll or doodle, record passes, undo a pass, render to a portrait mp4 with the audio passed through, share. The earlier clip deck (perform cuts over footage) survives under "clips"; its engine (onset grid, program compiler, render pipeline) is what the show is built on. Next organs, in rough order: pinned spring limbs, loudness-driven mouth flaps, loop scenes that chain, and cutouts of arbitrary objects.
+The full instrument is live: bit, cast, snip, mouth, backdrop, passes, undo, render, share. Next organs: viseme-grade lip sync (Rhubarb-wasm), perform-with-your-body limb passes (MediaPipe pose), ARAP mesh warp for bendy puppets, and recipe-in-export remixing.
 
 ## Dev
 

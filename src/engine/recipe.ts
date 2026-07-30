@@ -1,52 +1,13 @@
-// The recipe is the heart of BITS: an append-only log of performance events
-// over source media. Same recipe + same sources = same frames, always.
-// Undo is truncation; jam and arrange views are projections of this log.
+// The recipe: an append-only log of everything that makes a show. Casting,
+// performed passes, scissor cuts, mouths, drops. Same recipe simulates to the
+// same frames, always. Undo is popping the last event.
 
 export const RECIPE_VERSION = 0 as const;
 
-export interface SourceRef {
-  id: string;
-  name: string;
-  bytes: number;
-  /** Duration in seconds, filled in after the source is first probed. */
-  durationS?: number;
-  addedAt: string;
-}
-
 interface EventBase {
   id: string;
-  /** Raw performed time on the project timeline, in seconds. */
+  /** Show-time seconds (0 for stage-setup events like CAST/SNIP/MOUTH). */
   at: number;
-  /** Quantized time, present when an onset grid was active at capture.
-   *  Raw is never discarded: quantize is a view decision, reversible forever. */
-  atQ?: number;
-}
-
-/** A cut marker: a beat on the scrub bar now, a segment boundary for arrange later. */
-export interface CutEvent extends EventBase {
-  kind: 'CUT';
-}
-
-/** Edge event: this playback rate applies from `at` until the next SPEED edge.
- *  rate 1 is realtime; 0.3 is slow motion; the default before any edge is 1. */
-export interface SpeedEvent extends EventBase {
-  kind: 'SPEED';
-  rate: number;
-}
-
-/** The source span [at, endAt) is removed from the output. */
-export interface SkipEvent extends EventBase {
-  kind: 'SKIP';
-  endAt: number;
-}
-
-/** Automation sample: punch-in center (normalized source coords) and scale.
- *  Values hold before the first and after the last sample, lerp between. */
-export interface ZoomEvent extends EventBase {
-  kind: 'ZOOM';
-  cx: number;
-  cy: number;
-  scale: number;
 }
 
 /** What a puppet is made of. rect exists for tests and fixtures. */
@@ -55,7 +16,8 @@ export type PuppetSpec =
   | { type: 'doodle'; strokes: number[][]; w: number; h: number }
   | { type: 'rect'; color: string; w: number; h: number };
 
-/** A puppet joins the cast with a home pose (normalized stage coords). */
+/** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
+ *  wins and moves it to the front; `back` pins backdrops behind everyone. */
 export interface CastEvent extends EventBase {
   kind: 'CAST';
   puppetId: string;
@@ -63,27 +25,58 @@ export interface CastEvent extends EventBase {
   x: number;
   y: number;
   scale: number;
+  /** Home rotation in radians; the spring's lean adds on top. */
+  rot: number;
+  back?: boolean;
 }
 
-/** One recorded performance pass: flat [t, x, y, ...] samples in show seconds
- *  and normalized stage coords, sorted by t. The pass covers [first t, last t];
- *  the newest pass covering a moment owns the puppet at that moment. */
+/** One recorded grab: flat [t, x, y, ...] samples in show seconds and
+ *  normalized stage coords, sorted by t. The newest pass covering a moment
+ *  owns the puppet at that moment. */
 export interface PassEvent extends EventBase {
   kind: 'PASS';
   puppetId: string;
   samples: number[];
 }
 
-export type RecipeEvent = CutEvent | SpeedEvent | SkipEvent | ZoomEvent | CastEvent | PassEvent;
+/** A scissor line across a puppet, in puppet-local box coords (0..1). The
+ *  side away from the box center splits off and dangles from the line's
+ *  midpoint like a paper-doll joint. */
+export interface SnipEvent extends EventBase {
+  kind: 'SNIP';
+  puppetId: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** A mouth pinned at a puppet-local point; the audio's loudness envelope
+ *  drives how far it opens. Latest MOUTH per puppet wins. */
+export interface MouthEvent extends EventBase {
+  kind: 'MOUTH';
+  puppetId: string;
+  mx: number;
+  my: number;
+  /** Mouth width as a fraction of the puppet box width. */
+  size: number;
+}
+
+/** Removes a puppet from the cast; a later CAST revives it. */
+export interface DropEvent extends EventBase {
+  kind: 'DROP';
+  puppetId: string;
+}
+
+export type RecipeEvent = CastEvent | PassEvent | SnipEvent | MouthEvent | DropEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
   id: string;
   title: string;
   createdAt: string;
-  /** Seed for every stochastic effect; lives here so replay stays deterministic. */
+  /** Seed for every stochastic effect (doodle boil); replay stays deterministic. */
   seed: number;
-  sources: SourceRef[];
   events: RecipeEvent[];
   /** The show's audio spine: the bit, recorded first. */
   audio?: { assetId: string; durationS: number };
@@ -96,7 +89,6 @@ export function createProject(title: string, now = new Date()): Project {
     title,
     createdAt: now.toISOString(),
     seed: Math.floor(Math.random() * 2 ** 31),
-    sources: [],
     events: [],
   };
 }
@@ -106,21 +98,11 @@ export function appendEvent(project: Project, event: RecipeEvent): Project {
   return { ...project, events: [...project.events, event] };
 }
 
-/** Events sorted by effective time (quantized when present), stable for ties. */
-export function eventsInOrder(project: Project): RecipeEvent[] {
-  return project.events
-    .map((e, i) => ({ e, i }))
-    .sort((a, b) => effectiveTime(a.e) - effectiveTime(b.e) || a.i - b.i)
-    .map(({ e }) => e);
-}
-
-export function effectiveTime(event: RecipeEvent): number {
-  return event.atQ ?? event.at;
-}
-
 export function serializeProject(project: Project): string {
   return JSON.stringify(project);
 }
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
 export function parseProject(text: string): Project {
   let raw: unknown;
@@ -137,47 +119,54 @@ export function parseProject(text: string): Project {
   if (typeof p.id !== 'string' || typeof p.title !== 'string') {
     throw new Error('recipe: missing id or title');
   }
-  if (typeof p.seed !== 'number' || !Array.isArray(p.sources) || !Array.isArray(p.events)) {
+  if (typeof p.seed !== 'number' || !Array.isArray(p.events)) {
     throw new Error('recipe: malformed body');
   }
   for (const e of p.events) {
     const ev = e as Record<string, unknown>;
-    if (typeof ev.kind !== 'string' || typeof ev.at !== 'number' || typeof ev.id !== 'string') {
+    if (typeof ev.kind !== 'string' || typeof ev.id !== 'string' || !isNum(ev.at)) {
       throw new Error('recipe: malformed event');
     }
-    if (ev.kind === 'SPEED' && !(typeof ev.rate === 'number' && ev.rate > 0)) {
-      throw new Error('recipe: SPEED event needs a positive rate');
+    if (ev.kind !== 'CAST' && typeof ev.puppetId !== 'string') {
+      throw new Error(`recipe: ${ev.kind} event needs a puppetId`);
     }
-    if (ev.kind === 'SKIP' && !(typeof ev.endAt === 'number' && ev.endAt > (ev.at as number))) {
-      throw new Error('recipe: SKIP event needs endAt after at');
-    }
-    if (
-      ev.kind === 'ZOOM' &&
-      !(typeof ev.cx === 'number' && typeof ev.cy === 'number' && typeof ev.scale === 'number')
-    ) {
-      throw new Error('recipe: ZOOM event needs cx, cy, scale');
-    }
-    if (
-      ev.kind === 'CAST' &&
-      !(
-        typeof ev.puppetId === 'string' &&
-        typeof ev.puppet === 'object' &&
-        ev.puppet !== null &&
-        typeof ev.x === 'number' &&
-        typeof ev.y === 'number' &&
-        typeof ev.scale === 'number'
-      )
-    ) {
-      throw new Error('recipe: CAST event needs puppetId, puppet, x, y, scale');
-    }
-    if (ev.kind === 'PASS') {
-      const ok =
-        typeof ev.puppetId === 'string' &&
-        Array.isArray(ev.samples) &&
-        ev.samples.length >= 3 &&
-        ev.samples.length % 3 === 0 &&
-        ev.samples.every((n: unknown) => typeof n === 'number');
-      if (!ok) throw new Error('recipe: PASS event needs puppetId and t,x,y sample triples');
+    switch (ev.kind) {
+      case 'CAST':
+        if (
+          typeof ev.puppetId !== 'string' ||
+          typeof ev.puppet !== 'object' ||
+          ev.puppet === null ||
+          !isNum(ev.x) ||
+          !isNum(ev.y) ||
+          !isNum(ev.scale) ||
+          !isNum(ev.rot)
+        ) {
+          throw new Error('recipe: CAST event needs puppetId, puppet, x, y, scale, rot');
+        }
+        break;
+      case 'PASS': {
+        const ok =
+          Array.isArray(ev.samples) &&
+          ev.samples.length >= 3 &&
+          ev.samples.length % 3 === 0 &&
+          ev.samples.every((n: unknown) => isNum(n));
+        if (!ok) throw new Error('recipe: PASS event needs t,x,y sample triples');
+        break;
+      }
+      case 'SNIP':
+        if (!(isNum(ev.x0) && isNum(ev.y0) && isNum(ev.x1) && isNum(ev.y1))) {
+          throw new Error('recipe: SNIP event needs a line');
+        }
+        break;
+      case 'MOUTH':
+        if (!(isNum(ev.mx) && isNum(ev.my) && isNum(ev.size) && (ev.size as number) > 0)) {
+          throw new Error('recipe: MOUTH event needs mx, my, positive size');
+        }
+        break;
+      case 'DROP':
+        break;
+      default:
+        throw new Error(`recipe: unknown event kind ${ev.kind}`);
     }
   }
   return raw as Project;

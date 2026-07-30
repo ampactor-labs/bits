@@ -1,15 +1,26 @@
-// One drawer for preview and render: same inputs, same pixels.
+// One drawer for preview and render: same inputs, same pixels. Puppets draw
+// as scissored pieces (root clipped to what remains, children hinged at their
+// snip lines), mouths flap with the loudness envelope, doodles boil.
 
-import { boilNoise, type PuppetState } from '../engine/puppet';
+import { boilNoise } from '../engine/puppet';
+import type { PuppetPose } from '../engine/show';
 import type { ShowPuppet } from '../engine/show';
+import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
+import type { MouthEvent, PuppetSpec } from '../engine/recipe';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
+const MOUTH_FILL = '#120d0b';
 const BOIL_FPS = 8;
 const BOIL_VARIANTS = 3;
 const BOIL_AMP = 0.014;
 
 export type StageImages = Map<string, ImageBitmap>;
+
+export interface PuppetVisual {
+  pieces: PuppetPieces;
+  mouth: MouthEvent | null;
+}
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -18,8 +29,10 @@ export function drawStage(
   W: number,
   H: number,
   cast: ShowPuppet[],
-  states: Map<string, PuppetState>,
+  poses: Map<string, PuppetPose>,
   images: StageImages,
+  visuals: Map<string, PuppetVisual>,
+  mouthOpen: number,
   tS: number,
   seed: number,
 ): void {
@@ -27,36 +40,106 @@ export function drawStage(
   ctx.fillRect(0, 0, W, H);
 
   for (const puppet of cast) {
-    const s = states.get(puppet.id);
-    if (!s) continue;
+    if (puppet.back) {
+      drawBackdrop(ctx, W, H, images.get(puppet.id));
+      continue;
+    }
+    const pose = poses.get(puppet.id);
+    const visual = visuals.get(puppet.id);
+    if (!pose || !visual) continue;
+    const s = pose.root;
     const pw = puppet.spec.w * W * puppet.home.scale;
     const ph = puppet.spec.h * H * puppet.home.scale;
 
     ctx.save();
     ctx.translate(s.x * W, s.y * H);
-    ctx.rotate(s.angle);
+    ctx.rotate(s.angle + puppet.home.rot);
     ctx.scale(1 + s.squash, 1 - s.squash);
 
-    switch (puppet.spec.type) {
-      case 'cutout': {
-        const img = images.get(puppet.id);
-        if (img) ctx.drawImage(img, -pw / 2, -ph / 2, pw, ph);
-        break;
-      }
-      case 'rect':
-        ctx.fillStyle = puppet.spec.color;
-        ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
-        break;
-      case 'doodle':
-        drawDoodle(ctx, puppet.spec.strokes, pw, ph, tS, seed);
-        break;
+    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
+    for (const child of visual.pieces.children) {
+      const dangle = pose.dangles[child.snipIndex];
+      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+    }
+
+    if (visual.mouth) {
+      drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, mouthOpen);
     }
     ctx.restore();
   }
 }
 
-/** Strokes are normalized [x0,y0,x1,y1,...] in the puppet box; boiling lines
- *  cycle seeded jitter variants so a single drawing never sits still. */
+function drawBackdrop(ctx: Ctx2D, W: number, H: number, img: ImageBitmap | undefined): void {
+  if (!img) return;
+  const scale = Math.max(W / img.width, H / img.height);
+  const dw = img.width * scale;
+  const dh = img.height * scale;
+  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
+function drawPiece(
+  ctx: Ctx2D,
+  puppet: ShowPuppet,
+  piece: PieceDef,
+  dangleAngle: number | null,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+): void {
+  ctx.save();
+  if (dangleAngle !== null && piece.joint) {
+    const jx = (piece.joint.x - 0.5) * pw;
+    const jy = (piece.joint.y - 0.5) * ph;
+    ctx.translate(jx, jy);
+    ctx.rotate(dangleAngle);
+    ctx.translate(-jx, -jy);
+  }
+  if (piece.poly.length >= 3) {
+    ctx.beginPath();
+    for (let i = 0; i < piece.poly.length; i++) {
+      const [px, py] = piece.poly[i]!;
+      const x = (px - 0.5) * pw;
+      const y = (py - 0.5) * ph;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
+  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
+  ctx.restore();
+}
+
+function drawContent(
+  ctx: Ctx2D,
+  spec: PuppetSpec,
+  puppetId: string,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+): void {
+  switch (spec.type) {
+    case 'cutout': {
+      const img = images.get(puppetId);
+      if (img) ctx.drawImage(img, -pw / 2, -ph / 2, pw, ph);
+      break;
+    }
+    case 'rect':
+      ctx.fillStyle = spec.color;
+      ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      break;
+    case 'doodle':
+      drawDoodle(ctx, spec.strokes, pw, ph, tS, seed);
+      break;
+  }
+}
+
+/** Strokes are normalized to the puppet box; boiling lines cycle seeded
+ *  jitter variants so a single drawing never sits still. */
 function drawDoodle(
   ctx: Ctx2D,
   strokes: number[][],
@@ -83,6 +166,49 @@ function drawDoodle(
     }
     ctx.stroke();
   }
+}
+
+/** The mouth rides whichever piece contains it, so a snipped-off head keeps
+ *  its own mouth. Closed is a lip line; open is an ellipse scaled by the
+ *  envelope. */
+function drawMouth(
+  ctx: Ctx2D,
+  mouth: MouthEvent,
+  pieces: PuppetPieces,
+  pose: PuppetPose,
+  pw: number,
+  ph: number,
+  open: number,
+): void {
+  ctx.save();
+  const carrier = pieces.children.find((c) => pointInPoly(c.poly, mouth.mx, mouth.my));
+  if (carrier?.joint) {
+    const dangle = pose.dangles[carrier.snipIndex];
+    const jx = (carrier.joint.x - 0.5) * pw;
+    const jy = (carrier.joint.y - 0.5) * ph;
+    ctx.translate(jx, jy);
+    ctx.rotate(dangle?.angle ?? 0);
+    ctx.translate(-jx, -jy);
+  }
+  const mx = (mouth.mx - 0.5) * pw;
+  const my = (mouth.my - 0.5) * ph;
+  const width = mouth.size * pw;
+  const height = Math.max(0.06, open) * mouth.size * pw * 0.85;
+
+  ctx.fillStyle = MOUTH_FILL;
+  ctx.beginPath();
+  ctx.ellipse(mx, my, width / 2, height / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (open < 0.08) {
+    ctx.strokeStyle = MOUTH_FILL;
+    ctx.lineWidth = Math.max(2, width * 0.09);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(mx - width / 2, my);
+    ctx.lineTo(mx + width / 2, my);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Load cutout bitmaps for a cast; rects and doodles need none. */

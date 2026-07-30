@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectOnsets, quantizeToOnsets } from './onsets';
+import { detectOnsets } from './onsets';
 
 const RATE = 48000;
 
@@ -43,16 +43,3 @@ describe('detectOnsets', () => {
   });
 });
 
-describe('quantizeToOnsets', () => {
-  const grid = [1.0, 2.0, 3.0];
-
-  it('snaps to the nearest onset inside the window', () => {
-    expect(quantizeToOnsets(2.08, grid)).toBe(2.0);
-    expect(quantizeToOnsets(0.95, grid)).toBe(1.0);
-  });
-
-  it('returns undefined when nothing is close', () => {
-    expect(quantizeToOnsets(1.5, grid)).toBeUndefined();
-    expect(quantizeToOnsets(2.5, grid, 0.2)).toBeUndefined();
-  });
-});

@@ -21,18 +21,5 @@
       "type": "image/svg+xml",
       "purpose": "maskable"
     }
-  ],
-  "share_target": {
-    "action": "share-target",
-    "method": "POST",
-    "enctype": "multipart/form-data",
-    "params": {
-      "files": [
-        {
-          "name": "media",
-          "accept": ["video/*", "image/*"]
-        }
-      ]
-    }
-  }
+  ]
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { parseProject } from '../engine/recipe';
-import { deleteProject, listProjectIds, loadProjectJson } from '../media/opfs';
+import { deleteProject, ensurePersistence, listProjectIds, loadProjectJson } from '../media/opfs';
 
 const SHOW_PREFIX = 'show-';
 
@@ -36,6 +36,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      await ensurePersistence();
       const loaded = await loadRows();
       if (!cancelled) setRows(loaded);
     })().catch(() => setRows([]));

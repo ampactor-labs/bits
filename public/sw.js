@@ -1,5 +1,4 @@
-// BITS service worker: precache the shell, cache-first within scope, and
-// receive Android share-target POSTs into the OPFS inbox.
+// BITS service worker: precache the shell, cache-first within scope.
 
 const CACHE = 'bits-shell-v1';
 
@@ -46,11 +45,6 @@ self.addEventListener('fetch', (event) => {
   const scope = new URL(self.registration.scope);
   const inScope = url.origin === scope.origin && url.pathname.startsWith(scope.pathname);
 
-  if (event.request.method === 'POST' && inScope && url.pathname === scope.pathname + 'share-target') {
-    event.respondWith(handleShare(event.request));
-    return;
-  }
-
   if (event.request.method !== 'GET' || !inScope) return;
 
   event.respondWith(cacheFirst(event.request));
@@ -76,16 +70,3 @@ async function cacheFirst(request) {
   }
 }
 
-async function handleShare(request) {
-  const formData = await request.formData();
-  const files = formData.getAll('media').filter((f) => typeof f !== 'string');
-  const root = await navigator.storage.getDirectory();
-  const inbox = await root.getDirectoryHandle('inbox', { create: true });
-  for (const file of files) {
-    const name = `${crypto.randomUUID()}--${(file.name || 'shared').slice(0, 120)}`;
-    const handle = await inbox.getFileHandle(name, { create: true });
-    const writable = await handle.createWritable();
-    await file.stream().pipeTo(writable);
-  }
-  return Response.redirect('./?shared=1', 303);
-}

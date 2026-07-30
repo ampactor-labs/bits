@@ -44,9 +44,9 @@ export class AudioSourceHandle {
   }
 }
 
-/** Mono, decimated PCM of the whole track, sized for onset detection.
- *  Naive stride decimation: aliasing is irrelevant to an energy envelope. */
-export async function mixdownForOnsets(
+/** Mono, decimated PCM of the whole track: feeds both the onset grid and the
+ *  mouth envelope. Naive stride decimation: aliasing is irrelevant to energy. */
+export async function mixdownMono(
   blob: Blob,
   targetRate = 16000,
 ): Promise<{ samples: Float32Array; sampleRate: number } | null> {

@@ -75,16 +75,3 @@ export function detectOnsets(
   return onsets;
 }
 
-/** Nearest onset within windowS of t, or undefined when nothing is close enough. */
-export function quantizeToOnsets(t: number, onsets: number[], windowS = 0.12): number | undefined {
-  let best: number | undefined;
-  let bestDist = windowS;
-  for (const o of onsets) {
-    const d = Math.abs(o - t);
-    if (d <= bestDist) {
-      best = o;
-      bestDist = d;
-    }
-  }
-  return best;
-}
