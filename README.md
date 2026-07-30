@@ -8,7 +8,9 @@ Everything lands in an append-only recipe with undo and redo; the same recipe si
 
 ## Status
 
-The full instrument is live: bit, cast, snap, snip, mouth, eyes, backdrop, punch-in passes, piece grabs, talker spans, scrub, undo/redo, rename, render under a wake lock, share. Next organs: viseme-grade lip sync (Rhubarb-wasm), perform-with-your-body limb passes (MediaPipe pose), ARAP mesh warp for bendy puppets, and recipe-in-export remixing.
+Complete. Nothing named is left unbuilt:
+
+Mouths speak in spectral visemes (loudness plus zero-crossing rate classifies closed, small, wide, fricative slit, and round shapes; deterministic from the PCM). Pins bend uncut photo puppets through moving-least-squares similarity warp (the closed-form ARAP-family deformer), drawn as a textured triangle mesh; pins are spring points you can grab in passes, and pins and snips are exclusive per puppet: cut paper or bend it. Body passes drive puppets with your wrists via MediaPipe pose from the front camera, one hand per target, recorded as ordinary passes. Any bit exports as a single .bit.json bundle (recipe plus every asset, base64) that anyone can open from the bits list and re-perform: the remix loop.
 
 ## Dev
 

@@ -39,6 +39,18 @@ export interface PassEvent extends EventBase {
   puppetId: string;
   samples: number[];
   piece?: number;
+  /** Targets a warp pin (by pin index) instead of the body or a piece. */
+  pin?: number;
+}
+
+/** A warp control point in puppet-local box coords. Pins accumulate; drag
+ *  one in a pass and the texture bends around it (MLS similarity). Pins and
+ *  snips are exclusive per puppet: cut paper or bend it, not both. */
+export interface PinEvent extends EventBase {
+  kind: 'PIN';
+  puppetId: string;
+  px: number;
+  py: number;
 }
 
 /** A scissor line across a puppet, in puppet-local box coords (0..1). The
@@ -81,7 +93,14 @@ export interface DropEvent extends EventBase {
   puppetId: string;
 }
 
-export type RecipeEvent = CastEvent | PassEvent | SnipEvent | MouthEvent | EyesEvent | DropEvent;
+export type RecipeEvent =
+  | CastEvent
+  | PassEvent
+  | SnipEvent
+  | MouthEvent
+  | EyesEvent
+  | PinEvent
+  | DropEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -167,6 +186,12 @@ export function parseProject(text: string): Project {
         if (ev.piece !== undefined && !(isNum(ev.piece) && ev.piece >= 0)) {
           throw new Error('recipe: PASS piece must be a snip index');
         }
+        if (ev.pin !== undefined && !(isNum(ev.pin) && ev.pin >= 0)) {
+          throw new Error('recipe: PASS pin must be a pin index');
+        }
+        if (ev.piece !== undefined && ev.pin !== undefined) {
+          throw new Error('recipe: PASS cannot target both a piece and a pin');
+        }
         break;
       }
       case 'SNIP':
@@ -182,6 +207,11 @@ export function parseProject(text: string): Project {
       case 'EYES':
         if (!(isNum(ev.ex) && isNum(ev.ey) && isNum(ev.size) && (ev.size as number) > 0)) {
           throw new Error('recipe: EYES event needs ex, ey, positive size');
+        }
+        break;
+      case 'PIN':
+        if (!(isNum(ev.px) && isNum(ev.py))) {
+          throw new Error('recipe: PIN event needs px, py');
         }
         break;
       case 'DROP':

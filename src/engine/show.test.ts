@@ -10,7 +10,15 @@ import {
   targetForPuppet,
 } from './show';
 import { splitPieces, polyArea } from './pieces';
-import { computeEnvelope, openAt } from './envelope';
+import {
+  computeVoiceTrack,
+  voiceAt,
+  SHAPE_CLOSED,
+  SHAPE_ROUND,
+  SHAPE_SLIT,
+  SHAPE_WIDE,
+} from './envelope';
+import { deformGrid, makeWarpGrid, mlsSimilarity } from './warp';
 import { appendEvent, createProject, type Project, type RecipeEvent } from './recipe';
 
 const STEPS_PER_S = 120;
@@ -215,21 +223,126 @@ describe('show simulation with dangles', () => {
   });
 });
 
-describe('envelope', () => {
+describe('voice track', () => {
   const RATE = 48000;
 
+  const tone = (freq: number, amp: number, durS = 1) => {
+    const s = new Float32Array(RATE * durS);
+    for (let i = 0; i < s.length; i++) s[i] = amp * Math.sin((2 * Math.PI * freq * i) / RATE);
+    return s;
+  };
+
   it('is silent on silence and opens on bursts, deterministically', () => {
-    const silent = computeEnvelope(new Float32Array(RATE), RATE);
-    expect(Math.max(...silent)).toBe(0);
+    const silent = computeVoiceTrack(new Float32Array(RATE), RATE);
+    expect(voiceAt(silent, 0.5)).toEqual({ open: 0, shape: SHAPE_CLOSED });
 
     const samples = new Float32Array(RATE * 2);
     for (let i = 0; i < RATE * 0.2; i++) {
       samples[RATE + i] = 0.8 * Math.sin((2 * Math.PI * 200 * i) / RATE);
     }
-    const env = computeEnvelope(samples, RATE);
-    expect(openAt(env, 0.5)).toBe(0);
-    expect(openAt(env, 1.1)).toBeGreaterThan(0.5);
-    expect(computeEnvelope(samples, RATE)).toEqual(env);
+    const track = computeVoiceTrack(samples, RATE);
+    expect(voiceAt(track, 0.5).open).toBe(0);
+    expect(voiceAt(track, 1.1).open).toBeGreaterThan(0.5);
+    expect(computeVoiceTrack(samples, RATE)).toEqual(track);
+  });
+
+  it('classifies spectral shapes: loud vowel wide, low hum round, noise slit', () => {
+    const loud = computeVoiceTrack(tone(300, 0.9), RATE);
+    expect(voiceAt(loud, 0.5).shape).toBe(SHAPE_WIDE);
+
+    // A low hum quieter than the track's own loud parts reads round; splice
+    // a loud head so normalization has something to normalize against.
+    const mixed = new Float32Array(RATE * 2);
+    mixed.set(tone(300, 0.9), 0);
+    mixed.set(tone(120, 0.35), RATE);
+    const hum = computeVoiceTrack(mixed, RATE);
+    expect(voiceAt(hum, 1.7).shape).toBe(SHAPE_ROUND);
+
+    // Deterministic pseudo-noise: dense sign flips read as fricative.
+    const noise = new Float32Array(RATE);
+    let x = 12345;
+    for (let i = 0; i < noise.length; i++) {
+      x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+      noise[i] = ((x / 0xffffffff) * 2 - 1) * 0.6;
+    }
+    const slit = computeVoiceTrack(noise, RATE);
+    expect(voiceAt(slit, 0.5).shape).toBe(SHAPE_SLIT);
+  });
+});
+
+describe('MLS warp', () => {
+  const p = [
+    { x: 0.3, y: 0.3 },
+    { x: 0.7, y: 0.7 },
+  ];
+
+  it('is the identity when targets equal controls', () => {
+    const v = mlsSimilarity({ x: 0.5, y: 0.2 }, p, p);
+    expect(v.x).toBeCloseTo(0.5, 9);
+    expect(v.y).toBeCloseTo(0.2, 9);
+  });
+
+  it('interpolates the controls exactly', () => {
+    const q = [
+      { x: 0.35, y: 0.25 },
+      { x: 0.6, y: 0.8 },
+    ];
+    for (let i = 0; i < p.length; i++) {
+      const v = mlsSimilarity(p[i]!, p, q);
+      expect(v.x).toBeCloseTo(q[i]!.x, 6);
+      expect(v.y).toBeCloseTo(q[i]!.y, 6);
+    }
+  });
+
+  it('one pin translates rigidly and grids deform deterministically', () => {
+    const one = mlsSimilarity({ x: 0.9, y: 0.1 }, [{ x: 0.5, y: 0.5 }], [{ x: 0.6, y: 0.55 }]);
+    expect(one).toEqual({ x: 1.0, y: 0.15000000000000002 });
+
+    const grid = makeWarpGrid(4, 4);
+    const q = [
+      { x: 0.35, y: 0.25 },
+      { x: 0.6, y: 0.8 },
+    ];
+    expect(deformGrid(grid, p, q)).toEqual(deformGrid(grid, p, q));
+  });
+});
+
+describe('pins in the sim', () => {
+  const pinned = () =>
+    show([
+      cast('a', 0.5, 0.5),
+      { kind: 'PIN', id: 'pin0', at: 0, puppetId: 'a', px: 0.5, py: 0.1 },
+      {
+        kind: 'PASS',
+        id: 'pp',
+        at: 0.2,
+        puppetId: 'a',
+        pin: 0,
+        samples: [0.2, 0.8, 0.2, 1.5, 0.8, 0.2],
+      },
+    ]);
+
+  it('a pin pass pulls the pin while the body stays put, then it snaps home', () => {
+    const sim = createShowSim(pinned());
+    sim.advanceTo(1.2);
+    const held = sim.states().get('a')!;
+    expect(held.pins).toHaveLength(1);
+    expect(held.pins[0]!.x).toBeGreaterThan(0.7);
+    expect(Math.abs(held.root.x - 0.5)).toBeLessThan(0.01);
+    sim.advanceTo(5);
+    const rest = sim.states().get('a')!;
+    // Home for the pin at local (0.5, 0.1) on a 0.2-wide box sits above center.
+    expect(rest.pins[0]!.x).toBeCloseTo(0.5, 1);
+  });
+
+  it('pins vanish on snipped puppets: cut or bend, never both', () => {
+    const proj = show([
+      cast('a'),
+      { kind: 'PIN', id: 'p', at: 0, puppetId: 'a', px: 0.5, py: 0.1 },
+      { kind: 'SNIP', id: 's', at: 0, puppetId: 'a', x0: 0, y0: 0.3, x1: 1, y1: 0.3 },
+    ]);
+    const sim = createShowSim(proj);
+    expect(sim.states().get('a')!.pins).toHaveLength(0);
   });
 });
 

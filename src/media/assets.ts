@@ -17,6 +17,14 @@ export async function saveAsset(blob: Blob, ext: string): Promise<string> {
   return id;
 }
 
+/** Write a blob under an exact id: bundle import restores referenced assets. */
+export async function restoreAsset(id: string, blob: Blob): Promise<void> {
+  const d = await assetsDir();
+  const handle = await d.getFileHandle(id.replace(/[^a-z0-9.-]/gi, ''), { create: true });
+  const writable = await handle.createWritable();
+  await blob.stream().pipeTo(writable);
+}
+
 export async function getAsset(id: string): Promise<File> {
   const d = await assetsDir();
   const handle = await d.getFileHandle(id);

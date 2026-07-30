@@ -262,6 +262,17 @@ button:active {
   flex-wrap: wrap;
 }
 
+.pip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 26%;
+  border-radius: 10px;
+  transform: scaleX(-1);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
 .transport {
   display: flex;
   align-items: center;

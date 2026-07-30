@@ -12,7 +12,15 @@ import {
   type PuppetTarget,
 } from './puppet';
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
-import type { EyesEvent, MouthEvent, PassEvent, Project, PuppetSpec, SnipEvent } from './recipe';
+import type {
+  EyesEvent,
+  MouthEvent,
+  PassEvent,
+  PinEvent,
+  Project,
+  PuppetSpec,
+  SnipEvent,
+} from './recipe';
 
 export interface ShowPuppet {
   id: string;
@@ -29,6 +37,8 @@ export interface DangleState {
 export interface PuppetPose {
   root: PuppetState;
   dangles: DangleState[];
+  /** Warp pin positions in stage coords, spring-driven; empty when unpinned. */
+  pins: PuppetState[];
 }
 
 const DANGLE_K = 42;
@@ -64,6 +74,12 @@ export function snipsOf(project: Project, puppetId: string): SnipEvent[] {
   return project.events.filter(
     (e): e is SnipEvent => e.kind === 'SNIP' && e.puppetId === puppetId,
   );
+}
+
+/** Pins apply only to uncut puppets: cut paper or bend it, not both. */
+export function pinsOf(project: Project, puppetId: string): PinEvent[] {
+  if (snipsOf(project, puppetId).length > 0) return [];
+  return project.events.filter((e): e is PinEvent => e.kind === 'PIN' && e.puppetId === puppetId);
 }
 
 /** Latest mouth wins; null when the puppet has none. */
@@ -143,13 +159,17 @@ export interface ShowSim {
   states(): Map<string, PuppetPose>;
 }
 
-/** Live-override targets: `piece` is null for the body, a snip index for a
- *  dangling piece. */
-export type TargetProvider = (
-  puppetId: string,
-  piece: number | null,
-  t: number,
-) => PuppetTarget | null;
+/** Which part of a puppet a target drives. */
+export type Channel = null | { piece: number } | { pin: number };
+
+export const sameChannel = (a: Channel, b: Channel): boolean => {
+  if (a === null || b === null) return a === b;
+  if ('piece' in a) return 'piece' in b && a.piece === b.piece;
+  return 'pin' in b && a.pin === b.pin;
+};
+
+/** Live-override targets: null channel is the body. */
+export type TargetProvider = (puppetId: string, channel: Channel, t: number) => PuppetTarget | null;
 
 interface PieceGeom {
   restAngle: number;
@@ -167,29 +187,45 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
   // geometry, so the hot loop never rescans the event log.
   const rootPasses = new Map<string, PassEvent[]>();
   const piecePasses = new Map<string, Map<number, PassEvent[]>>();
+  const pinPasses = new Map<string, Map<number, PassEvent[]>>();
   const pieceGeoms = new Map<string, Map<number, PieceGeom>>();
-  const pieceCount = new Map<string, number>();
+  const pinLocals = new Map<string, { x: number; y: number }[]>();
 
   for (const p of cast) {
     const snips = snipsOf(project, p.id);
-    pieceCount.set(p.id, snips.length);
+    const pins = pinsOf(project, p.id);
+    pinLocals.set(
+      p.id,
+      pins.map((e) => ({ x: e.px, y: e.py })),
+    );
     poses.set(p.id, {
       root: restingPuppet(p.home.x, p.home.y),
       dangles: snips.map(() => ({ angle: 0, angVel: 0 })),
+      pins: pins.map((e) => {
+        const world = localToWorld(restingPuppet(p.home.x, p.home.y), p, e.px, e.py);
+        return restingPuppet(world.x, world.y);
+      }),
     });
     const all = passesFor(project, p.id);
     rootPasses.set(
       p.id,
-      all.filter((e) => e.piece === undefined),
+      all.filter((e) => e.piece === undefined && e.pin === undefined),
     );
     const byPiece = new Map<number, PassEvent[]>();
+    const byPin = new Map<number, PassEvent[]>();
     for (const e of all) {
-      if (e.piece === undefined) continue;
-      const list = byPiece.get(e.piece) ?? [];
-      list.push(e);
-      byPiece.set(e.piece, list);
+      if (e.piece !== undefined) {
+        const list = byPiece.get(e.piece) ?? [];
+        list.push(e);
+        byPiece.set(e.piece, list);
+      } else if (e.pin !== undefined) {
+        const list = byPin.get(e.pin) ?? [];
+        list.push(e);
+        byPin.set(e.pin, list);
+      }
     }
     piecePasses.set(p.id, byPiece);
+    pinPasses.set(p.id, byPin);
 
     const pieces: PuppetPieces = splitPieces(snips);
     const geoms = new Map<number, PieceGeom>();
@@ -215,10 +251,18 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
 
   const pieceTarget = (p: ShowPuppet, piece: number, t: number): PuppetTarget | null => {
     if (targets) {
-      const live = targets(p.id, piece, t);
+      const live = targets(p.id, { piece }, t);
       if (live) return live;
     }
     return newestCovering(piecePasses.get(p.id)?.get(piece) ?? [], t);
+  };
+
+  const pinTarget = (p: ShowPuppet, pin: number, t: number): PuppetTarget | null => {
+    if (targets) {
+      const live = targets(p.id, { pin }, t);
+      if (live) return live;
+    }
+    return newestCovering(pinPasses.get(p.id)?.get(pin) ?? [], t);
   };
 
   return {
@@ -230,11 +274,21 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
           const pose = poses.get(p.id)!;
           let root = pose.root;
           const dangles = pose.dangles.map((d) => ({ ...d }));
+          let pins = pose.pins;
           const geoms = pieceGeoms.get(p.id)!;
+          const locals = pinLocals.get(p.id)!;
           for (let k = stepIndex; k < targetStep; k++) {
             const tt = k * PUPPET_DT;
             const next = stepPuppet(root, rootTarget(p, tt));
             const ax = (next.vx - root.vx) / PUPPET_DT;
+            // Pins chase their performed target, or ride home on the body.
+            if (pins.length > 0) {
+              pins = pins.map((pinState, pi) => {
+                const performed = pinTarget(p, pi, tt);
+                const rest = localToWorld(next, p, locals[pi]!.x, locals[pi]!.y);
+                return stepPuppet(pinState, performed ?? rest);
+              });
+            }
             for (let di = 0; di < dangles.length; di++) {
               const d = dangles[di]!;
               const geom = geoms.get(di);
@@ -260,7 +314,7 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
             }
             root = next;
           }
-          poses.set(p.id, { root, dangles });
+          poses.set(p.id, { root, dangles, pins });
         }
         stepIndex = targetStep;
       }
@@ -277,12 +331,40 @@ function jointWorld(
   p: ShowPuppet,
   joint: { x: number; y: number },
 ): { x: number; y: number } {
-  const lx = (joint.x - 0.5) * p.spec.w * p.home.scale;
-  const ly = (joint.y - 0.5) * p.spec.h * p.home.scale;
+  return localToWorld(root, p, joint.x, joint.y);
+}
+
+/** Puppet-local box coords to stage coords under the current root frame. */
+export function localToWorld(
+  root: PuppetState,
+  p: ShowPuppet,
+  lx0: number,
+  ly0: number,
+): { x: number; y: number } {
+  const lx = (lx0 - 0.5) * p.spec.w * p.home.scale;
+  const ly = (ly0 - 0.5) * p.spec.h * p.home.scale;
   const a = root.angle + p.home.rot;
   const c = Math.cos(a);
   const s = Math.sin(a);
   return { x: root.x + lx * c - ly * s, y: root.y + lx * s + ly * c };
+}
+
+/** Stage coords back to puppet-local box coords under the current root frame. */
+export function worldToLocal(
+  root: PuppetState,
+  p: ShowPuppet,
+  wx: number,
+  wy: number,
+): { x: number; y: number } {
+  const a = -(root.angle + p.home.rot);
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const dx = wx - root.x;
+  const dy = wy - root.y;
+  return {
+    x: (dx * c - dy * s) / (p.spec.w * p.home.scale) + 0.5,
+    y: (dx * s + dy * c) / (p.spec.h * p.home.scale) + 0.5,
+  };
 }
 
 function normalizeAngle(a: number): number {

@@ -3,10 +3,16 @@
 // snip lines), mouths flap with the loudness envelope, doodles boil.
 
 import { boilNoise } from '../engine/puppet';
-import type { PuppetPose } from '../engine/show';
-import type { ShowPuppet } from '../engine/show';
+import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
-import type { EyesEvent, MouthEvent, PuppetSpec } from '../engine/recipe';
+import {
+  SHAPE_ROUND,
+  SHAPE_SLIT,
+  SHAPE_WIDE,
+  type VoiceMoment,
+} from '../engine/envelope';
+import { deformGrid, makeWarpGrid, mlsSimilarity, type Pt } from '../engine/warp';
+import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -21,7 +27,10 @@ export interface PuppetVisual {
   pieces: PuppetPieces;
   mouth: MouthEvent | null;
   eyes: EyesEvent | null;
+  pins: PinEvent[];
 }
+
+const WARP_GRID = makeWarpGrid(10, 14);
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -33,7 +42,7 @@ export function drawStage(
   poses: Map<string, PuppetPose>,
   images: StageImages,
   visuals: Map<string, PuppetVisual>,
-  mouthOpen: Map<string, number>,
+  voices: Map<string, VoiceMoment>,
   tS: number,
   seed: number,
 ): void {
@@ -57,20 +66,149 @@ export function drawStage(
     ctx.rotate(s.angle + puppet.home.rot);
     ctx.scale(1 + s.squash, 1 - s.squash);
 
-    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
-    for (const child of visual.pieces.children) {
-      const dangle = pose.dangles[child.snipIndex];
-      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+    // Pinned cutouts bend through the MLS warp; everything else draws as
+    // scissored pieces (a single uncut piece is the trivial case).
+    const img = images.get(puppet.id);
+    const warp =
+      visual.pins.length > 0 && puppet.spec.type === 'cutout' && img
+        ? warpControls(puppet, pose, visual.pins)
+        : null;
+
+    if (warp && img) {
+      drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
+    } else {
+      drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
+      for (const child of visual.pieces.children) {
+        const dangle = pose.dangles[child.snipIndex];
+        drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+      }
     }
 
     if (visual.mouth) {
-      drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, mouthOpen.get(puppet.id) ?? 0);
+      const at = warp
+        ? mlsSimilarity({ x: visual.mouth.mx, y: visual.mouth.my }, warp.p, warp.q)
+        : null;
+      drawMouth(
+        ctx,
+        visual.mouth,
+        visual.pieces,
+        pose,
+        pw,
+        ph,
+        voices.get(puppet.id) ?? { open: 0, shape: 0 },
+        at,
+      );
     }
     if (visual.eyes) {
-      drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed);
+      const at = warp
+        ? mlsSimilarity({ x: visual.eyes.ex, y: visual.eyes.ey }, warp.p, warp.q)
+        : null;
+      drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
     }
     ctx.restore();
   }
+}
+
+/** Rest and deformed pin positions in puppet-local coords. */
+function warpControls(
+  puppet: ShowPuppet,
+  pose: PuppetPose,
+  pins: PinEvent[],
+): { p: Pt[]; q: Pt[] } {
+  const p: Pt[] = pins.map((e) => ({ x: e.px, y: e.py }));
+  const q: Pt[] = pose.pins.map((state, i) => {
+    const local = worldToLocal(pose.root, puppet, state.x, state.y);
+    return Number.isFinite(local.x) && Number.isFinite(local.y) ? local : { ...p[i]! };
+  });
+  while (q.length < p.length) q.push({ ...p[q.length]! });
+  return { p, q };
+}
+
+/** Textured triangle mesh: each grid cell maps rest→deformed with an affine
+ *  per triangle, slightly inflated to hide seams. */
+function drawWarpedMesh(
+  ctx: Ctx2D,
+  img: ImageBitmap,
+  pw: number,
+  ph: number,
+  deformed: Float32Array,
+): void {
+  const { cols, rows, rest } = WARP_GRID;
+  const stride = (cols + 1) * 2;
+  const lx = (v: number) => (v - 0.5) * pw;
+  const ly = (v: number) => (v - 0.5) * ph;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i00 = r * stride + c * 2;
+      const i10 = i00 + 2;
+      const i01 = i00 + stride;
+      const i11 = i01 + 2;
+      drawTri(ctx, img, rest, deformed, i00, i10, i01, img.width, img.height, lx, ly);
+      drawTri(ctx, img, rest, deformed, i10, i11, i01, img.width, img.height, lx, ly);
+    }
+  }
+}
+
+function drawTri(
+  ctx: Ctx2D,
+  img: ImageBitmap,
+  rest: Float32Array,
+  def: Float32Array,
+  ia: number,
+  ib: number,
+  ic: number,
+  iw: number,
+  ih: number,
+  lx: (v: number) => number,
+  ly: (v: number) => number,
+): void {
+  const sx0 = rest[ia]! * iw;
+  const sy0 = rest[ia + 1]! * ih;
+  const sx1 = rest[ib]! * iw;
+  const sy1 = rest[ib + 1]! * ih;
+  const sx2 = rest[ic]! * iw;
+  const sy2 = rest[ic + 1]! * ih;
+  let dx0 = lx(def[ia]!);
+  let dy0 = ly(def[ia + 1]!);
+  let dx1 = lx(def[ib]!);
+  let dy1 = ly(def[ib + 1]!);
+  let dx2 = lx(def[ic]!);
+  let dy2 = ly(def[ic + 1]!);
+
+  // Inflate the destination triangle a hair around its centroid: seam cover.
+  const cx = (dx0 + dx1 + dx2) / 3;
+  const cy = (dy0 + dy1 + dy2) / 3;
+  const grow = 1.02;
+  dx0 = cx + (dx0 - cx) * grow;
+  dy0 = cy + (dy0 - cy) * grow;
+  dx1 = cx + (dx1 - cx) * grow;
+  dy1 = cy + (dy1 - cy) * grow;
+  dx2 = cx + (dx2 - cx) * grow;
+  dy2 = cy + (dy2 - cy) * grow;
+
+  const den = sx0 * (sy1 - sy2) + sx1 * (sy2 - sy0) + sx2 * (sy0 - sy1);
+  if (Math.abs(den) < 1e-12) return;
+  const a = (dx0 * (sy1 - sy2) + dx1 * (sy2 - sy0) + dx2 * (sy0 - sy1)) / den;
+  const b = (dy0 * (sy1 - sy2) + dy1 * (sy2 - sy0) + dy2 * (sy0 - sy1)) / den;
+  const cc = (dx0 * (sx2 - sx1) + dx1 * (sx0 - sx2) + dx2 * (sx1 - sx0)) / den;
+  const d = (dy0 * (sx2 - sx1) + dy1 * (sx0 - sx2) + dy2 * (sx1 - sx0)) / den;
+  const e =
+    (dx0 * (sx1 * sy2 - sx2 * sy1) + dx1 * (sx2 * sy0 - sx0 * sy2) + dx2 * (sx0 * sy1 - sx1 * sy0)) /
+    den;
+  const f =
+    (dy0 * (sx1 * sy2 - sx2 * sy1) + dy1 * (sx2 * sy0 - sx0 * sy2) + dy2 * (sx0 * sy1 - sx1 * sy0)) /
+    den;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(dx0, dy0);
+  ctx.lineTo(dx1, dy1);
+  ctx.lineTo(dx2, dy2);
+  ctx.closePath();
+  ctx.clip();
+  ctx.transform(a, b, cc, d, e, f);
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
 }
 
 /** Googly eyes: sclera pair pinned to the puppet, pupils lagging its motion
@@ -84,11 +222,12 @@ function drawEyes(
   ph: number,
   tS: number,
   seed: number,
+  warpedAt: Pt | null,
 ): void {
   ctx.save();
-  applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey);
-  const cx = (eyes.ex - 0.5) * pw;
-  const cy = (eyes.ey - 0.5) * ph;
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey);
+  const cx = ((warpedAt?.x ?? eyes.ex) - 0.5) * pw;
+  const cy = ((warpedAt?.y ?? eyes.ey) - 0.5) * ph;
   const eyeR = (eyes.size * pw) / 4.4;
   const gap = eyeR * 1.3;
   const variant = Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS;
@@ -235,9 +374,9 @@ function drawDoodle(
   }
 }
 
-/** The mouth rides whichever piece contains it, so a snipped-off head keeps
- *  its own mouth. Closed is a lip line; open is an ellipse scaled by the
- *  envelope. */
+/** The mouth rides whichever piece contains it (or its warped position when
+ *  pinned). Shapes are spectral-class visemes: closed line, small and wide
+ *  vowels, a fricative slit, and a round o/u. */
 function drawMouth(
   ctx: Ctx2D,
   mouth: MouthEvent,
@@ -245,19 +384,16 @@ function drawMouth(
   pose: PuppetPose,
   pw: number,
   ph: number,
-  open: number,
+  voice: VoiceMoment,
+  warpedAt: Pt | null,
 ): void {
   ctx.save();
-  applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my);
-  const mx = (mouth.mx - 0.5) * pw;
-  const my = (mouth.my - 0.5) * ph;
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my);
+  const mx = ((warpedAt?.x ?? mouth.mx) - 0.5) * pw;
+  const my = ((warpedAt?.y ?? mouth.my) - 0.5) * ph;
   const width = mouth.size * pw;
-  const height = Math.max(0.06, open) * mouth.size * pw * 0.85;
+  const open = voice.open;
 
-  ctx.fillStyle = MOUTH_FILL;
-  ctx.beginPath();
-  ctx.ellipse(mx, my, width / 2, height / 2, 0, 0, Math.PI * 2);
-  ctx.fill();
   if (open < 0.08) {
     ctx.strokeStyle = MOUTH_FILL;
     ctx.lineWidth = Math.max(2, width * 0.09);
@@ -266,7 +402,29 @@ function drawMouth(
     ctx.moveTo(mx - width / 2, my);
     ctx.lineTo(mx + width / 2, my);
     ctx.stroke();
+    ctx.restore();
+    return;
   }
+
+  ctx.fillStyle = MOUTH_FILL;
+  ctx.beginPath();
+  switch (voice.shape) {
+    case SHAPE_SLIT:
+      // Teeth together: wide and thin, whatever the loudness.
+      ctx.ellipse(mx, my, width * 0.58, Math.max(1.5, width * 0.09), 0, 0, Math.PI * 2);
+      break;
+    case SHAPE_ROUND: {
+      const r = width * (0.16 + 0.22 * open);
+      ctx.ellipse(mx, my, r, r * 1.15, 0, 0, Math.PI * 2);
+      break;
+    }
+    case SHAPE_WIDE:
+      ctx.ellipse(mx, my, width * 0.55, open * width * 0.5, 0, 0, Math.PI * 2);
+      break;
+    default:
+      ctx.ellipse(mx, my, width * 0.4, open * width * 0.3, 0, 0, Math.PI * 2);
+  }
+  ctx.fill();
   ctx.restore();
 }
 

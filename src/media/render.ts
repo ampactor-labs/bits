@@ -13,10 +13,17 @@ import {
   canEncodeVideo,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { computeEnvelope, openAt } from '../engine/envelope';
+import {
+  computeVoiceTrack,
+  voiceAt,
+  EMPTY_VOICE,
+  SHAPE_CLOSED,
+  type VoiceMoment,
+  type VoiceTrack,
+} from '../engine/envelope';
 import { splitPieces } from '../engine/pieces';
 import type { Project } from '../engine/recipe';
-import { castOf, createShowSim, eyesOf, mouthOf, snipsOf, talkOpenFor } from '../engine/show';
+import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from './audio';
 import { drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
@@ -45,24 +52,27 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
       pieces: splitPieces(snipsOf(project, p.id)),
       mouth: mouthOf(project, p.id),
       eyes: eyesOf(project, p.id),
+      pins: pinsOf(project, p.id),
     });
   }
   return visuals;
 }
 
-/** Per-puppet mouth openness at t: envelope gated by the talk-span rule. */
-export function mouthOpenMap(
+/** Per-puppet voice moment at t: the shared track gated by the talk-span rule. */
+export function voiceMap(
   project: Project,
   visuals: Map<string, PuppetVisual>,
-  envelope: Float32Array,
+  track: VoiceTrack,
   t: number,
-): Map<string, number> {
-  const open = new Map<string, number>();
-  const envOpen = openAt(envelope, t);
+): Map<string, VoiceMoment> {
+  const out = new Map<string, VoiceMoment>();
+  const base = voiceAt(track, t);
   for (const [id, v] of visuals) {
-    if (v.mouth) open.set(id, talkOpenFor(project, id, envOpen, t));
+    if (!v.mouth) continue;
+    const open = talkOpenFor(project, id, base.open, t);
+    out.set(id, { open, shape: open === 0 ? SHAPE_CLOSED : base.shape });
   }
-  return open;
+  return out;
 }
 
 export async function renderShow(options: RenderShowOptions): Promise<File> {
@@ -93,7 +103,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const sim = createShowSim(project);
 
   const mix = options.audioBlob ? await mixdownMono(options.audioBlob) : null;
-  const envelope = mix ? computeEnvelope(mix.samples, mix.sampleRate) : new Float32Array(0);
+  const voice = mix ? computeVoiceTrack(mix.samples, mix.sampleRate) : EMPTY_VOICE;
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -124,7 +134,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
         poses,
         images,
         visuals,
-        mouthOpenMap(project, visuals, envelope, t),
+        voiceMap(project, visuals, voice, t),
         t,
         project.seed,
       );

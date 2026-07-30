@@ -29,11 +29,19 @@ Run on both phones after each push. All of it is one flow: make a real bit.
 17. 📷 snap opens the camera; the shot cuts out into a puppet.
 18. Undo steps back one move; redo brings it back; a new move clears redo.
 19. Rename on the bits list sticks.
-20. Render completes with progress and the screen stays awake; the export
-    matches the preview exactly: motion, dangles, mouths, eyes, boil.
-21. Share hands the mp4 to a messaging app; voices are in sync.
-22. Delete a bit from the list; its storage is reclaimed (add a big one,
-    delete it, storage settings show the drop).
-23. Airplane mode, relaunch: everything above still works offline.
+20. Mouth shapes read as speech: wide on shouts, a thin slit on s/sh sounds,
+    a small o on low hums, closed in silence.
+21. 📌 pin an uncut photo puppet twice, grab one pin in a pass: the texture
+    bends around it and springs back; a snipped puppet refuses pins.
+22. 🧍 body: assign a puppet to your right hand, start; your wrist drives it
+    with the camera preview in the corner; the recorded pass replays after.
+23. bit file: export, send it to the other phone, open it from the bits
+    list; the whole show arrives and re-performs.
+24. Render completes with progress and the screen stays awake; the export
+    matches the preview exactly: motion, dangles, mouths, eyes, warp, boil.
+25. Share hands the mp4 to a messaging app; voices are in sync.
+26. Delete a bit from the list; its storage is reclaimed.
+27. Airplane mode, relaunch: everything except first-time body-pass model
+    load still works offline (the model caches after one use).
 
 Record failures with phone model + Chrome version in an issue.

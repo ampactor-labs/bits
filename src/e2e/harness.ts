@@ -108,6 +108,15 @@ function scriptedShow(): Project {
         scale: 1.4,
         rot: -0.2,
       },
+      { kind: 'PIN', id: 'pin1', at: 0, puppetId: 'dood', px: 0.5, py: 0.1 },
+      {
+        kind: 'PASS',
+        id: 'p3',
+        at: 0.5,
+        puppetId: 'dood',
+        pin: 0,
+        samples: [0.5, 0.8, 0.6, 1.5, 0.9, 0.7],
+      },
     ],
   };
 }

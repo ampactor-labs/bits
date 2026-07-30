@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseProject, serializeProject } from '../engine/recipe';
 import { deleteAsset } from '../media/assets';
+import { importBundle } from '../media/bundle';
 import {
   deleteProject,
   ensurePersistence,
@@ -39,6 +40,8 @@ async function loadRows(): Promise<ShowRow[]> {
 
 export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   const [rows, setRows] = useState<ShowRow[] | null>(null);
+  const [status, setStatus] = useState('');
+  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +56,21 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   }, []);
 
   const newShow = () => onOpen(`${SHOW_PREFIX}${Date.now()}`);
+
+  const importBit = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setStatus('opening…');
+    try {
+      const project = await importBundle(file);
+      const id = `${SHOW_PREFIX}${Date.now()}`;
+      await saveProjectJson(id, serializeProject(project));
+      setStatus('');
+      onOpen(id);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   /** Deleting a show also collects its audio and cutout assets, so OPFS
    *  doesn't fill with orphans. */
@@ -92,9 +110,21 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   return (
     <div>
       <div className="transport">
+        <input
+          ref={importRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            void importBit(e.target.files);
+            e.target.value = '';
+          }}
+        />
         <button className="primary" onClick={newShow}>
           + new bit
         </button>
+        <button onClick={() => importRef.current?.click()}>open a bit file</button>
+        {status && <span className="status">{status}</span>}
       </div>
       {rows === null ? null : rows.length === 0 ? (
         <p className="empty">
