@@ -92,6 +92,8 @@ export function Stage({ showId }: { showId: string }) {
   const [rendered, setRendered] = useState<File | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
   const [redoCount, setRedoCount] = useState(0);
+  const [kitOpen, setKitOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const audioBlobRef = useRef<Blob | null>(null);
   const voiceRef = useRef<VoiceTrack>(EMPTY_VOICE);
@@ -459,11 +461,13 @@ export function Stage({ showId }: { showId: string }) {
     if (!frame) return;
     const pointers = new Map<number, { x: number; y: number }>();
 
+    // Soft bounds well past the frame: puppets enter and exit through the
+    // wings, and a drag that wanders offstage still comes back.
     const norm = (e: PointerEvent) => {
       const r = frame.getBoundingClientRect();
       return {
-        x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
-        y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+        x: Math.min(1.75, Math.max(-0.75, (e.clientX - r.left) / r.width)),
+        y: Math.min(1.75, Math.max(-0.75, (e.clientY - r.top) / r.height)),
       };
     };
 
@@ -869,11 +873,6 @@ export function Stage({ showId }: { showId: string }) {
     await reloadImages();
   };
 
-  const startDoodle = () => {
-    strokeRef.current = [];
-    setModeBoth('doodling');
-    dirtyRef.current = true;
-  };
 
   const finishDoodle = (keep: boolean) => {
     const strokes = strokeRef.current;
@@ -917,11 +916,41 @@ export function Stage({ showId }: { showId: string }) {
     );
   };
 
-  const enterBodyAssign = () => {
-    bodyMapRef.current = { right: null, left: null };
-    setBodyHint('tap a puppet (or a piece or pin) for your RIGHT hand');
-    setModeBoth('bodyAssign');
+  /** Rail actions: rail order is draw order, back to front. */
+  const recastWith = (p: ShowPuppet, patch: Partial<CastEvent>) => {
+    commit((proj) =>
+      appendEvent(proj, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: p.id,
+        puppet: p.spec,
+        x: p.home.x,
+        y: p.home.y,
+        scale: p.home.scale,
+        rot: p.home.rot,
+        ...(p.back ? { back: true as const } : {}),
+        ...patch,
+      }),
+    );
   };
+
+  const bringForward = (p: ShowPuppet) => recastWith(p, {});
+
+  const sendToBack = (p: ShowPuppet) => {
+    // Re-cast everyone else in their current order; the target stays put and
+    // ends up drawn first among the non-backdrops.
+    const others = castOf(projectRef.current).filter((o) => !o.back && o.id !== p.id);
+    for (const o of others) recastWith(o, {});
+  };
+
+  const centerOnStage = (p: ShowPuppet) => recastWith(p, { x: 0.5, y: 0.55 });
+
+  const dropPuppet = (p: ShowPuppet) => {
+    setSelectedId(null);
+    commit((proj) => appendEvent(proj, { kind: 'DROP', id: newId(), at: 0, puppetId: p.id }));
+  };
+
 
   const startBodyPass = async () => {
     if (!bodyMapRef.current.right && !bodyMapRef.current.left) return;
@@ -1002,234 +1031,277 @@ export function Stage({ showId }: { showId: string }) {
 
   if (error) return <p className="error">{error}</p>;
 
+  const selected = selectedId ? castOf(projectSnap).find((p) => p.id === selectedId) : undefined;
+  const chipGlyph = (p: ShowPuppet) =>
+    p.back ? '🖼' : p.spec.type === 'doodle' ? '✏️' : p.spec.type === 'rect' ? '▦' : '🙂';
+
+  const enterMode = (m: Mode) => {
+    setKitOpen(false);
+    setSelectedId(null);
+    if (m === 'doodling') strokeRef.current = [];
+    if (m === 'bodyAssign') {
+      bodyMapRef.current = { right: null, left: null };
+      setBodyHint('tap a puppet (or a piece or pin) for your RIGHT hand');
+    }
+    setModeBoth(m);
+    dirtyRef.current = true;
+  };
+
+  const placing = mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning';
+
   return (
     <div className="showstage">
-      <div ref={frameRef} className={`stagebox mode-${mode}`}>
-        <canvas ref={canvasRef} />
-        {mode === 'needsAudio' && (
-          <div className="stage-cta">
-            <p>every bit starts with the sound.</p>
-            <button className="primary" onClick={() => void recordBit()}>
-              ⏺ record the bit
-            </button>
-          </div>
-        )}
-        {mode === 'micLive' && (
-          <div className="stage-cta">
-            <p className="live">recording… do the bit</p>
-            <button className="primary" onClick={() => void stopBit()}>
-              ■ done
-            </button>
-          </div>
-        )}
-        {mode === 'recording' && <span className="recdot">●</span>}
-        {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
-        {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
-        {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
-        {mode === 'pinning' && (
-          <div className="stage-hintline">tap an uncut photo puppet to pin it</div>
-        )}
-        {mode === 'bodyAssign' && <div className="stage-hintline">{bodyHint}</div>}
-        <video ref={pipVideoRef} className="pip" muted playsInline hidden={!bodyActive} />
-      </div>
-
-      {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
-        <>
-          <div className="showbar">
-            <div className="progress">
-              {onsets.map((o, i) => (
-                <span
-                  key={i}
-                  className="beat"
-                  style={{ left: `${durationS ? (o / durationS) * 100 : 0}%` }}
-                />
-              ))}
-              <div
-                className="fill"
-                style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }}
-              />
-              <input
-                className="seek"
-                type="range"
-                min={0}
-                max={durationS || 1}
-                step={0.01}
-                value={t}
-                disabled={busy}
-                onChange={(e) => seek(Number(e.target.value))}
-                aria-label="playhead"
-              />
+      <div className="stagearea">
+        <div ref={frameRef} className={`stagebox mode-${mode}`}>
+          <canvas ref={canvasRef} />
+          {mode === 'needsAudio' && (
+            <div className="stage-cta">
+              <p>every bit starts with the sound.</p>
+              <button className="primary" onClick={() => void recordBit()}>
+                ⏺ record the bit
+              </button>
             </div>
-            <span className="time">
-              {fmt(t)} / {fmt(durationS)}
-            </span>
-          </div>
+          )}
+          {mode === 'micLive' && (
+            <div className="stage-cta">
+              <p className="live">recording… do the bit</p>
+              <button className="primary" onClick={() => void stopBit()}>
+                ■ done
+              </button>
+            </div>
+          )}
+          {mode === 'recording' && <span className="recdot">●</span>}
+          {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
+          {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
+          {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
+          {mode === 'pinning' && (
+            <div className="stage-hintline">tap an uncut photo puppet to pin it</div>
+          )}
+          {mode === 'bodyAssign' && <div className="stage-hintline">{bodyHint}</div>}
+          <video ref={pipVideoRef} className="pip" muted playsInline hidden={!bodyActive} />
 
-          {mode === 'doodling' ? (
-            <div className="transport">
-              <span className="status">draw with your finger</span>
-              <button onClick={() => finishDoodle(false)}>cancel</button>
-              <button className="primary" onClick={() => finishDoodle(true)}>
+          {placing && (
+            <div className="stagepills">
+              <button className="pill" onClick={() => setModeBoth('idle')}>
+                cancel
+              </button>
+            </div>
+          )}
+          {mode === 'doodling' && (
+            <div className="stagepills">
+              <button className="pill" onClick={() => finishDoodle(false)}>
+                cancel
+              </button>
+              <button className="pill primary" onClick={() => finishDoodle(true)}>
                 keep it
               </button>
             </div>
-          ) : mode === 'bodyAssign' ? (
-            <div className="transport">
-              <span className="status">body pass</span>
-              <button onClick={() => setModeBoth('idle')}>cancel</button>
+          )}
+          {mode === 'bodyAssign' && (
+            <div className="stagepills">
+              <button className="pill" onClick={() => setModeBoth('idle')}>
+                cancel
+              </button>
               <button
-                className="primary"
+                className="pill primary"
                 disabled={!projectSnap.audio}
                 onClick={() => void startBodyPass()}
               >
                 ⏺ start
               </button>
             </div>
-          ) : mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning' ? (
-            <div className="transport">
-              <span className="status">
-                {mode === 'snipping'
-                  ? 'scissors out'
-                  : mode === 'mouthing'
-                    ? 'placing a mouth'
-                    : mode === 'eyeing'
-                      ? 'placing eyes'
-                      : 'placing a pin'}
-              </span>
-              <button onClick={() => setModeBoth('idle')}>cancel</button>
-            </div>
-          ) : (
-            <>
-              <div className="transport">
-                {!busy ? (
-                  <>
-                    <button
-                      className="primary"
-                      disabled={puppets.length === 0}
-                      onClick={() => start(true)}
-                    >
-                      ⏺ record a pass
-                    </button>
-                    <button disabled={passCount === 0} onClick={() => start(false)}>
-                      ▶ play
-                    </button>
-                  </>
-                ) : (
-                  <button className="primary" onClick={stop}>
-                    ■ stop
-                  </button>
-                )}
-                <button onClick={undo} disabled={projectSnap.events.length === 0}>
-                  undo
-                </button>
-                <button onClick={redo} disabled={redoCount === 0}>
-                  redo
-                </button>
-              </div>
-              <div className="transport wrap">
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={(e) => {
-                    void castPhoto(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <input
-                  ref={snapInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  hidden
-                  onChange={(e) => {
-                    void castPhoto(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <input
-                  ref={backdropInputRef}
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  onChange={(e) => {
-                    void onBackdropPicked(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <button disabled={busy} onClick={() => photoInputRef.current?.click()}>
-                  + puppet
-                </button>
-                <button disabled={busy} onClick={() => snapInputRef.current?.click()}>
-                  📷 snap
-                </button>
-                <button disabled={busy} onClick={startDoodle}>
-                  + doodle
-                </button>
-                <button disabled={busy} onClick={() => backdropInputRef.current?.click()}>
-                  + backdrop
-                </button>
-              </div>
-              <div className="transport wrap">
-                <button
-                  disabled={busy || puppets.length === 0}
-                  onClick={() => setModeBoth('snipping')}
-                >
-                  ✂ snip
-                </button>
-                <button
-                  disabled={busy || puppets.length === 0}
-                  onClick={() => setModeBoth('mouthing')}
-                >
-                  mouth
-                </button>
-                <button
-                  disabled={busy || puppets.length === 0}
-                  onClick={() => setModeBoth('eyeing')}
-                >
-                  eyes
-                </button>
-                <button
-                  disabled={busy || puppets.length === 0}
-                  onClick={() => setModeBoth('pinning')}
-                >
-                  📌 pin
-                </button>
-                <button disabled={busy || puppets.length === 0} onClick={enterBodyAssign}>
-                  🧍 body
-                </button>
-                <button disabled={busy || projectSnap.events.length === 0} onClick={() => void exportBit()}>
-                  bit file
-                </button>
-                <span className="spacer" />
-                {rendered ? (
-                  <button className="primary" onClick={() => void shareOrDownload(rendered)}>
-                    share
-                  </button>
-                ) : (
-                  <button
-                    className="primary"
-                    disabled={busy || passCount === 0 || !!rendering}
-                    onClick={() => void doRender()}
-                  >
-                    {rendering
-                      ? `${rendering.phase} ${Math.round(rendering.fraction * 100)}%`
-                      : 'render'}
-                  </button>
-                )}
-              </div>
-              <div className="status">
-                {puppets.length} in the cast · {passCount} pass{passCount === 1 ? '' : 'es'}
-                {puppets.length === 0 ? ' · add a puppet to start' : ''}
-                {puppets.length > 0 && passCount === 0
-                  ? ' · drag to place · hold the talker while recording and its mouth speaks'
-                  : ''}
-              </div>
-            </>
           )}
-        </>
+        </div>
+      </div>
+
+      {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
+        <div className="bar">
+          {!busy ? (
+            <>
+              <button
+                className="rec"
+                aria-label="record a pass"
+                disabled={puppets.length === 0 || placing || mode === 'doodling'}
+                onClick={() => start(true)}
+              >
+                ⏺
+              </button>
+              <button
+                className="ghost"
+                aria-label="play"
+                disabled={passCount === 0 || placing || mode === 'doodling'}
+                onClick={() => start(false)}
+              >
+                ▶
+              </button>
+            </>
+          ) : (
+            <button className="rec stop" aria-label="stop" onClick={stop}>
+              ■
+            </button>
+          )}
+          <div className="progress">
+            {onsets.map((o, i) => (
+              <span
+                key={i}
+                className="beat"
+                style={{ left: `${durationS ? (o / durationS) * 100 : 0}%` }}
+              />
+            ))}
+            <div className="fill" style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }} />
+            <input
+              className="seek"
+              type="range"
+              min={0}
+              max={durationS || 1}
+              step={0.01}
+              value={t}
+              disabled={busy}
+              onChange={(e) => seek(Number(e.target.value))}
+              aria-label="playhead"
+            />
+          </div>
+          <span className="time">{fmt(t)}</span>
+          <button
+            className="ghost"
+            aria-label="undo"
+            disabled={busy || projectSnap.events.length === 0}
+            onClick={undo}
+          >
+            ↺
+          </button>
+          <button
+            className={`ghost${kitOpen ? ' on' : ''}`}
+            aria-label="kit"
+            disabled={busy}
+            onClick={() => setKitOpen((k) => !k)}
+          >
+            ⋮⋮
+          </button>
+        </div>
       )}
+
+      {kitOpen && !busy && mode === 'idle' && (
+        <div className="kit">
+          <div className="kitrow kithead">
+            <span className="status">
+              {puppets.length} in the cast · {passCount} pass{passCount === 1 ? '' : 'es'}
+            </span>
+            {rendered ? (
+              <button className="primary" onClick={() => void shareOrDownload(rendered)}>
+                share
+              </button>
+            ) : (
+              <button
+                className="primary"
+                disabled={passCount === 0 || !!rendering}
+                onClick={() => void doRender()}
+              >
+                {rendering
+                  ? `${rendering.phase} ${Math.round(rendering.fraction * 100)}%`
+                  : 'render'}
+              </button>
+            )}
+          </div>
+
+          <div className="kitrow rail">
+            {castOf(projectSnap).map((p) => (
+              <button
+                key={p.id}
+                className={`chip${selectedId === p.id ? ' on' : ''}`}
+                onClick={() => setSelectedId((s) => (s === p.id ? null : p.id))}
+              >
+                {chipGlyph(p)}
+              </button>
+            ))}
+            <button className="chip add" onClick={() => photoInputRef.current?.click()}>
+              ＋
+            </button>
+            <button className="chip add" onClick={() => snapInputRef.current?.click()}>
+              📷
+            </button>
+            <button className="chip add" onClick={() => enterMode('doodling')}>
+              ✏️
+            </button>
+            <button className="chip add" onClick={() => backdropInputRef.current?.click()}>
+              🖼
+            </button>
+          </div>
+
+          {selected && (
+            <div className="kitrow">
+              <span className="status">rail order is layer order</span>
+              {!selected.back && (
+                <>
+                  <button onClick={() => bringForward(selected)}>front</button>
+                  <button onClick={() => sendToBack(selected)}>back</button>
+                </>
+              )}
+              <button onClick={() => centerOnStage(selected)}>center</button>
+              <button onClick={() => dropPuppet(selected)}>drop</button>
+            </div>
+          )}
+
+          <div className="kitrow">
+            <button disabled={puppets.length === 0} onClick={() => enterMode('snipping')}>
+              ✂ snip
+            </button>
+            <button disabled={puppets.length === 0} onClick={() => enterMode('mouthing')}>
+              mouth
+            </button>
+            <button disabled={puppets.length === 0} onClick={() => enterMode('eyeing')}>
+              eyes
+            </button>
+            <button disabled={puppets.length === 0} onClick={() => enterMode('pinning')}>
+              📌 pin
+            </button>
+            <button disabled={puppets.length === 0} onClick={() => enterMode('bodyAssign')}>
+              🧍 body
+            </button>
+            <button
+              disabled={projectSnap.events.length === 0}
+              onClick={() => void exportBit()}
+            >
+              bit file
+            </button>
+            <button disabled={redoCount === 0} onClick={redo}>
+              redo
+            </button>
+          </div>
+        </div>
+      )}
+
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          void castPhoto(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={snapInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        hidden
+        onChange={(e) => {
+          void castPhoto(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={backdropInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          void onBackdropPicked(e.target.files);
+          e.target.value = '';
+        }}
+      />
     </div>
   );
 }

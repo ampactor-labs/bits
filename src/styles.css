@@ -134,20 +134,26 @@ button:active {
 }
 
 .showstage {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 10px;
+  gap: 8px;
+}
+
+.stagearea {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
 }
 
 .stagebox {
   position: relative;
-  flex: 1;
-  min-height: 0;
-  aspect-ratio: 9 / 16;
-  align-self: center;
+  height: 100%;
   max-width: 100%;
-  background: #101010;
+  aspect-ratio: 9 / 16;
+  background: #0b0a09;
   border-radius: 14px;
   overflow: hidden;
   touch-action: none;
@@ -214,13 +220,41 @@ button:active {
   }
 }
 
-.showbar {
+.bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  padding: 2px 2px 6px;
 }
 
-.showbar .progress {
+.bar .rec {
+  min-width: 54px;
+  min-height: 54px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #1a120a;
+  font-size: 20px;
+}
+
+.bar .rec.stop {
+  background: var(--accent-2);
+  color: #0d1520;
+}
+
+.bar .ghost {
+  background: transparent;
+  color: var(--text);
+  min-width: 44px;
+  padding: 0 8px;
+  font-size: 18px;
+}
+
+.bar .ghost.on {
+  color: var(--accent-2);
+}
+
+.bar .progress {
   position: relative;
   flex: 1;
   height: 8px;
@@ -229,14 +263,14 @@ button:active {
   overflow: hidden;
 }
 
-.showbar .fill {
+.bar .fill {
   position: absolute;
   inset: 0 auto 0 0;
   background: var(--accent);
   opacity: 0.85;
 }
 
-.showbar .beat {
+.bar .beat {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -245,21 +279,99 @@ button:active {
   opacity: 0.5;
 }
 
-.showbar .seek {
+.bar .seek {
   position: absolute;
-  inset: -14px 0;
+  inset: -18px 0;
   width: 100%;
   margin: 0;
   opacity: 0;
-  min-height: 36px;
+  min-height: 44px;
 }
 
-.showbar .seek:disabled {
+.bar .seek:disabled {
   pointer-events: none;
 }
 
-.transport.wrap {
+.bar .time {
+  min-width: 0;
+}
+
+.kit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 70px;
+  z-index: 5;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border-radius: 16px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kitrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+.kitrow.kithead {
+  flex-wrap: nowrap;
+}
+
+.kitrow.kithead .status {
+  flex: 1;
+}
+
+.kitrow.rail {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.chip {
+  min-width: 46px;
+  min-height: 46px;
+  padding: 0;
+  border-radius: 12px;
+  background: #2a2622;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.chip.on {
+  outline: 2px solid var(--accent-2);
+}
+
+.chip.add {
+  background: transparent;
+  border: 1.5px dashed var(--muted);
+}
+
+.stagepills {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  z-index: 3;
+}
+
+.pill {
+  border-radius: 999px;
+  min-height: 42px;
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.pill.primary {
+  background: var(--accent);
+  color: #1a120a;
 }
 
 .pip {

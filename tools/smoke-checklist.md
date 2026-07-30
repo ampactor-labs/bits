@@ -11,6 +11,11 @@ Run on both phones after each push. All of it is one flow: make a real bit.
 6. Backdrop: a camera-roll photo fills the stage behind everything.
 7. Drag a puppet to place it; two fingers resize and rotate it; reopen the bit
    and the staging survived.
+7a. The stage fills the screen; the kit (⋮⋮) slides over it and closes clean.
+7b. Drag a puppet fully offstage and release: it's gone from view; the rail
+    chip still shows it and "center" brings it back. Record a pass where it
+    enters from the wings.
+7c. Rail order reads back-to-front; "front" and "back" reorder correctly.
 8. Long-press a puppet: it drops from the cast; undo brings it back.
 9. Snip: draw a line across a puppet; the far side falls into a dangling piece
    that swings when you shake the puppet.
