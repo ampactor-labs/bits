@@ -93,6 +93,22 @@ export async function saveProjectJson(sourceId: string, json: string): Promise<v
   await writable.close();
 }
 
+export async function listProjectIds(prefix: string): Promise<string[]> {
+  const d = await dir(PROJECTS);
+  const out: string[] = [];
+  for await (const [entryName, handle] of d.entries()) {
+    if (handle.kind === 'file' && entryName.startsWith(prefix) && entryName.endsWith('.json')) {
+      out.push(entryName.slice(0, -'.json'.length));
+    }
+  }
+  return out.sort().reverse();
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  const d = await dir(PROJECTS);
+  await d.removeEntry(`${id}.json`).catch(() => {});
+}
+
 export async function loadProjectJson(sourceId: string): Promise<string | null> {
   const d = await dir(PROJECTS);
   try {

@@ -27,6 +27,18 @@ export class AudioSourceHandle {
     return new AudioBufferSink(this.track);
   }
 
+  duration(): Promise<number> {
+    return this.input.computeDuration();
+  }
+
+  get channels(): number {
+    return this.track.numberOfChannels;
+  }
+
+  get sampleRate(): number {
+    return this.track.sampleRate;
+  }
+
   dispose(): void {
     this.input.dispose();
   }
