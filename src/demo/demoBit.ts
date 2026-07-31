@@ -19,6 +19,8 @@ import { saveProjectJson } from '../media/opfs';
 
 export const DEMO_SHOW_ID = 'show-demo';
 const DEMO_AUDIO_ID = 'demo-bit-audio.mp4';
+const DEMO_BACKDROP_ID = 'demo-backdrop.png';
+const DEMO_CAT_ID = 'demo-cat.png';
 const DUR = 12;
 const RATE = 48000;
 
@@ -71,6 +73,127 @@ async function encodeTrack(): Promise<Blob> {
   return new Blob([target.buffer!], { type: 'video/mp4' });
 }
 
+/** A painted night-theater backdrop: the demo shows every kind of cast
+ *  member, so the stage itself gets scenery. */
+async function paintBackdrop(): Promise<Blob> {
+  const W = 720;
+  const H = 1280;
+  const c = new OffscreenCanvas(W, H);
+  const ctx = c.getContext('2d')!;
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#101426');
+  sky.addColorStop(0.65, '#1c1830');
+  sky.addColorStop(1, '#241a20');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  // Moon and a lazy spotlight.
+  ctx.fillStyle = '#e8ddc4';
+  ctx.beginPath();
+  ctx.arc(W * 0.78, H * 0.14, 62, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#101426';
+  ctx.beginPath();
+  ctx.arc(W * 0.74, H * 0.125, 50, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(240, 226, 190, 0.07)';
+  ctx.beginPath();
+  ctx.moveTo(W * 0.5, 0);
+  ctx.lineTo(W * 0.16, H * 0.86);
+  ctx.lineTo(W * 0.84, H * 0.86);
+  ctx.closePath();
+  ctx.fill();
+  // Stage floor: boards.
+  ctx.fillStyle = '#2c2018';
+  ctx.fillRect(0, H * 0.82, W, H * 0.18);
+  ctx.strokeStyle = '#1c1410';
+  ctx.lineWidth = 4;
+  for (let i = 1; i < 6; i++) {
+    ctx.beginPath();
+    ctx.moveTo((W / 6) * i, H * 0.82);
+    ctx.lineTo(W * 0.5 + ((W / 6) * i - W * 0.5) * 1.6, H);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#3a2c20';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.82);
+  ctx.lineTo(W, H * 0.82);
+  ctx.stroke();
+  return c.convertToBlob({ type: 'image/png' });
+}
+
+/** A chunky orange cat with a transparent background: the demo's "photo
+ *  cutout", so pins have something to bend. */
+async function paintCat(): Promise<{ blob: Blob; w: number; h: number }> {
+  const W = 420;
+  const H = 460;
+  const c = new OffscreenCanvas(W, H);
+  const ctx = c.getContext('2d')!;
+  const orange = '#e07a30';
+  const dark = '#a04f18';
+  ctx.fillStyle = orange;
+  // Tail curling up the left.
+  ctx.beginPath();
+  ctx.moveTo(70, 400);
+  ctx.quadraticCurveTo(-10, 330, 50, 240);
+  ctx.quadraticCurveTo(90, 180, 60, 150);
+  ctx.quadraticCurveTo(120, 160, 105, 250);
+  ctx.quadraticCurveTo(80, 330, 120, 380);
+  ctx.closePath();
+  ctx.fill();
+  // Body and head.
+  ctx.beginPath();
+  ctx.ellipse(240, 330, 130, 115, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(240, 165, 95, 85, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Ears.
+  ctx.beginPath();
+  ctx.moveTo(160, 120);
+  ctx.lineTo(175, 40);
+  ctx.lineTo(225, 95);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(320, 120);
+  ctx.lineTo(305, 40);
+  ctx.lineTo(255, 95);
+  ctx.closePath();
+  ctx.fill();
+  // Stripes and whiskers.
+  ctx.strokeStyle = dark;
+  ctx.lineWidth = 10;
+  ctx.lineCap = 'round';
+  for (const [x0, y0, x1, y1] of [
+    [180, 300, 210, 285],
+    [175, 340, 210, 330],
+    [300, 285, 330, 300],
+    [300, 330, 335, 340],
+  ] as const) {
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#f4e6d0';
+  for (const side of [-1, 1] as const) {
+    for (const dy of [-8, 4, 16]) {
+      ctx.beginPath();
+      ctx.moveTo(240 + side * 40, 195);
+      ctx.lineTo(240 + side * 110, 195 + dy);
+      ctx.stroke();
+    }
+  }
+  // Nose.
+  ctx.fillStyle = '#5c3a2a';
+  ctx.beginPath();
+  ctx.ellipse(240, 180, 12, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  return { blob: await c.convertToBlob({ type: 'image/png' }), w: W, h: H };
+}
+
 // Doodle geometry: crude on purpose; the boil makes crude charming.
 const circle = (cx: number, cy: number, r: number, n = 16): number[] => {
   const out: number[] = [];
@@ -116,7 +239,7 @@ function walk(t0: number, t1: number, x0: number, x1: number, y: number, hop = 0
   return out;
 }
 
-function events(): RecipeEvent[] {
+function events(catW: number, catH: number): RecipeEvent[] {
   let n = 0;
   const id = () => `demo${n++}`;
   const dood = (
@@ -137,11 +260,42 @@ function events(): RecipeEvent[] {
     scale: 1,
     rot: 0,
   });
+  // Cat box: width as a stage fraction, height from the painted aspect on a
+  // 9:16 stage.
+  const catBoxW = 0.3;
+  const catBoxH = catBoxW * (9 / 16) * (catH / catW);
   return [
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'backdrop',
+      puppet: { type: 'cutout', assetId: DEMO_BACKDROP_ID, w: 1, h: 1 },
+      x: 0.5,
+      y: 0.5,
+      scale: 1,
+      rot: 0,
+      back: true,
+    },
     // Guy and blob peek in from the wings; the hot dog waits fully offstage.
     dood('guy', GUY, 0.26, 0.22, 0.06, 0.62),
     dood('blob', BLOB, 0.24, 0.16, 0.94, 0.64),
     dood('dog', HOTDOG, 0.22, 0.07, -0.3, 0.3),
+    // The cat is the "photo" cutout: pinned, so the finale can bend it.
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'cat',
+      puppet: { type: 'cutout', assetId: DEMO_CAT_ID, w: catBoxW, h: catBoxH },
+      x: 0.5,
+      y: 1.22,
+      scale: 1,
+      rot: 0,
+    },
+    { kind: 'PIN', id: id(), at: 0, puppetId: 'cat', px: 0.5, py: 0.75 },
+    { kind: 'PIN', id: id(), at: 0, puppetId: 'cat', px: 0.55, py: 0.28 },
+    { kind: 'MOUTH', id: id(), at: 0, puppetId: 'cat', mx: 0.57, my: 0.47, size: 0.2 },
     { kind: 'SNIP', id: id(), at: 0, puppetId: 'guy', x0: 0.02, y0: 0.36, x1: 0.98, y1: 0.33 },
     { kind: 'MOUTH', id: id(), at: 0, puppetId: 'guy', mx: 0.5, my: 0.24, size: 0.3 },
     { kind: 'EYES', id: id(), at: 0, puppetId: 'guy', ex: 0.5, ey: 0.12, size: 0.34 },
@@ -166,6 +320,23 @@ function events(): RecipeEvent[] {
       piece: 0,
       samples: [9.3, 0.3, 0.42, 9.6, 0.42, 0.44, 9.9, 0.24, 0.44, 10.2, 0.42, 0.44, 10.5, 0.3, 0.42],
     },
+    // The cat rises from below mid-show and heckles.
+    {
+      kind: 'PASS',
+      id: id(),
+      at: 5.4,
+      puppetId: 'cat',
+      samples: [5.4, 0.5, 1.22, 6.2, 0.5, 0.9, 7.0, 0.48, 0.88],
+    },
+    // Finale: its pinned head gets yanked side to side, warping.
+    {
+      kind: 'PASS',
+      id: id(),
+      at: 9.6,
+      puppetId: 'cat',
+      pin: 1,
+      samples: [9.6, 0.53, 0.82, 10.0, 0.62, 0.8, 10.4, 0.42, 0.8, 10.8, 0.6, 0.82, 11.2, 0.5, 0.81],
+    },
     // A hot dog is flung across the finale, trailing.
     { kind: 'PASS', id: id(), at: 10.2, puppetId: 'dog', samples: walk(10.2, 11.4, -0.3, 1.3, 0.3, 0.12) },
     // Both keep talking over each other.
@@ -184,6 +355,9 @@ function events(): RecipeEvent[] {
 export async function buildDemoShow(): Promise<string> {
   const audio = await encodeTrack();
   await restoreAsset(DEMO_AUDIO_ID, audio);
+  await restoreAsset(DEMO_BACKDROP_ID, await paintBackdrop());
+  const cat = await paintCat();
+  await restoreAsset(DEMO_CAT_ID, cat.blob);
   const probe = await AudioSourceHandle.open(audio);
   const durationS = probe ? await probe.duration() : DUR;
   probe?.dispose();
@@ -194,7 +368,7 @@ export async function buildDemoShow(): Promise<string> {
     title: 'how to bits',
     createdAt: new Date().toISOString(),
     seed: 20260730,
-    events: events(),
+    events: events(cat.w, cat.h),
     audio: { assetId: DEMO_AUDIO_ID, durationS },
   };
   // Self-check: the demo must always be a valid recipe.

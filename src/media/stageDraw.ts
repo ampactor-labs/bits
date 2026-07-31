@@ -410,9 +410,11 @@ function drawMouth(
   const width = mouth.size * pw;
   const open = voice.open;
 
+  // Dark fill for depth, bone stroke for contrast: reads as lips on a photo
+  // face and as drawn lines on a doodle over the dark stage.
   if (open < 0.08) {
-    ctx.strokeStyle = MOUTH_FILL;
-    ctx.lineWidth = Math.max(2, width * 0.09);
+    ctx.strokeStyle = DOODLE_COLOR;
+    ctx.lineWidth = Math.max(2.5, width * 0.1);
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(mx - width / 2, my);
@@ -423,6 +425,8 @@ function drawMouth(
   }
 
   ctx.fillStyle = MOUTH_FILL;
+  ctx.strokeStyle = DOODLE_COLOR;
+  ctx.lineWidth = Math.max(2, width * 0.07);
   ctx.beginPath();
   switch (voice.shape) {
     case SHAPE_SLIT:
@@ -441,6 +445,7 @@ function drawMouth(
       ctx.ellipse(mx, my, width * 0.4, open * width * 0.3, 0, 0, Math.PI * 2);
   }
   ctx.fill();
+  ctx.stroke();
   ctx.restore();
 }
 
