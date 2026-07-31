@@ -357,6 +357,25 @@ function drawContent(
     case 'doodle':
       drawDoodle(ctx, spec.strokes, pw, ph, tS, seed);
       break;
+    case 'text': {
+      // Word puppets: bold characters that boil like doodles.
+      const text = spec.text || '?';
+      const chars = [...text];
+      const fontPx = Math.min(ph * 0.72, (pw * 1.55) / Math.max(1, chars.length));
+      ctx.font = `800 ${fontPx}px system-ui, sans-serif`;
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = DOODLE_COLOR;
+      const variant = Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS;
+      const widths = chars.map((c) => ctx.measureText(c).width);
+      let x = -widths.reduce((a, b) => a + b, 0) / 2;
+      chars.forEach((c, i) => {
+        const jx = boilNoise(seed, variant, 1000 + i) * fontPx * 0.05;
+        const jy = boilNoise(seed, variant, 2000 + i) * fontPx * 0.08;
+        ctx.fillText(c, x + jx, jy);
+        x += widths[i]!;
+      });
+      break;
+    }
   }
 }
 

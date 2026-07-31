@@ -14,6 +14,7 @@ interface EventBase {
 export type PuppetSpec =
   | { type: 'cutout'; assetId: string; w: number; h: number }
   | { type: 'doodle'; strokes: number[][]; w: number; h: number }
+  | { type: 'text'; text: string; w: number; h: number }
   | { type: 'rect'; color: string; w: number; h: number };
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
@@ -88,7 +89,17 @@ export interface EyesEvent extends EventBase {
 }
 
 export type WireSource = 'on' | 'voice' | 'beat';
-export type WireTarget = 'bounce' | 'shake' | 'lean' | 'trails';
+export type WireTarget = 'bounce' | 'shake' | 'lean' | 'trails' | 'foley';
+
+export type SfxKind = 'boing' | 'slap' | 'honk' | 'scratch' | 'drop';
+
+/** A performed sound: a foley-board tap at `at`, mixed into the show's audio.
+ *  puppetId is '' (sounds belong to the stage). */
+export interface SoundEvent extends EventBase {
+  kind: 'SOUND';
+  puppetId: string;
+  sfx: SfxKind;
+}
 
 /** A modulation wire: a signal patched into a property. puppetId '' targets
  *  the stage itself (trails). Latest wire per (puppet, source, target) wins;
@@ -116,6 +127,7 @@ export type RecipeEvent =
   | EyesEvent
   | PinEvent
   | WireEvent
+  | SoundEvent
   | DropEvent;
 
 export interface Project {
@@ -230,13 +242,24 @@ export function parseProject(text: string): Project {
           throw new Error('recipe: PIN event needs px, py');
         }
         break;
+      case 'SOUND': {
+        const ok =
+          ev.sfx === 'boing' ||
+          ev.sfx === 'slap' ||
+          ev.sfx === 'honk' ||
+          ev.sfx === 'scratch' ||
+          ev.sfx === 'drop';
+        if (!ok) throw new Error('recipe: SOUND event needs a known sfx');
+        break;
+      }
       case 'WIRE': {
         const srcOk = ev.source === 'on' || ev.source === 'voice' || ev.source === 'beat';
         const tgtOk =
           ev.target === 'bounce' ||
           ev.target === 'shake' ||
           ev.target === 'lean' ||
-          ev.target === 'trails';
+          ev.target === 'trails' ||
+          ev.target === 'foley';
         if (!(srcOk && tgtOk && isNum(ev.amount) && ev.amount >= 0 && ev.amount <= 1)) {
           throw new Error('recipe: WIRE event needs a source, target, and amount in 0..1');
         }

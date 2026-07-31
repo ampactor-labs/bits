@@ -20,6 +20,7 @@ import {
 } from './envelope';
 import { deformGrid, makeWarpGrid, mlsSimilarity } from './warp';
 import { beatPulse, effectiveWires, trailStrength, wireModsFor } from './wires';
+import { SFX_NAMES, impactSfx, mixSfxInto, renderSfx } from './sfx';
 import { appendEvent, createProject, type Project, type RecipeEvent } from './recipe';
 
 const STEPS_PER_S = 120;
@@ -406,6 +407,32 @@ describe('wires', () => {
       dAngle: 0,
     });
     expect(trailStrength(wires, voice, [], 0.5)).toBe(0.5);
+  });
+});
+
+describe('foley cabinet', () => {
+  it('every sound is nonempty, bounded, and deterministic', () => {
+    for (const name of SFX_NAMES) {
+      const pcm = renderSfx(name);
+      expect(pcm.length).toBeGreaterThan(1000);
+      let peak = 0;
+      for (const v of pcm) peak = Math.max(peak, Math.abs(v));
+      expect(peak).toBeGreaterThan(0.05);
+      expect(peak).toBeLessThanOrEqual(1);
+      expect(renderSfx(name)).toBe(pcm);
+    }
+    expect(impactSfx(0)).toBe('boing');
+    expect(impactSfx(1)).toBe('slap');
+  });
+
+  it('mixes into a bus slice at the right offset, clamped', () => {
+    const bus = new Float32Array(4800);
+    mixSfxInto(bus, 2.0, 48000, 2.05, 'slap');
+    expect(bus.slice(0, 2350).every((v) => v === 0)).toBe(true);
+    let energy = 0;
+    for (let i = 2400; i < 4800; i++) energy += Math.abs(bus[i]!);
+    expect(energy).toBeGreaterThan(1);
+    for (const v of bus) expect(Math.abs(v)).toBeLessThanOrEqual(1);
   });
 });
 

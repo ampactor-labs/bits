@@ -52,8 +52,8 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
     (async () => {
       await ensurePersistence();
       // First exposure: seed the demo bit and walk straight onto its stage.
-      if (!localStorage.getItem('bits-demo-v2')) {
-        localStorage.setItem('bits-demo-v2', '1');
+      if (!localStorage.getItem('bits-demo-v3')) {
+        localStorage.setItem('bits-demo-v3', '1');
         const existing = await listProjectIds(SHOW_PREFIX);
         if (existing.length === 0) {
           try {

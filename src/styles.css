@@ -374,6 +374,27 @@ button:active {
   color: #1a120a;
 }
 
+.foleyrow {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  z-index: 3;
+}
+
+.foleyrow .pill {
+  min-height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.kit button.on {
+  outline: 2px solid var(--accent-2);
+}
+
 .pip {
   position: absolute;
   top: 10px;

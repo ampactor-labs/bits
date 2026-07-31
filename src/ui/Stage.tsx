@@ -16,6 +16,7 @@ import {
   type RecipeEvent,
 } from '../engine/recipe';
 import { detectOnsets } from '../engine/onsets';
+import { IMPACT_SQUASH, impactSfx, renderSfx, type SfxName } from '../engine/sfx';
 import { computeVoiceTrack, EMPTY_VOICE, type VoiceTrack } from '../engine/envelope';
 import { pointInPoly } from '../engine/pieces';
 import {
@@ -27,7 +28,7 @@ import {
   type ShowPuppet,
   type ShowSim,
 } from '../engine/show';
-import { AudioSourceHandle, JamAudio, mixdownMono } from '../media/audio';
+import { AudioSourceHandle, JamAudio, concatAudio, mixdownMono } from '../media/audio';
 import { getAsset, saveAsset } from '../media/assets';
 import { exportBundle } from '../media/bundle';
 import { makeCutout } from '../media/cutout';
@@ -103,6 +104,11 @@ export function Stage({ showId }: { showId: string }) {
   const [redoCount, setRedoCount] = useState(0);
   const [kitOpen, setKitOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [counting, setCounting] = useState(false);
+  const [corpse, setCorpse] = useState(false);
+  const retakeModeRef = useRef<'replace' | 'extend'>('replace');
+  const prevSquashRef = useRef<Map<string, number>>(new Map());
+  const liveImpactCountRef = useRef(0);
 
   const audioBlobRef = useRef<Blob | null>(null);
   const voiceRef = useRef<VoiceTrack>(EMPTY_VOICE);
@@ -126,6 +132,7 @@ export function Stage({ showId }: { showId: string }) {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const redoRef = useRef<RecipeEvent[]>([]);
   const playheadRef = useRef(0);
+  const prevClockRef = useRef(0);
   const clockFromRef = useRef(0);
   const wallStartRef = useRef(0);
   const seekSimAtRef = useRef(-1);
@@ -283,15 +290,28 @@ export function Stage({ showId }: { showId: string }) {
     dirtyRef.current = true;
   }, []);
 
-  const start = (recording: boolean) => {
+  const start = async (recording: boolean) => {
     const dur = projectRef.current.audio?.durationS ?? 0;
     if (dur <= 0) return;
     setRendered(null);
     let from = playheadRef.current;
     if (from >= dur - 0.05) from = 0;
     playheadRef.current = from;
+    prevSquashRef.current = new Map();
+    liveImpactCountRef.current = 0;
 
-    const sim = createShowSim(projectRef.current, 0, (id, channel, tt) => {
+    if (recording && jamRef.current) {
+      setCounting(true);
+      await jamRef.current.countIn();
+      setCounting(false);
+    }
+
+    // Corpse mode: record blind; earlier passes stay hidden until playback.
+    const simProject =
+      recording && corpse
+        ? { ...projectRef.current, events: projectRef.current.events.filter((e) => e.kind !== 'PASS') }
+        : projectRef.current;
+    const sim = createShowSim(simProject, 0, (id, channel, tt) => {
       const finger = grabRef.current;
       if (
         finger &&
@@ -311,6 +331,7 @@ export function Stage({ showId }: { showId: string }) {
     sim.advanceTo(from);
     simRef.current = sim;
     clockFromRef.current = from;
+    prevClockRef.current = from;
     wallStartRef.current = performance.now() + 50;
     void jamRef.current?.play(from);
     setModeBoth(recording ? 'recording' : 'playing');
@@ -350,6 +371,17 @@ export function Stage({ showId }: { showId: string }) {
           if (clock - lastT >= HOLD_SAMPLE_S) grab.samples.push(clock, grab.x, grab.y);
         }
 
+        // Performed sounds replay live; impact foley fires off squash spikes.
+        const prevClock = prevClockRef.current;
+        prevClockRef.current = clock;
+        if (clock > prevClock) {
+          for (const e of project.events) {
+            if (e.kind === 'SOUND' && e.at > prevClock && e.at <= clock) {
+              void jamRef.current?.playSfx(renderSfx(e.sfx));
+            }
+          }
+        }
+
         // Body passes: wrists update their virtual grabs.
         const driver = poseDriverRef.current;
         if (m === 'recording' && driver) {
@@ -383,6 +415,15 @@ export function Stage({ showId }: { showId: string }) {
         if (sim) {
           const poses = sim.advanceTo(clock);
           lastPosesRef.current = poses;
+          if (wireAmount(wiresRef.current, '', 'on', 'foley') > 0) {
+            for (const [pid, pose] of poses) {
+              const prev = prevSquashRef.current.get(pid) ?? 0;
+              if (pose.root.squash >= IMPACT_SQUASH && prev < IMPACT_SQUASH) {
+                void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
+              }
+              prevSquashRef.current.set(pid, pose.root.squash);
+            }
+          }
           const cast = castOf(project);
           const mods = new Map<string, WireMods>();
           for (const p of cast) {
@@ -839,8 +880,12 @@ export function Stage({ showId }: { showId: string }) {
   const stopBit = async () => {
     const mic = micRef.current;
     if (!mic) return;
-    const blob = await mic.stop();
+    let blob = await mic.stop();
     micRef.current = null;
+    if (retakeModeRef.current === 'extend' && audioBlobRef.current) {
+      blob = (await concatAudio(audioBlobRef.current, blob)) ?? blob;
+    }
+    retakeModeRef.current = 'replace';
     const assetId = await saveAsset(blob, 'webm');
     const handle = await AudioSourceHandle.open(blob);
     if (!handle) {
@@ -1015,7 +1060,28 @@ export function Stage({ showId }: { showId: string }) {
       return;
     }
     setBodyActive(true);
-    start(true);
+    await start(true);
+  };
+
+  /** Foley board: play it now, land it in the recipe at the playhead. */
+  const foley = (sfx: SfxName) => {
+    const dur = projectRef.current.audio?.durationS ?? 0;
+    const clock = Math.min(dur, Math.max(0, currentClock()));
+    void jamRef.current?.playSfx(renderSfx(sfx));
+    commit((p) =>
+      appendEvent(p, { kind: 'SOUND', id: newId(), at: clock, puppetId: '', sfx }),
+    );
+  };
+
+  const startRetake = (mode: 'replace' | 'extend') => {
+    const warning =
+      mode === 'replace'
+        ? 'record new sound for this bit? your moves stay, but they may land differently.'
+        : 'record more sound onto the end of the bit?';
+    if (!window.confirm(warning)) return;
+    retakeModeRef.current = mode;
+    setKitOpen(false);
+    setModeBoth('needsAudio');
   };
 
   const exportBit = async () => {
@@ -1106,11 +1172,14 @@ export function Stage({ showId }: { showId: string }) {
         <div ref={frameRef} className={`stagebox mode-${mode}`}>
           <canvas ref={canvasRef} />
           {mode === 'needsAudio' && (
-            <div className="stage-cta">
+            <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
               <p>every bit starts with the sound.</p>
               <button className="primary" onClick={() => void recordBit()}>
                 ⏺ record the bit
               </button>
+              {projectSnap.audio && (
+                <button onClick={() => setModeBoth('idle')}>keep the old sound</button>
+              )}
             </div>
           )}
           {mode === 'micLive' && (
@@ -1122,6 +1191,26 @@ export function Stage({ showId }: { showId: string }) {
             </div>
           )}
           {mode === 'recording' && <span className="recdot">●</span>}
+          {counting && <div className="stage-hintline">🥁 count-in…</div>}
+          {mode === 'recording' && (
+            <div className="foleyrow" onPointerDown={(e) => e.stopPropagation()}>
+              <button className="pill" onClick={() => foley('boing')}>
+                boing
+              </button>
+              <button className="pill" onClick={() => foley('slap')}>
+                slap
+              </button>
+              <button className="pill" onClick={() => foley('honk')}>
+                honk
+              </button>
+              <button className="pill" onClick={() => foley('scratch')}>
+                scrtch
+              </button>
+              <button className="pill" onClick={() => foley('drop')}>
+                drop
+              </button>
+            </div>
+          )}
           {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
           {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
           {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
@@ -1175,16 +1264,16 @@ export function Stage({ showId }: { showId: string }) {
               <button
                 className="rec"
                 aria-label="record a pass"
-                disabled={puppets.length === 0 || placing || mode === 'doodling'}
-                onClick={() => start(true)}
+                disabled={puppets.length === 0 || placing || mode === 'doodling' || counting}
+                onClick={() => void start(true)}
               >
                 ⏺
               </button>
               <button
                 className="ghost"
                 aria-label="play"
-                disabled={passCount === 0 || placing || mode === 'doodling'}
-                onClick={() => start(false)}
+                disabled={passCount === 0 || placing || mode === 'doodling' || counting}
+                onClick={() => void start(false)}
               >
                 ▶
               </button>
@@ -1280,6 +1369,28 @@ export function Stage({ showId }: { showId: string }) {
             <button className="chip add" onClick={() => backdropInputRef.current?.click()}>
               🖼
             </button>
+            <button
+              className="chip add"
+              onClick={() => {
+                const text = window.prompt('what should it say?')?.trim();
+                if (!text) return;
+                commit((p) =>
+                  appendEvent(p, {
+                    kind: 'CAST',
+                    id: newId(),
+                    at: 0,
+                    puppetId: newId(),
+                    puppet: { type: 'text', text: text.slice(0, 40), w: 0.56, h: 0.1 },
+                    x: 0.5,
+                    y: 0.2,
+                    scale: 1,
+                    rot: 0,
+                  }),
+                );
+              }}
+            >
+              Ⓣ
+            </button>
           </div>
 
           {selected && (
@@ -1337,6 +1448,14 @@ export function Stage({ showId }: { showId: string }) {
             <button onClick={() => cycleWire('', 'on', 'trails')}>
               trails{wireLevel('', 'on', 'trails')}
             </button>
+            <button onClick={() => cycleWire('', 'on', 'foley')}>
+              💥 foley{wireLevel('', 'on', 'foley')}
+            </button>
+            <button className={corpse ? 'on' : ''} onClick={() => setCorpse((c) => !c)}>
+              🕯 corpse{corpse ? ' ·' : ''}
+            </button>
+            <button onClick={() => startRetake('replace')}>retake sound</button>
+            <button onClick={() => startRetake('extend')}>extend sound</button>
             <button
               disabled={projectSnap.events.length === 0}
               onClick={() => void exportBit()}

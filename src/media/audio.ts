@@ -1,6 +1,41 @@
 import { ALL_FORMATS, AudioBufferSink, BlobSource, Input, type InputAudioTrack } from 'mediabunny';
 
 /** A probed, decodable audio track. Owns its Input; dispose when done. */
+/** Concatenate two recordings into one (the "extend the bit" path): decode
+ *  both, butt-join the PCM, re-encode. */
+export async function concatAudio(a: Blob, b: Blob): Promise<Blob | null> {
+  const [ha, hb] = [await AudioSourceHandle.open(a), await AudioSourceHandle.open(b)];
+  if (!ha || !hb) {
+    ha?.dispose();
+    hb?.dispose();
+    return null;
+  }
+  try {
+    const { AudioBufferSource, BufferTarget, Mp4OutputFormat, Output, QUALITY_MEDIUM } =
+      await import('mediabunny');
+    const { getFirstEncodableAudioCodec } = await import('mediabunny');
+    const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) ?? 'opus';
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat(), target });
+    const src = new AudioBufferSource({ codec, bitrate: QUALITY_MEDIUM });
+    output.addAudioTrack(src);
+    await output.start();
+    for (const handle of [ha, hb]) {
+      for await (const { buffer } of handle.makeSink().buffers()) {
+        await src.add(buffer);
+      }
+    }
+    src.close();
+    await output.finalize();
+    return target.buffer ? new Blob([target.buffer], { type: 'video/mp4' }) : null;
+  } catch {
+    return null;
+  } finally {
+    ha.dispose();
+    hb.dispose();
+  }
+}
+
 export class AudioSourceHandle {
   private constructor(
     private readonly input: Input,
@@ -99,16 +134,52 @@ export class JamAudio {
     return this.clock.from + (this.ctx.currentTime - this.clock.anchor);
   }
 
-  async play(fromSrcT: number): Promise<void> {
-    this.stop();
-    const token = ++this.token;
+  private async ensureCtx(): Promise<AudioContext> {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.gain = this.ctx.createGain();
       this.gain.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') await this.ctx.resume();
-    const ctx = this.ctx;
+    return this.ctx;
+  }
+
+  /** Fire a one-shot PCM sound right now (foley board, impact foley). */
+  async playSfx(pcm: Float32Array, sampleRate = 48000): Promise<void> {
+    const ctx = await this.ensureCtx();
+    const buf = ctx.createBuffer(1, pcm.length, sampleRate);
+    buf.copyToChannel(new Float32Array(pcm), 0);
+    const node = ctx.createBufferSource();
+    node.buffer = buf;
+    node.connect(this.gain!);
+    node.start();
+  }
+
+  /** Two click beats before a punch-in, so the cue never ambushes you.
+   *  Resolves when the last click lands. */
+  async countIn(beats = 2, intervalS = 0.5): Promise<void> {
+    const ctx = await this.ensureCtx();
+    const start = ctx.currentTime + 0.08;
+    for (let i = 0; i < beats; i++) {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+      osc.frequency.value = i === beats - 1 ? 1568 : 1046;
+      env.gain.setValueAtTime(0.0001, start + i * intervalS);
+      env.gain.exponentialRampToValueAtTime(0.4, start + i * intervalS + 0.005);
+      env.gain.exponentialRampToValueAtTime(0.0001, start + i * intervalS + 0.09);
+      osc.connect(env);
+      env.connect(this.gain!);
+      osc.start(start + i * intervalS);
+      osc.stop(start + i * intervalS + 0.1);
+    }
+    const untilS = start + beats * intervalS - ctx.currentTime;
+    await new Promise((r) => setTimeout(r, Math.max(0, untilS * 1000)));
+  }
+
+  async play(fromSrcT: number): Promise<void> {
+    this.stop();
+    const token = ++this.token;
+    const ctx = await this.ensureCtx();
     const gain = this.gain!;
     const anchor = ctx.currentTime + 0.05;
     if (token === this.token) this.clock = { from: fromSrcT, anchor };

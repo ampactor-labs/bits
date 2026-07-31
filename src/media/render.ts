@@ -23,6 +23,8 @@ import {
 } from '../engine/envelope';
 import { detectOnsets } from '../engine/onsets';
 import { splitPieces } from '../engine/pieces';
+import { IMPACT_SQUASH, impactSfx, mixSfxInto, type SfxName } from '../engine/sfx';
+import { wireAmount } from '../engine/wires';
 import type { Project } from '../engine/recipe';
 import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
@@ -126,10 +128,27 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   try {
     await output.start();
 
+    // Performed sounds plus derived impact foley (squash spikes, when wired).
+    const sounds: { at: number; sfx: SfxName }[] = project.events
+      .filter((e) => e.kind === 'SOUND')
+      .map((e) => ({ at: e.at, sfx: e.sfx }));
+    const foleyOn = wireAmount(wires, '', 'on', 'foley') > 0;
+    const prevSquash = new Map<string, number>();
+    let impactCount = 0;
+
     const frameCount = Math.max(1, Math.ceil(durationS * fps));
     for (let i = 0; i < frameCount; i++) {
       const t = (i + 0.5) / fps;
       const poses = sim.advanceTo(t);
+      if (foleyOn) {
+        for (const [pid, pose] of poses) {
+          const prev = prevSquash.get(pid) ?? 0;
+          if (pose.root.squash >= IMPACT_SQUASH && prev < IMPACT_SQUASH) {
+            sounds.push({ at: t, sfx: impactSfx(impactCount++) });
+          }
+          prevSquash.set(pid, pose.root.squash);
+        }
+      }
       const mods = new Map<string, WireMods>();
       for (const p of cast) {
         mods.set(p.id, wireModsFor(wires, p.id, voice, onsets, t, project.seed));
@@ -154,7 +173,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     videoSource.close();
 
     if (audio && audioSource) {
-      await passThroughAudio(audio, audioSource, durationS, progress);
+      sounds.sort((a, b) => a.at - b.at);
+      await passThroughAudio(audio, audioSource, durationS, sounds, progress);
       audioSource.close();
     }
 
@@ -175,10 +195,25 @@ async function passThroughAudio(
   audio: AudioSourceHandle,
   audioSource: AudioBufferSource,
   durationS: number,
+  sounds: { at: number; sfx: SfxName }[],
   progress: (p: RenderProgress) => void,
 ) {
   const sink = audio.makeSink();
   const geometry = { channels: audio.channels, sampleRate: audio.sampleRate };
+
+  const mixAndAdd = async (buffer: AudioBuffer, busStartS: number) => {
+    const busEnd = busStartS + buffer.duration;
+    for (const s of sounds) {
+      if (s.at > busEnd) break;
+      // A sound tail can span slices; mixSfxInto handles partial overlap.
+      if (s.at + 1 < busStartS) continue;
+      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        mixSfxInto(buffer.getChannelData(ch), busStartS, buffer.sampleRate, s.at, s.sfx);
+      }
+    }
+    await audioSource.add(buffer);
+  };
+
   let covered = 0;
   for await (const { buffer, timestamp } of sink.buffers(0, durationS)) {
     const from = Math.max(0, timestamp);
@@ -186,12 +221,16 @@ async function passThroughAudio(
     if (to <= from) continue;
     geometry.channels = buffer.numberOfChannels;
     geometry.sampleRate = buffer.sampleRate;
-    if (from - covered > 0.001) await addSilence(audioSource, from - covered, geometry);
-    await audioSource.add(sliceAudioBuffer(buffer, from - timestamp, to - timestamp));
+    if (from - covered > 0.001) {
+      await addSilence(audioSource, from - covered, geometry, covered, mixAndAdd);
+    }
+    await mixAndAdd(sliceAudioBuffer(buffer, from - timestamp, to - timestamp), from);
     covered = to;
     progress({ phase: 'audio', fraction: covered / durationS });
   }
-  if (durationS - covered > 0.001) await addSilence(audioSource, durationS - covered, geometry);
+  if (durationS - covered > 0.001) {
+    await addSilence(audioSource, durationS - covered, geometry, covered, mixAndAdd);
+  }
 }
 
 function sliceAudioBuffer(buffer: AudioBuffer, fromS: number, toS: number): AudioBuffer {
@@ -215,8 +254,11 @@ async function addSilence(
   audioSource: AudioBufferSource,
   durationS: number,
   geometry: { channels: number; sampleRate: number },
+  busStartS = 0,
+  emit?: (buffer: AudioBuffer, busStartS: number) => Promise<void>,
 ) {
   let remaining = durationS;
+  let at = busStartS;
   while (remaining > 0.0005) {
     const chunk = Math.min(remaining, 1);
     const buf = new AudioBuffer({
@@ -224,7 +266,9 @@ async function addSilence(
       sampleRate: geometry.sampleRate,
       numberOfChannels: Math.max(1, geometry.channels),
     });
-    await audioSource.add(buf);
+    if (emit) await emit(buf, at);
+    else await audioSource.add(buf);
+    at += chunk;
     remaining -= chunk;
   }
 }
