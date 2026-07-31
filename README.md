@@ -12,6 +12,16 @@ Complete. Nothing named is left unbuilt:
 
 Mouths speak in spectral visemes (loudness plus zero-crossing rate classifies closed, small, wide, fricative slit, and round shapes; deterministic from the PCM). Pins bend uncut photo puppets through moving-least-squares similarity warp (the closed-form ARAP-family deformer), drawn as a textured triangle mesh; pins are spring points you can grab in passes, and pins and snips are exclusive per puppet: cut paper or bend it. Body passes drive puppets with your wrists via MediaPipe pose from the front camera, one hand per target, recorded as ordinary passes. Any bit exports as a single .bit.json bundle (recipe plus every asset, base64) that anyone can open from the bits list and re-perform: the remix loop.
 
+## Collaboration
+
+There is no server, so collaboration is physical: share the phone, or share a file.
+
+On one phone the instrument is already multiplayer. The bit is recorded together; passes are performed one player at a time, and the talker rule makes hand-offs read as dialogue: whoever holds the puppet is the one speaking. Body passes give two hands to two puppets, one player can work the foley board while another drags, and corpse mode is the party game: perform your pass blind, meet the whole show on playback.
+
+Across phones the unit is the bit file. Export packs the recipe plus every asset it references into one .bit.json; the receiver opens it from the bits list and gets the working instrument, not a flattened video. Import copies assets under fresh ids, so every show owns its storage exclusively: deleting any show never breaks another, and re-importing your own bit yields an independent copy. A bit whose bundle lost its sound still opens and offers a re-record. Finished shows leave as ordinary mp4s through the system share sheet.
+
+Nothing merges. Two people editing the same bit on two phones produce two bits; the loop is pass-the-theater, deliberately. The append-only recipe would make merge tractable later if it ever earns its keep. A share-target route (opening a received bit straight from the share sheet) existed for the phase-0 deck and left with it; today the picker is the door.
+
 ## Dev
 
     npm install
@@ -25,13 +35,13 @@ Deploys to ampactor.dev/bits from main via GitHub Pages (.github/workflows/deplo
 
 ## Layout
 
-    src/engine/    recipe model, program compiler, onsets, puppet springs, show sim
-    src/jam/       pointer-gesture state machine (pure, unit-tested)
-    src/media/     OPFS + assets, Mediabunny probe/decode, mic, cutouts, renderers
-    src/ui/        React chrome: shows, stage, clips library, deck
+    src/engine/    recipe model, onsets, springs, pieces, warp, wires, sfx, show sim
+    src/media/     OPFS + assets, Mediabunny decode, mic, cutouts, pose, bundle, renderers
+    src/ui/        React chrome: bits list and the stage
+    src/demo/      first-run demo bit, synthesized on-device
     src/pwa/       service worker registration
     src/e2e/       in-browser proof harness (?e2e)
-    public/sw.js   precache + share-target service worker
+    public/sw.js   precache service worker
     tools/         asset staging, e2e driver, device checklist
 
 One UI rule worth knowing: semantic color pairs are blue vs orange, never red vs green.

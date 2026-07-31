@@ -106,6 +106,9 @@ export function Stage({ showId }: { showId: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [counting, setCounting] = useState(false);
   const [corpse, setCorpse] = useState(false);
+  /** The recipe names audio we can't load or decode (imported bit whose
+   *  bundle lacked it, OPFS eviction): offer a re-record, never a dead end. */
+  const [soundLost, setSoundLost] = useState(false);
   const retakeModeRef = useRef<'replace' | 'extend'>('replace');
   const prevSquashRef = useRef<Map<string, number>>(new Map());
   const liveImpactCountRef = useRef(0);
@@ -211,14 +214,19 @@ export function Stage({ showId }: { showId: string }) {
       wiresRef.current = effectiveWires(projectRef.current);
       setProjectSnap(projectRef.current);
       if (projectRef.current.audio) {
-        audioBlobRef.current = await getAsset(projectRef.current.audio.assetId);
+        const blob = await getAsset(projectRef.current.audio.assetId).catch(() => null);
         if (cancelled) return;
-        const handle = await AudioSourceHandle.open(audioBlobRef.current);
-        if (handle) jamRef.current = new JamAudio(handle.makeSink());
-        await analyzeAudio(audioBlobRef.current);
+        audioBlobRef.current = blob;
+        const handle = blob ? await AudioSourceHandle.open(blob) : null;
+        if (handle) {
+          jamRef.current = new JamAudio(handle.makeSink());
+          await analyzeAudio(blob!);
+        } else {
+          setSoundLost(true);
+        }
       }
       await reloadImages();
-      if (!cancelled) setModeBoth(projectRef.current.audio ? 'idle' : 'needsAudio');
+      if (!cancelled) setModeBoth(jamRef.current ? 'idle' : 'needsAudio');
     })().catch((err: unknown) => {
       if (!cancelled) setError(err instanceof Error ? err.message : String(err));
     });
@@ -899,6 +907,7 @@ export function Stage({ showId }: { showId: string }) {
     jamRef.current = new JamAudio(handle.makeSink());
     await analyzeAudio(blob);
     commit((p) => ({ ...p, audio: { assetId, durationS: durationRecorded } }));
+    setSoundLost(false);
     playheadRef.current = 0;
     setT(0);
     setModeBoth('idle');
@@ -1173,11 +1182,15 @@ export function Stage({ showId }: { showId: string }) {
           <canvas ref={canvasRef} />
           {mode === 'needsAudio' && (
             <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
-              <p>every bit starts with the sound.</p>
+              <p>
+                {soundLost
+                  ? 'the sound for this bit is missing. record it again.'
+                  : 'every bit starts with the sound.'}
+              </p>
               <button className="primary" onClick={() => void recordBit()}>
                 ⏺ record the bit
               </button>
-              {projectSnap.audio && (
+              {projectSnap.audio && !soundLost && (
                 <button onClick={() => setModeBoth('idle')}>keep the old sound</button>
               )}
             </div>

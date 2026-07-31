@@ -72,6 +72,33 @@ try {
     `${show.renderedWidth}x${show.renderedHeight}`,
   );
   check('show render has real bytes', show.renderedBytes > 20000, `${show.renderedBytes} bytes`);
+
+  const bundle = await page.evaluate(() => window.__bitsE2E.runBundle());
+  check(
+    'bit file name survives an emoji title',
+    bundle.fileName === 'roundtrip bit.bit.json',
+    bundle.fileName,
+  );
+  check(
+    'import copies assets under fresh ids',
+    bundle.audioRemapped && bundle.cutoutRemapped,
+    `audio ${bundle.audioRemapped}, cutout ${bundle.cutoutRemapped}`,
+  );
+  check(
+    'imported assets carry the original bytes',
+    bundle.audioBytesMatch && bundle.cutoutBytes > 0,
+    `cutout ${bundle.cutoutBytes} bytes`,
+  );
+  check(
+    'recipe arrives whole',
+    bundle.castCount === 4 && bundle.passCount === 3,
+    `${bundle.castCount} cast, ${bundle.passCount} passes`,
+  );
+  check(
+    'import keeps playing after the original assets are deleted',
+    bundle.survivesOriginalDelete,
+  );
+
   check('no page errors', pageErrors.length === 0, pageErrors.join('; '));
 } catch (err) {
   check('e2e run completed', false, String(err));

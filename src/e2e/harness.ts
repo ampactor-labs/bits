@@ -11,9 +11,12 @@ import {
   QUALITY_MEDIUM,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { createProject, type Project } from '../engine/recipe';
+import { createProject, type CastEvent, type Project } from '../engine/recipe';
 import { detectOnsets } from '../engine/onsets';
+import { castOf } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from '../media/audio';
+import { deleteAsset, getAsset, saveAsset } from '../media/assets';
+import { exportBundle, importBundle } from '../media/bundle';
 import { renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
 
@@ -168,10 +171,88 @@ async function runShow(): Promise<ShowE2EResult> {
   return result;
 }
 
+interface BundleE2EResult {
+  fileName: string;
+  audioRemapped: boolean;
+  cutoutRemapped: boolean;
+  audioBytesMatch: boolean;
+  cutoutBytes: number;
+  castCount: number;
+  passCount: number;
+  survivesOriginalDelete: boolean;
+}
+
+/** The remix loop, end to end on real OPFS: export a bit with real assets,
+ *  import it back, and prove the copy owns its storage: fresh ids, identical
+ *  bytes, and the import keeps playing after the original's assets die. */
+async function runBundle(): Promise<BundleE2EResult> {
+  const audioId = await saveAsset(await makeFixtureAudio(), 'mp4');
+  const png = new OffscreenCanvas(64, 64);
+  png.getContext('2d')!.fillRect(8, 8, 48, 48);
+  const cutoutId = await saveAsset(await png.convertToBlob({ type: 'image/png' }), 'png');
+
+  const cutCast: CastEvent = {
+    kind: 'CAST',
+    id: 'cc',
+    at: 0,
+    puppetId: 'photo',
+    puppet: { type: 'cutout', assetId: cutoutId, w: 0.3, h: 0.3 },
+    x: 0.5,
+    y: 0.62,
+    scale: 1,
+    rot: 0,
+  };
+  const project: Project = {
+    ...scriptedShow(),
+    title: '🎭 roundtrip bit!!',
+    audio: { assetId: audioId, durationS: 2 },
+    events: [...scriptedShow().events, cutCast],
+  };
+
+  const file = await exportBundle(project);
+  const imported = await importBundle(file);
+
+  const importedAudioId = imported.audio?.assetId ?? '';
+  const photo = imported.events.find(
+    (e): e is CastEvent => e.kind === 'CAST' && e.puppetId === 'photo',
+  );
+  const importedCutoutId =
+    photo && photo.puppet.type === 'cutout' ? photo.puppet.assetId : '';
+
+  const originalAudioBytes = (await getAsset(audioId)).size;
+  const importedAudioBytes = (await getAsset(importedAudioId)).size;
+  const cutoutBytes = (await getAsset(importedCutoutId)).size;
+
+  // The exporter deletes their copy; the import must keep playing.
+  await deleteAsset(audioId);
+  await deleteAsset(cutoutId);
+  let survivesOriginalDelete = true;
+  try {
+    await getAsset(importedAudioId);
+    await getAsset(importedCutoutId);
+  } catch {
+    survivesOriginalDelete = false;
+  }
+
+  return {
+    fileName: file.name,
+    audioRemapped: importedAudioId !== '' && importedAudioId !== audioId,
+    cutoutRemapped: importedCutoutId !== '' && importedCutoutId !== cutoutId,
+    audioBytesMatch: importedAudioBytes === originalAudioBytes && importedAudioBytes > 0,
+    cutoutBytes,
+    castCount: castOf(imported).length,
+    passCount: imported.events.filter((e) => e.kind === 'PASS').length,
+    survivesOriginalDelete,
+  };
+}
+
 declare global {
   interface Window {
-    __bitsE2E: { runShow: () => Promise<ShowE2EResult> };
+    __bitsE2E: {
+      runShow: () => Promise<ShowE2EResult>;
+      runBundle: () => Promise<BundleE2EResult>;
+    };
   }
 }
 
-window.__bitsE2E = { runShow };
+window.__bitsE2E = { runShow, runBundle };

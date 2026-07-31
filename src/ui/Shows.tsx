@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseProject, serializeProject } from '../engine/recipe';
 import { deleteAsset } from '../media/assets';
-import { importBundle } from '../media/bundle';
+import { importBundle, referencedAssets } from '../media/bundle';
 import {
   deleteProject,
   ensurePersistence,
@@ -11,6 +11,10 @@ import {
 } from '../media/opfs';
 
 const SHOW_PREFIX = 'show-';
+
+/** Timestamp keeps the list newest-first; the suffix keeps two imports in
+ *  the same millisecond from landing on one id. */
+const freshShowId = () => `${SHOW_PREFIX}${Date.now()}-${crypto.randomUUID().slice(0, 4)}`;
 
 interface ShowRow {
   id: string;
@@ -76,7 +80,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
     };
   }, []);
 
-  const newShow = () => onOpen(`${SHOW_PREFIX}${Date.now()}`);
+  const newShow = () => onOpen(freshShowId());
 
   const importBit = async (files: FileList | null) => {
     const file = files?.[0];
@@ -84,7 +88,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
     setStatus('opening…');
     try {
       const project = await importBundle(file);
-      const id = `${SHOW_PREFIX}${Date.now()}`;
+      const id = freshShowId();
       await saveProjectJson(id, serializeProject(project));
       setStatus('');
       onOpen(id);
@@ -100,12 +104,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
     if (json) {
       try {
         const p = parseProject(json);
-        const assetIds = new Set<string>();
-        if (p.audio) assetIds.add(p.audio.assetId);
-        for (const e of p.events) {
-          if (e.kind === 'CAST' && e.puppet.type === 'cutout') assetIds.add(e.puppet.assetId);
-        }
-        for (const assetId of assetIds) await deleteAsset(assetId);
+        for (const assetId of referencedAssets(p)) await deleteAsset(assetId);
       } catch {
         // Unparseable: delete the project file alone.
       }
