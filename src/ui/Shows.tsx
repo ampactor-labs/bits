@@ -42,11 +42,32 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   const [rows, setRows] = useState<ShowRow[] | null>(null);
   const [status, setStatus] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
+  const onOpenRef = useRef(onOpen);
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  }, [onOpen]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await ensurePersistence();
+      // First exposure: seed the demo bit and walk straight onto its stage.
+      if (!localStorage.getItem('bits-demo-v1')) {
+        localStorage.setItem('bits-demo-v1', '1');
+        const existing = await listProjectIds(SHOW_PREFIX);
+        if (existing.length === 0) {
+          try {
+            const { buildDemoShow } = await import('../demo/demoBit');
+            const demoId = await buildDemoShow();
+            if (!cancelled) {
+              onOpenRef.current(demoId);
+              return;
+            }
+          } catch {
+            // No demo is better than a broken welcome.
+          }
+        }
+      }
       const loaded = await loadRows();
       if (!cancelled) setRows(loaded);
     })().catch(() => setRows([]));

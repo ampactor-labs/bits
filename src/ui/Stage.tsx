@@ -1129,6 +1129,9 @@ export function Stage({ showId }: { showId: string }) {
             <div className="stage-hintline">tap an uncut photo puppet to pin it</div>
           )}
           {mode === 'bodyAssign' && <div className="stage-hintline">{bodyHint}</div>}
+          {mode === 'idle' && showId === 'show-demo' && (
+            <div className="stage-hintline">▶ watch it once. then open ⋮⋮ and wreck it.</div>
+          )}
           <video ref={pipVideoRef} className="pip" muted playsInline hidden={!bodyActive} />
 
           {placing && (
