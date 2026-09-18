@@ -23,11 +23,13 @@ import {
   castOf,
   createShowSim,
   sameChannel,
+  worldToLocal,
   type Channel,
   type PuppetPose,
   type ShowPuppet,
   type ShowSim,
 } from '../engine/show';
+import { restingPuppet } from '../engine/puppet';
 import { AudioSourceHandle, JamAudio, concatAudio, mixdownMono } from '../media/audio';
 import { getAsset, saveAsset } from '../media/assets';
 import { exportBundle } from '../media/bundle';
@@ -566,11 +568,12 @@ export function Stage({ showId }: { showId: string }) {
           if (!pose || !visual || visual.pins.length === 0) continue;
           ctx.strokeStyle = '#58a6ff';
           ctx.lineWidth = 2;
-          for (const pin of pose.pins) {
+          pose.pins.forEach((pin, pi) => {
+            if (!visual.pins[pi]) return;
             ctx.beginPath();
             ctx.arc(pin.x * W, pin.y * H, Math.max(6, W * 0.012), 0, Math.PI * 2);
             ctx.stroke();
-          }
+          });
         }
         if (modeRef.current === 'doodling') drawStrokes(ctx, W, H, strokeRef.current);
         if (modeRef.current === 'snipping' && snipStrokeRef.current) {
@@ -606,18 +609,11 @@ export function Stage({ showId }: { showId: string }) {
       };
     };
 
-    const toLocal = (p: ShowPuppet, x: number, y: number) => {
-      const pose = lastPosesRef.current.get(p.id);
-      const s = pose?.root ?? { x: p.home.x, y: p.home.y };
-      const c = Math.cos(-p.home.rot);
-      const sn = Math.sin(-p.home.rot);
-      const dx = x - s.x;
-      const dy = y - s.y;
-      return {
-        x: (dx * c - dy * sn) / (p.spec.w * p.home.scale) + 0.5,
-        y: (dx * sn + dy * c) / (p.spec.h * p.home.scale) + 0.5,
-      };
-    };
+    // One transform for hit testing and for drawing. The private copy this
+    // replaces ignored the spring's lean, so hits disagreed with the drawer
+    // on a leaning puppet, and it knew nothing about flip.
+    const toLocal = (p: ShowPuppet, x: number, y: number) =>
+      worldToLocal(lastPosesRef.current.get(p.id)?.root ?? restingPuppet(p.home.x, p.home.y), p, x, y);
 
     /** Hit a puppet and which handle: a warp pin, a snipped-off piece
      *  (accounting for its swing), or the body. */
@@ -631,6 +627,8 @@ export function Stage({ showId }: { showId: string }) {
         const pose = lastPosesRef.current.get(p.id);
         if (visual && pose) {
           for (let pi = 0; pi < pose.pins.length; pi++) {
+            // A removed slot keeps its index but has nothing to grab.
+            if (!visual.pins[pi]) continue;
             const pin = pose.pins[pi]!;
             if (Math.hypot(x - pin.x, y - pin.y) < 0.045) {
               return { puppet: p, channel: { pin: pi } };
@@ -1227,23 +1225,38 @@ export function Stage({ showId }: { showId: string }) {
     }
   };
 
+  /** Events committed together share a group and form one contiguous run at
+   *  the tail, so a compound edit is a single undo step. */
   const undo = () => {
     const events = projectRef.current.events;
     if (events.length === 0) return;
-    const popped = events[events.length - 1]!;
-    redoRef.current.push(popped);
+    const last = events[events.length - 1]!;
+    let n = 1;
+    if (last.group) {
+      while (n < events.length && events[events.length - 1 - n]!.group === last.group) n += 1;
+    }
+    const removed = events.slice(events.length - n);
+    // Pushed in reverse so redo pops them back in their original order.
+    for (let i = removed.length - 1; i >= 0; i--) redoRef.current.push(removed[i]!);
     setRedoCount(redoRef.current.length);
-    applyProject((p) => ({ ...p, events: p.events.slice(0, -1) }), false);
+    applyProject((p) => ({ ...p, events: p.events.slice(0, -n) }), false);
     void reloadImages();
   };
 
   undoRef.current = undo;
 
   const redo = () => {
-    const event = redoRef.current.pop();
-    if (!event) return;
-    setRedoCount(redoRef.current.length);
-    applyProject((p) => appendEvent(p, event), false);
+    const stack = redoRef.current;
+    const first = stack.pop();
+    if (!first) return;
+    const batch: RecipeEvent[] = [first];
+    if (first.group) {
+      while (stack.length > 0 && stack[stack.length - 1]!.group === first.group) {
+        batch.push(stack.pop()!);
+      }
+    }
+    setRedoCount(stack.length);
+    applyProject((p) => ({ ...p, events: [...p.events, ...batch] }), false);
     void reloadImages();
   };
 

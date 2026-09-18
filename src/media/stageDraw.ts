@@ -28,7 +28,9 @@ export interface PuppetVisual {
   pieces: PuppetPieces;
   mouth: MouthEvent | null;
   eyes: EyesEvent | null;
-  pins: PinEvent[];
+  /** Pin slots; a null slot was removed and keeps its index so the passes
+   *  that name later pins still find them. */
+  pins: (PinEvent | null)[];
 }
 
 const WARP_GRID = makeWarpGrid(10, 14);
@@ -86,9 +88,13 @@ export function drawStage(
     // scissored pieces (a single uncut piece is the trivial case).
     const img = images.get(puppet.id);
     const warp =
-      visual.pins.length > 0 && puppet.spec.type === 'cutout' && img
+      visual.pins.some((pin) => pin !== null) && puppet.spec.type === 'cutout' && img
         ? warpControls(puppet, pose, visual.pins)
         : null;
+
+    // The mirror goes here, after the root frame, so pieces, mouths, eyes
+    // and the warp mesh all follow it. localToWorld already agrees.
+    if (puppet.flip) ctx.scale(-1, 1);
 
     if (warp && img) {
       drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
@@ -129,14 +135,24 @@ export function drawStage(
 function warpControls(
   puppet: ShowPuppet,
   pose: PuppetPose,
-  pins: PinEvent[],
+  pins: (PinEvent | null)[],
 ): { p: Pt[]; q: Pt[] } {
-  const p: Pt[] = pins.map((e) => ({ x: e.px, y: e.py }));
-  const q: Pt[] = pose.pins.map((state, i) => {
+  // Removed slots are skipped in both lists together, so the deformer only
+  // ever sees live control points and their current positions.
+  const p: Pt[] = [];
+  const q: Pt[] = [];
+  pins.forEach((pin, i) => {
+    if (!pin) return;
+    const rest = { x: pin.px, y: pin.py };
+    p.push(rest);
+    const state = pose.pins[i];
+    if (!state) {
+      q.push({ ...rest });
+      return;
+    }
     const local = worldToLocal(pose.root, puppet, state.x, state.y);
-    return Number.isFinite(local.x) && Number.isFinite(local.y) ? local : { ...p[i]! };
+    q.push(Number.isFinite(local.x) && Number.isFinite(local.y) ? local : { ...rest });
   });
-  while (q.length < p.length) q.push({ ...p[q.length]! });
   return { p, q };
 }
 
@@ -330,7 +346,7 @@ function drawPiece(
     ctx.closePath();
     ctx.clip();
   }
-  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
+  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
   ctx.restore();
 }
 
@@ -343,6 +359,7 @@ function drawContent(
   images: StageImages,
   tS: number,
   seed: number,
+  flip = false,
 ): void {
   switch (spec.type) {
     case 'cutout': {
@@ -358,7 +375,10 @@ function drawContent(
       drawDoodle(ctx, spec.strokes, pw, ph, tS, seed);
       break;
     case 'text': {
-      // Word puppets: bold characters that boil like doodles.
+      // Word puppets: bold characters that boil like doodles. A flipped
+      // word moves to the mirrored position but keeps its letters legible,
+      // so the mirror is undone around the (centred) glyph run.
+      if (flip) ctx.scale(-1, 1);
       const text = spec.text || '?';
       const chars = [...text];
       const fontPx = Math.min(ph * 0.72, (pw * 1.55) / Math.max(1, chars.length));

@@ -11,7 +11,11 @@ import {
   QUALITY_MEDIUM,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { createProject, type CastEvent, type Project } from '../engine/recipe';
+import { createProject, parseProject, type CastEvent, type Project } from '../engine/recipe';
+import { castOf as castOfProject } from '../engine/show';
+import { visualsOf } from '../media/render';
+import { drawStage, STAGE_BG } from '../media/stageDraw';
+import { createShowSim } from '../engine/show';
 import { detectOnsets } from '../engine/onsets';
 import { castOf } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from '../media/audio';
@@ -246,13 +250,171 @@ async function runBundle(): Promise<BundleE2EResult> {
   };
 }
 
+/** A bit saved by the shipped v0 app, byte for byte. It must keep opening
+ *  and keep rendering to the same shape forever. */
+const V0_RECIPE = JSON.stringify({
+  version: 0,
+  id: 'v0-fixture',
+  title: 'a bit from before',
+  createdAt: '2026-07-31T12:00:00.000Z',
+  seed: 20260731,
+  events: [
+    {
+      kind: 'CAST',
+      id: 'c1',
+      at: 0,
+      puppetId: 'hero',
+      puppet: { type: 'rect', color: '#f0883e', w: 0.24, h: 0.3 },
+      x: 0.3,
+      y: 0.4,
+      scale: 1,
+      rot: 0.1,
+    },
+    { kind: 'SNIP', id: 's1', at: 0, puppetId: 'hero', x0: 0, y0: 0.3, x1: 1, y1: 0.28 },
+    { kind: 'MOUTH', id: 'm1', at: 0, puppetId: 'hero', mx: 0.5, my: 0.15, size: 0.3 },
+    {
+      kind: 'PASS',
+      id: 'p1',
+      at: 0.2,
+      puppetId: 'hero',
+      samples: [0.2, 0.3, 0.4, 1.0, 0.8, 0.5, 1.8, 0.3, 0.8],
+    },
+  ],
+});
+
+interface V0E2EResult {
+  parsedVersion: number;
+  updatedAt: string;
+  castCount: number;
+  renderedDurationS: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  renderedBytes: number;
+}
+
+/** The compatibility promise, tested rather than asserted. */
+async function runV0(): Promise<V0E2EResult> {
+  const audio = await makeFixtureAudio();
+  const project = parseProject(V0_RECIPE);
+  const rendered = await renderShow({
+    audioBlob: audio,
+    project,
+    getAssetBlob: async () => {
+      throw new Error('no assets in this fixture');
+    },
+    width: 360,
+    height: 640,
+  });
+  const probe = await VideoSourceHandle.open(rendered);
+  const out: V0E2EResult = {
+    parsedVersion: project.version,
+    updatedAt: project.updatedAt ?? '',
+    castCount: castOfProject(project).length,
+    renderedDurationS: probe.durationS,
+    renderedWidth: probe.width,
+    renderedHeight: probe.height,
+    renderedBytes: rendered.size,
+  };
+  probe.dispose();
+  return out;
+}
+
+interface FlipE2EResult {
+  /** Fraction of sampled pixels whose mirrored partner agrees. Never quite
+   *  1: rasterising a mirrored stroke re-samples its anti-aliasing. */
+  mirrorMatch: number;
+  /** Fraction of pixels that differ between flipped and unflipped, so the
+   *  test cannot pass on a symmetric image by accident. */
+  changed: number;
+  /** Ink centroid in x, 0..1 across the canvas, for each version. A mirror
+   *  puts them at equal distances either side of the middle; this is
+   *  immune to anti-aliasing. */
+  centroidPlain: number;
+  centroidFlipped: number;
+}
+
+/** Flip has to be a frame transform, not a draw-time scale. The cheapest
+ *  proof it is applied at all, in the one place that reads pixels. */
+async function runFlip(): Promise<FlipE2EResult> {
+  const W = 96;
+  const H = 96;
+  const draw = (flip: boolean): ImageData => {
+    const base: Project = {
+      ...createProject('flip'),
+      events: [
+        {
+          kind: 'CAST',
+          id: 'c1',
+          at: 0,
+          puppetId: 'a',
+          // Off-centre in local space, so a mirror is visible.
+          puppet: { type: 'doodle', strokes: [[0.05, 0.2, 0.35, 0.2, 0.35, 0.8]], w: 0.8, h: 0.8 },
+          x: 0.5,
+          y: 0.5,
+          scale: 1,
+          rot: 0,
+          ...(flip ? { flip: true } : {}),
+        } as CastEvent,
+      ],
+    };
+    const canvas = new OffscreenCanvas(W, H);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+    const cast = castOfProject(base);
+    const sim = createShowSim(base);
+    drawStage(ctx, W, H, cast, sim.advanceTo(0.5), new Map(), visualsOf(base), new Map(), 0.5, base.seed);
+    return ctx.getImageData(0, 0, W, H);
+  };
+
+  const plain = draw(false);
+  const flipped = draw(true);
+  const lum = (d: ImageData, x: number, y: number) => d.data[(y * W + x) * 4]!;
+
+  let matched = 0;
+  let total = 0;
+  let changed = 0;
+  for (let y = 0; y < H; y += 2) {
+    for (let x = 0; x < W; x++) {
+      total += 1;
+      if (Math.abs(lum(flipped, x, y) - lum(plain, W - 1 - x, y)) <= 8) matched += 1;
+      if (Math.abs(lum(flipped, x, y) - lum(plain, x, y)) > 8) changed += 1;
+    }
+  }
+
+  // Ink centroid: the doodle is bone on a near-black stage, so bright
+  // pixels are the drawing.
+  const centroid = (d: ImageData) => {
+    let sum = 0;
+    let weight = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const v = lum(d, x, y);
+        if (v < 80) continue;
+        sum += x * v;
+        weight += v;
+      }
+    }
+    return weight === 0 ? 0.5 : sum / weight / (W - 1);
+  };
+
+  return {
+    mirrorMatch: matched / total,
+    changed: changed / total,
+    centroidPlain: centroid(plain),
+    centroidFlipped: centroid(flipped),
+  };
+}
+
 declare global {
   interface Window {
     __bitsE2E: {
       runShow: () => Promise<ShowE2EResult>;
       runBundle: () => Promise<BundleE2EResult>;
+      runV0: () => Promise<V0E2EResult>;
+      runFlip: () => Promise<FlipE2EResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip };

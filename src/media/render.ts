@@ -29,7 +29,7 @@ import type { Project } from '../engine/recipe';
 import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
 import { AudioSourceHandle, mixdownMono } from './audio';
-import { drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
+import { STAGE_BG, drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
 export interface RenderProgress {
   phase: 'video' | 'audio' | 'finalize';
@@ -101,6 +101,13 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     throw new Error('this device cannot encode H264 video');
   }
 
+  // A trim bounds what renders. Show time stays asset time, so the sim and
+  // the sound both keep speaking the same clock and no pass is rewritten.
+  const trim = project.audio?.trim;
+  const fromS = trim ? Math.max(0, Math.min(trim.from, durationS)) : 0;
+  const toS = trim ? Math.max(fromS, Math.min(trim.to, durationS)) : durationS;
+  const spanS = Math.max(1 / fps, toS - fromS);
+
   const cast = castOf(project);
   const visuals = visualsOf(project);
   const images = await loadStageImages(cast, options.getAssetBlob);
@@ -136,9 +143,15 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     const prevSquash = new Map<string, number>();
     let impactCount = 0;
 
-    const frameCount = Math.max(1, Math.ceil(durationS * fps));
+    // drawStage only wipes the whole canvas when trails are off or the
+    // clock is near zero, so a trimmed render would otherwise start from an
+    // untouched (transparent) canvas.
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, outW, outH);
+
+    const frameCount = Math.max(1, Math.ceil(spanS * fps));
     for (let i = 0; i < frameCount; i++) {
-      const t = (i + 0.5) / fps;
+      const t = fromS + (i + 0.5) / fps;
       const poses = sim.advanceTo(t);
       if (foleyOn) {
         for (const [pid, pose] of poses) {
@@ -174,7 +187,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 
     if (audio && audioSource) {
       sounds.sort((a, b) => a.at - b.at);
-      await passThroughAudio(audio, audioSource, durationS, sounds, progress);
+      await passThroughAudio(audio, audioSource, fromS, toS, sounds, progress);
       audioSource.close();
     }
 
@@ -194,7 +207,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 async function passThroughAudio(
   audio: AudioSourceHandle,
   audioSource: AudioBufferSource,
-  durationS: number,
+  fromS: number,
+  toS: number,
   sounds: { at: number; sfx: SfxName }[],
   progress: (p: RenderProgress) => void,
 ) {
@@ -214,10 +228,12 @@ async function passThroughAudio(
     await audioSource.add(buffer);
   };
 
-  let covered = 0;
-  for await (const { buffer, timestamp } of sink.buffers(0, durationS)) {
-    const from = Math.max(0, timestamp);
-    const to = Math.min(durationS, timestamp + buffer.duration);
+  // Bus times stay in asset seconds, so performed sounds and foley need no
+  // offset applied to their `at`.
+  let covered = fromS;
+  for await (const { buffer, timestamp } of sink.buffers(fromS, toS)) {
+    const from = Math.max(fromS, timestamp);
+    const to = Math.min(toS, timestamp + buffer.duration);
     if (to <= from) continue;
     geometry.channels = buffer.numberOfChannels;
     geometry.sampleRate = buffer.sampleRate;
@@ -226,10 +242,11 @@ async function passThroughAudio(
     }
     await mixAndAdd(sliceAudioBuffer(buffer, from - timestamp, to - timestamp), from);
     covered = to;
-    progress({ phase: 'audio', fraction: covered / durationS });
+    const span = Math.max(1e-6, toS - fromS);
+    progress({ phase: 'audio', fraction: (covered - fromS) / span });
   }
-  if (durationS - covered > 0.001) {
-    await addSilence(audioSource, durationS - covered, geometry, covered, mixAndAdd);
+  if (toS - covered > 0.001) {
+    await addSilence(audioSource, toS - covered, geometry, covered, mixAndAdd);
   }
 }
 
