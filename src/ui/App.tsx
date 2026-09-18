@@ -1,10 +1,30 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Shows } from './Shows';
 import { Stage } from './Stage';
+import { BannerProvider } from '../kit/Banner';
+import { ToastProvider, ToastView, useToast } from '../kit/Toast';
+import { applyServiceWorkerUpdate, onServiceWorkerUpdate } from '../pwa/register';
 
 type Screen = { kind: 'shows' } | { kind: 'stage'; showId: string };
 
-export function App() {
+/** A new build is installed and waiting; offer the reload rather than
+ *  taking it under the user's fingers mid-performance. */
+function UpdateWatch() {
+  const toast = useToast();
+  useEffect(
+    () =>
+      onServiceWorkerUpdate(() => {
+        toast.show('new version ready', {
+          action: { label: 'reload', run: applyServiceWorkerUpdate },
+          ms: 20000,
+        });
+      }),
+    [toast],
+  );
+  return null;
+}
+
+function Screens() {
   const [screen, setScreen] = useState<Screen>({ kind: 'shows' });
 
   return (
@@ -24,5 +44,17 @@ export function App() {
         )}
       </main>
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <ToastProvider>
+      <BannerProvider>
+        <UpdateWatch />
+        <Screens />
+        <ToastView />
+      </BannerProvider>
+    </ToastProvider>
   );
 }

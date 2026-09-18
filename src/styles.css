@@ -1,13 +1,4 @@
-:root {
-  /* Semantic pair is blue vs orange throughout; never red vs green. */
-  --bg: #141210;
-  --panel: #1f1c19;
-  --text: #ece5db;
-  --muted: #9a9186;
-  --accent: #f0883e;
-  --accent-2: #58a6ff;
-  --touch: 48px;
-}
+/* Tokens live in kit/tokens.css; this file is layout and app chrome only. */
 
 * {
   box-sizing: border-box;
@@ -58,26 +49,6 @@ body {
 
 .topbar .spacer {
   flex: 1;
-}
-
-button {
-  min-height: var(--touch);
-  padding: 0 18px;
-  border: none;
-  border-radius: 12px;
-  background: var(--panel);
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 600;
-}
-
-button.primary {
-  background: var(--accent);
-  color: #1a120a;
-}
-
-button:active {
-  transform: scale(0.97);
 }
 
 .screen {

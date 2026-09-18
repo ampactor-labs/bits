@@ -44,6 +44,7 @@ import {
   type WireMods,
 } from '../engine/wires';
 import type { WireSource, WireTarget } from '../engine/recipe';
+import { countCommit, probe } from '../e2e/probe';
 import { voiceMap, renderShow, visualsOf, type RenderProgress } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
 import { drawStage, loadStageImages, type PuppetVisual, type StageImages } from '../media/stageDraw';
@@ -94,6 +95,18 @@ export function Stage({ showId }: { showId: string }) {
 
   const [projectSnap, setProjectSnap] = useState<Project>(() => createProject('untitled bit'));
   const projectRef = useRef(projectSnap);
+
+  // The walkthrough reads the recipe through here and counts commits, so a
+  // refactor that quietly changes what a flow records, or that starts
+  // re-rendering every frame, fails in CI rather than on a phone.
+  useEffect(() => {
+    probe.project = () => projectRef.current;
+    return () => {
+      probe.project = null;
+    };
+  }, []);
+  useEffect(() => countCommit());
+
   const [mode, setMode] = useState<Mode>('loading');
   const modeRef = useRef<Mode>('loading');
   const [t, setT] = useState(0);

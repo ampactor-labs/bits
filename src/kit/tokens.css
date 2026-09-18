@@ -1,0 +1,123 @@
+/* The kit's design tokens. One source for color, type, spacing, motion and
+ * depth, so a button is never the same color as the thing it sits on and
+ * nothing that instructs is too small to read.
+ *
+ * Semantic pair is blue vs orange throughout; never red vs green. */
+
+:root {
+  /* Surfaces, darkest to lightest. --raised is what controls sit on, so a
+   * control on a --panel sheet always reads as a control (audit F11). */
+  --bg: #141210;
+  --panel: #1f1c19;
+  --raised: #2a2622;
+  --raised-hi: #363029;
+  --line: #3a352f;
+  --overlay: rgba(20, 18, 16, 0.94);
+  --stage: #0b0a09;
+
+  --text: #ece5db;
+  --muted: #9a9186;
+
+  --accent: #f0883e;
+  --accent-ink: #1a120a;
+  --accent-2: #58a6ff;
+  --accent-2-ink: #0d1520;
+
+  /* Type. 15px is the floor for anything that instructs (audit F25, F41). */
+  --fs-hint: 15px;
+  --fs-body: 17px;
+  --fs-title: 20px;
+  --fs-display: 28px;
+  --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+
+  --r-1: 12px;
+  --r-2: 16px;
+  --r-pill: 999px;
+
+  /* Any visual smaller than --hit gets a ::before that brings its hit area
+   * up to --hit (playhead, handles, foley pills, lane spans). */
+  --touch: 48px;
+  --hit: 44px;
+  --drag-threshold: 6px;
+
+  --dock-h: 72px;
+  /* Set by StageView on resize; sheets budget against the stage, not the
+   * viewport, so a sheet never eats the dock and the timeline first. */
+  --stage-h: 60vh;
+  --sheet-max: calc(var(--dock-h) + env(safe-area-inset-bottom) + 44px + var(--stage-h) / 3);
+
+  --t-fast: 120ms;
+  --t-sheet: 220ms;
+  --ease-sheet: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --z-handles: 2;
+  --z-halo: 3;
+  --z-banner: 4;
+  --z-dock: 5;
+  --z-sheet: 10;
+  --z-toast: 20;
+  --z-overlay: 30;
+}
+
+button,
+[role='button'] {
+  min-height: var(--touch);
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-1);
+  background: var(--raised);
+  color: var(--text);
+  font: 600 var(--fs-body) var(--font);
+  transition: background var(--t-fast), transform var(--t-fast), opacity var(--t-fast);
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+button:active {
+  background: var(--raised-hi);
+  transform: scale(0.97);
+}
+
+button.primary:active {
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+
+/* Disabled has to be visible, not just inert (audit F3). */
+button:disabled,
+[role='button'][aria-disabled='true'] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* The blue ring is invisible on the orange record button and on the blue
+ * stop button, so the ring carries a --bg halo and swaps color on accents. */
+:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--bg);
+}
+
+.primary:focus-visible,
+.on-accent:focus-visible {
+  outline-color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

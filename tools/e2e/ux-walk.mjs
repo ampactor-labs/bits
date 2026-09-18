@@ -1,0 +1,400 @@
+// The phone walkthrough, as a build gate.
+//
+// The render proof guards the pipeline; it never loads the UI. This drives
+// the real app on an emulated phone with a fake mic and camera, walks the
+// path a first-time user walks, and asserts the things the UX audit
+// measured: how much of the stage an overlay covers, how small the text
+// that instructs is, whether controls have names, whether disabled looks
+// disabled, whether a system dialog ever appears, and whether the path has
+// a dead end.
+//
+// Phases are independent: one broken flow reports and the rest still run,
+// because a gate that stops at the first problem tells you less than one
+// that tells you all of them.
+//
+// Known gaps are declared, not hidden. An assertion listed in GAPS is
+// allowed to fail until the milestone that closes it; when it starts
+// passing the run says so, so the entry gets removed rather than rotting.
+
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+const require = createRequire(import.meta.url);
+const puppeteer = require('puppeteer-core');
+
+const PORT = 4175;
+const BASE = `http://localhost:${PORT}/bits/`;
+const CHROME =
+  process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH || '/usr/bin/google-chrome';
+const SHOTS = process.env.UX_SHOTS_DIR || join(process.cwd(), 'dist-ux-shots');
+
+/** id -> the milestone that closes it. Delete an entry when it passes. */
+const GAPS = {
+  'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
+  'no-instructive-text-under-15px': 'M2, when the banner replaces the hint line',
+  'every-button-has-a-name': 'M4, when emoji controls become labelled icons',
+  'empty-stage-says-what-to-do': 'M1',
+  'play-works-before-any-pass': 'M1',
+  'held-finger-never-drops': 'M1',
+  'pass-phase-reachable': 'M1 (blocked by held-finger-never-drops)',
+  'sound-can-come-from-a-file': 'M1',
+  'playback-does-not-rerender-every-frame': 'M0b, when the clock leaves React state',
+};
+
+const results = [];
+const check = (id, ok, detail) => {
+  results.push({ id, ok, detail: detail ?? '' });
+  const gap = GAPS[id];
+  const tag = ok ? 'ok  ' : gap ? 'gap ' : 'FAIL';
+  console.log(`${tag} - ${id}${detail ? ` (${detail})` : ''}${!ok && gap ? ` [until ${gap}]` : ''}`);
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const preview = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], {
+  stdio: 'ignore',
+});
+
+const waitForServer = async () => {
+  for (let i = 0; i < 80; i++) {
+    try {
+      if ((await fetch(BASE)).ok) return;
+    } catch {
+      // not up yet
+    }
+    await sleep(250);
+  }
+  throw new Error('preview server never came up');
+};
+
+let browser;
+const dialogs = [];
+const pageErrors = [];
+
+try {
+  mkdirSync(SHOTS, { recursive: true });
+  await waitForServer();
+  browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--use-fake-device-for-media-stream',
+      '--use-fake-ui-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+
+  const page = await browser.newPage();
+  await page.emulate(puppeteer.KnownDevices['iPhone 14']);
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  // A system dialog is a bug by policy: the app speaks in sheets and toasts.
+  page.on('dialog', async (d) => {
+    dialogs.push(`${d.type()}: ${d.message()}`);
+    await d.dismiss().catch(() => d.accept());
+  });
+
+  let shotN = 0;
+  const shot = async (name) => {
+    shotN += 1;
+    await page.screenshot({ path: join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`) });
+  };
+  /** A phase that cannot take the rest of the run down with it. */
+  const phase = async (id, fn) => {
+    try {
+      await fn();
+      return true;
+    } catch (err) {
+      check(id, false, String(err && err.message ? err.message : err).slice(0, 120));
+      await shot(`failed-${id}`).catch(() => {});
+      return false;
+    }
+  };
+
+  const stageBox = () =>
+    page.$eval('.stagebox', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    });
+  const dragStage = async (path, stepMs = 60) => {
+    const b = await stageBox();
+    const [x0, y0] = path[0];
+    await page.touchscreen.touchStart(b.x + x0 * b.w, b.y + y0 * b.h);
+    for (const [fx, fy] of path.slice(1)) {
+      await page.touchscreen.touchMove(b.x + fx * b.w, b.y + fy * b.h);
+      await sleep(stepMs);
+    }
+    await page.touchscreen.touchEnd();
+  };
+  const tapText = async (sel, ...texts) => {
+    for (const h of await page.$$(sel)) {
+      const t = (await h.evaluate((e) => (e.textContent || '').trim())) || '';
+      if (texts.some((want) => t === want || t.startsWith(want))) {
+        await h.tap();
+        return true;
+      }
+    }
+    throw new Error(`no ${sel} reading ${texts.map((t) => `"${t}"`).join(' or ')}`);
+  };
+  const tapLabel = async (label) => {
+    const h = await page.$(`[aria-label="${label}"]`);
+    if (!h) throw new Error(`no control labelled "${label}"`);
+    await h.tap();
+  };
+  const waitMode = (m, ms = 20000) =>
+    page.waitForFunction(
+      (mode) => document.querySelector('.stagebox')?.classList.contains(`mode-${mode}`),
+      { timeout: ms },
+      m,
+    );
+  const openTools = async () => {
+    if (!(await page.$('.kit'))) {
+      await tapLabel('kit');
+      await sleep(300);
+    }
+  };
+  const closeTools = async () => {
+    if (await page.$('.kit')) {
+      await tapLabel('kit');
+      await sleep(200);
+    }
+  };
+  const castDoodle = async () => {
+    await openTools();
+    await tapText('.kit .chip.add', '✏️');
+    await sleep(200);
+    await dragStage([
+      [0.32, 0.3],
+      [0.5, 0.2],
+      [0.66, 0.34],
+      [0.5, 0.5],
+      [0.32, 0.3],
+    ]);
+    await tapText('.stagepills .pill', 'keep it');
+    await sleep(400);
+  };
+
+  // ---- first exposure ------------------------------------------------
+  await phase('first-run-lands-on-a-bit', async () => {
+    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
+    await page.waitForSelector('.stagebox', { timeout: 20000 });
+    await sleep(800);
+    await shot('first-run');
+    check('first-run-lands-on-a-bit', true);
+  });
+
+  // ---- measurements, taken with the tools open (the worst case) -------
+  await phase('measurements', async () => {
+    await openTools();
+    await shot('tools-open');
+
+    const overlay = await page.evaluate(() => {
+      const stage = document.querySelector('.stagebox')?.getBoundingClientRect();
+      if (!stage) return null;
+      let worst = 0;
+      let who = '';
+      for (const sel of ['.kit', '.sheet', '.stagepills', '.foleyrow']) {
+        for (const el of document.querySelectorAll(sel)) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          const covered =
+            Math.max(0, Math.min(stage.bottom, r.bottom) - Math.max(stage.top, r.top)) /
+            stage.height;
+          if (covered > worst) {
+            worst = covered;
+            who = sel;
+          }
+        }
+      }
+      return { worst, who };
+    });
+    check(
+      'overlay-covers-at-most-a-third',
+      !!overlay && overlay.worst <= 0.34,
+      overlay ? `${Math.round(overlay.worst * 100)}% by ${overlay.who || 'nothing'}` : 'no stage',
+    );
+
+    const small = await page.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('body *')) {
+        if (el.children.length > 0) continue;
+        const text = (el.textContent || '').trim();
+        if (!text) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+        const size = parseFloat(cs.fontSize);
+        if (size < 15) out.push(`${size}px "${text.slice(0, 24)}"`);
+      }
+      return out;
+    });
+    check('no-instructive-text-under-15px', small.length === 0, small.slice(0, 3).join('; '));
+
+    const unnamed = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('button'))
+        .filter((b) => {
+          const cs = getComputedStyle(b);
+          if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+          const name = (b.getAttribute('aria-label') || b.textContent || '').trim();
+          // An emoji-only label is not a name a screen reader can read out.
+          return name.length === 0 || /^[\p{Extended_Pictographic}\p{So}️\s]+$/u.test(name);
+        })
+        .map((b) => b.className || b.tagName),
+    );
+    check('every-button-has-a-name', unnamed.length === 0, unnamed.slice(0, 5).join(', '));
+
+    const disabled = await page.evaluate(() => {
+      const worst = { opacity: 0, label: '' };
+      for (const b of document.querySelectorAll('button:disabled')) {
+        const o = parseFloat(getComputedStyle(b).opacity);
+        if (o > worst.opacity) {
+          worst.opacity = o;
+          worst.label = b.getAttribute('aria-label') || b.textContent || '';
+        }
+      }
+      return worst;
+    });
+    check(
+      'disabled-controls-look-disabled',
+      disabled.opacity === 0 || disabled.opacity <= 0.5,
+      `worst ${disabled.opacity} on "${disabled.label.trim()}"`,
+    );
+    await closeTools();
+  });
+
+  // ---- the new-user path ---------------------------------------------
+  const madeSound = await phase('new-bit-gets-sound', async () => {
+    await tapText('.topbar button', 'bits');
+    await sleep(600);
+    await tapText('.transport button', '+ new bit');
+    await sleep(600);
+    await shot('needs-sound');
+    // On the first sound screen, before anything is recorded: can a person
+    // who will not talk out loud start a bit at all?
+    const offersFile = await page.evaluate(() => {
+      const cta = document.querySelector('.stage-cta');
+      return /use a file|pick a file|from a file/i.test(cta?.innerText ?? '');
+    });
+    check('sound-can-come-from-a-file', offersFile, offersFile ? 'offered' : 'mic only');
+    await tapText('.stage-cta button', '⏺ record the bit', 'record the bit');
+    await waitMode('micLive');
+    await sleep(2600);
+    await tapText('.stage-cta button', '■ done', 'done');
+    await waitMode('idle', 25000);
+    await sleep(500);
+    await shot('after-sound');
+    check('new-bit-gets-sound', true);
+  });
+
+  if (madeSound) {
+    await phase('empty-stage-says-what-to-do', async () => {
+      const state = await page.evaluate(() => {
+        const rec = document.querySelector('[aria-label="record a pass"]');
+        const text = document.querySelector('main')?.innerText ?? '';
+        return { recDisabled: rec ? rec.disabled : null, guides: /cast|puppet|add/i.test(text) };
+      });
+      check(
+        'empty-stage-says-what-to-do',
+        !state.recDisabled || state.guides,
+        `record disabled=${state.recDisabled}, guidance=${state.guides}`,
+      );
+    });
+
+    await phase('cast-a-doodle', async () => {
+      await castDoodle();
+      await shot('cast');
+      const casts = await page.evaluate(
+        () => window.__bits.eventKinds().filter((k) => k === 'CAST').length,
+      );
+      check('casting-a-doodle-appends-one-cast', casts === 1, `${casts} CAST`);
+      await closeTools();
+    });
+
+    await phase('play-works-before-any-pass', async () => {
+      const disabled = await page.$eval('[aria-label="play"]', (b) => b.disabled);
+      check('play-works-before-any-pass', disabled === false, `disabled=${disabled}`);
+    });
+
+    await phase('held-finger-never-drops', async () => {
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      const b = await stageBox();
+      await page.touchscreen.touchStart(b.x + 0.5 * b.w, b.y + 0.33 * b.h);
+      await sleep(1100);
+      await page.touchscreen.touchEnd();
+      await sleep(400);
+      const added = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      check('held-finger-never-drops', !added.includes('DROP'), added.join(',') || 'nothing added');
+    });
+
+    await phase('pass-phase-reachable', async () => {
+      // The held-finger bug can remove the only puppet; re-cast so the
+      // recording flow is still exercised, and say that is what happened.
+      const cast = await page.evaluate(
+        () => window.__bits.project()?.events.filter((e) => e.kind === 'CAST').length ?? 0,
+      );
+      const dropped = await page.evaluate(() =>
+        window.__bits.eventKinds().includes('DROP'),
+      );
+      if (dropped) await castDoodle();
+      await closeTools();
+      check('pass-phase-reachable', !dropped, dropped ? 're-cast after a drop' : `${cast} cast`);
+
+      await tapLabel('record a pass');
+      await waitMode('recording', 20000);
+      await dragStage(
+        [
+          [0.5, 0.33],
+          [0.62, 0.42],
+          [0.7, 0.55],
+          [0.45, 0.6],
+        ],
+        140,
+      );
+      await tapLabel('stop');
+      await waitMode('idle', 15000);
+      await sleep(400);
+      await shot('after-pass');
+      const passes = await page.evaluate(() => window.__bits.passSampleCounts());
+      check('a-drag-while-recording-becomes-a-pass', passes.length >= 1, `${passes.length} pass(es)`);
+    });
+
+    await phase('playback-does-not-rerender-every-frame', async () => {
+      await page.evaluate(() => window.__bits.resetCommits());
+      await tapLabel('play');
+      await sleep(2000);
+      const commits = await page.evaluate(() => window.__bits.commits());
+      if (await page.$('.bar .stop')) await tapLabel('stop');
+      check('playback-does-not-rerender-every-frame', commits <= 4, `${commits} commits in 2s`);
+    });
+  }
+
+  check('no-system-dialog-appeared', dialogs.length === 0, dialogs.join(' | '));
+  check('no-page-errors', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
+  check('no-dead-end', !(await page.$('.error')));
+} catch (err) {
+  check('the-walkthrough-ran', false, String(err && err.message ? err.message : err));
+} finally {
+  await browser?.close();
+  preview.kill();
+}
+
+const hard = results.filter((r) => !r.ok && !GAPS[r.id]);
+const closed = results.filter((r) => r.ok && GAPS[r.id]);
+const open = results.filter((r) => !r.ok && GAPS[r.id]);
+
+console.log(`\n${results.filter((r) => r.ok).length}/${results.length} checks pass`);
+if (open.length) {
+  console.log(`${open.length} known gap(s) still open:`);
+  for (const r of open) console.log(`  ${r.id} -> ${GAPS[r.id]}`);
+}
+if (closed.length) {
+  console.log(`\n${closed.length} declared gap(s) now PASS; remove from GAPS in this file:`);
+  for (const r of closed) console.log(`  ${r.id}`);
+}
+if (hard.length) {
+  console.error(`\n${hard.length} failure(s)`);
+  process.exit(1);
+}
+console.log('\nux walk passed');

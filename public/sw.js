@@ -1,6 +1,16 @@
 // BITS service worker: precache the shell, cache-first within scope.
+//
+// The cache name carries a build stamp that the precache plugin rewrites at
+// build time. Without it the file's bytes never change between builds, the
+// browser never re-runs install, and every installed phone keeps its first
+// shell forever.
+//
+// The new worker does NOT skip waiting on its own: the running page may
+// still lazy-load a chunk that this build has pruned. It waits until the
+// page asks (SKIP_WAITING) and reloads itself.
 
-const CACHE = 'bits-shell-v1';
+const BUILD = '__BUILD__';
+const CACHE = `bits-shell-${BUILD}`;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(install());
@@ -15,7 +25,6 @@ async function install() {
   } catch {
     // Offline install keeps whatever is already cached.
   }
-  await self.skipWaiting();
 }
 
 self.addEventListener('activate', (event) => {
@@ -23,22 +32,17 @@ self.addEventListener('activate', (event) => {
 });
 
 async function activate() {
-  // Prune entries that fell out of the current build's precache list.
-  try {
-    const resp = await fetch('./precache.json', { cache: 'no-cache' });
-    const { files } = await resp.json();
-    const keep = new Set([new URL('./', self.registration.scope).href]);
-    for (const f of files) keep.add(new URL(f, self.registration.scope).href);
-    keep.add(new URL('./precache.json', self.registration.scope).href);
-    const cache = await caches.open(CACHE);
-    for (const req of await cache.keys()) {
-      if (!keep.has(req.url)) await cache.delete(req);
-    }
-  } catch {
-    // No network at activate: prune next time.
+  // Every cache from an older build goes, so storage does not grow without
+  // bound and a stale shell can never win a lookup.
+  for (const name of await caches.keys()) {
+    if (name.startsWith('bits-shell-') && name !== CACHE) await caches.delete(name);
   }
   await self.clients.claim();
 }
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
@@ -69,4 +73,3 @@ async function cacheFirst(request) {
     throw err;
   }
 }
-
