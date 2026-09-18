@@ -35,7 +35,6 @@ const GAPS = {
   'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
   'no-instructive-text-under-15px': 'M2, when the banner replaces the hint line',
   'every-button-has-a-name': 'M4, when emoji controls become labelled icons',
-  'playback-does-not-rerender-every-frame': 'M0b, when the clock leaves React state',
 };
 
 /** A 2s 440Hz mono WAV, written by hand so the import path is exercised
@@ -388,8 +387,16 @@ try {
       await tapLabel('play');
       await sleep(2000);
       const commits = await page.evaluate(() => window.__bits.commits());
+      const clock = await page.$eval('.bar .time', (e) => (e.textContent ?? '').trim());
+      const fill = await page.$eval('.bar .fill', (e) => e.style.width);
       if (await page.$('.bar .stop')) await tapLabel('stop');
       check('playback-does-not-rerender-every-frame', commits <= 4, `${commits} commits in 2s`);
+      // Painting through refs must not mean painting nothing.
+      check(
+        'the-clock-still-moves-during-playback',
+        clock !== '0:00' && fill !== '' && fill !== '0%',
+        `clock ${clock}, fill ${fill}`,
+      );
     });
   }
 

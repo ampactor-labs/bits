@@ -121,7 +121,13 @@ export function Stage({ showId }: { showId: string }) {
 
   const [mode, setMode] = useState<Mode>('loading');
   const modeRef = useRef<Mode>('loading');
+  /** The playhead is written to the DOM sixty times a second. Keeping it in
+   *  React state re-rendered the whole stage every frame; `t` now only
+   *  carries the value between scrubs, and the loop paints through refs. */
   const [t, setT] = useState(0);
+  const timeTextRef = useRef<HTMLSpanElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const seekRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
   const banner = useBanner();
   /** Errors are a banner over a stage that stays mounted. Replacing the
@@ -292,6 +298,23 @@ export function Stage({ showId }: { showId: string }) {
     };
   }, [showId, reloadImages, analyzeAudio, fail]);
 
+  /** Write the playhead straight to the DOM. No React commit, no re-render
+   *  of the stage, at sixty frames a second. */
+  const paintClock = useCallback((clock: number) => {
+    const dur = projectRef.current.audio?.durationS ?? 0;
+    const time = timeTextRef.current;
+    if (time) {
+      const text = `${Math.floor(clock / 60)}:${Math.floor(clock % 60)
+        .toString()
+        .padStart(2, '0')}`;
+      if (time.textContent !== text) time.textContent = text;
+    }
+    if (fillRef.current) {
+      fillRef.current.style.width = dur ? `${(clock / dur) * 100}%` : '0%';
+    }
+    if (seekRef.current) seekRef.current.value = String(clock);
+  }, []);
+
   const currentClock = useCallback((): number => {
     const audio = jamRef.current?.positionS();
     if (audio !== null && audio !== undefined) return audio;
@@ -337,6 +360,9 @@ export function Stage({ showId }: { showId: string }) {
   }, [commitGrab]);
 
   const stop = useCallback(() => {
+    // Hand the playhead back to React so the scrubber and the clock agree
+    // with what the loop last painted.
+    setT(playheadRef.current);
     if (modeRef.current === 'recording') commitGrabRef.current();
     jamRef.current?.stop();
     simRef.current = null;
@@ -422,7 +448,7 @@ export function Stage({ showId }: { showId: string }) {
         const now = currentClock();
         const clock = Math.max(clockFromRef.current, Math.min(dur, now));
         playheadRef.current = clock;
-        setT(clock);
+        paintClock(clock);
 
         const grab = grabRef.current;
         if (m === 'recording' && grab) {
@@ -591,7 +617,7 @@ export function Stage({ showId }: { showId: string }) {
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [stop, currentClock, onsets]);
+  }, [stop, currentClock, onsets, paintClock]);
 
   // Pointer handling.
   useEffect(() => {
@@ -1285,6 +1311,7 @@ export function Stage({ showId }: { showId: string }) {
   const seek = (v: number) => {
     playheadRef.current = v;
     setT(v);
+    paintClock(v);
   };
 
   const fmt = (s: number) =>
@@ -1476,8 +1503,13 @@ export function Stage({ showId }: { showId: string }) {
                 style={{ left: `${durationS ? (o / durationS) * 100 : 0}%` }}
               />
             ))}
-            <div className="fill" style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }} />
+            <div
+              ref={fillRef}
+              className="fill"
+              style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }}
+            />
             <input
+              ref={seekRef}
               className="seek"
               type="range"
               min={0}
@@ -1489,7 +1521,9 @@ export function Stage({ showId }: { showId: string }) {
               aria-label="playhead"
             />
           </div>
-          <span className="time">{fmt(t)}</span>
+          <span ref={timeTextRef} className="time">
+            {fmt(t)}
+          </span>
           <button
             className="ghost"
             aria-label="undo"
