@@ -72,7 +72,8 @@
  * 15px, never behind a puppet at the bottom of the stage. */
 .banner {
   position: absolute;
-  top: 0;
+  /* Below the stage's title strip, which occupies the first 48px. */
+  top: var(--banner-top, 0px);
   left: 0;
   right: 0;
   z-index: var(--z-banner);

@@ -45,6 +45,15 @@ export interface RenderShowOptions {
   height?: number;
   fps?: number;
   onProgress?: (p: RenderProgress) => void;
+  /** Abort a long render. The output is cancelled and AbortError thrown. */
+  signal?: AbortSignal;
+}
+
+export class RenderCancelled extends Error {
+  constructor() {
+    super('render cancelled');
+    this.name = 'RenderCancelled';
+  }
 }
 
 const even = (n: number) => 2 * Math.round(n / 2);
@@ -85,6 +94,9 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const outW = even(options.width ?? 720);
   const outH = even(options.height ?? 1280);
   const progress = options.onProgress ?? (() => {});
+  const stopIfCancelled = () => {
+    if (options.signal?.aborted) throw new RenderCancelled();
+  };
 
   const audio = options.audioBlob ? await AudioSourceHandle.open(options.audioBlob) : null;
   let durationS = 0;
@@ -181,7 +193,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
         trailStrength(wires, voice, onsets, t),
       );
       await videoSource.add(i / fps, 1 / fps);
-      if (i % 10 === 0) progress({ phase: 'video', fraction: i / frameCount });
+      if (i % 10 === 0) {
+        progress({ phase: 'video', fraction: i / frameCount });
+        stopIfCancelled();
+      }
     }
     videoSource.close();
 
@@ -196,6 +211,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     if (!target.buffer) throw new Error('render produced no bytes');
     const name = options.fileName ?? `${project.title || 'show'}.mp4`;
     return new File([target.buffer], name, { type: 'video/mp4' });
+  } catch (err) {
+    // Leave no half-written output behind when the person backs out.
+    await output.cancel().catch(() => {});
+    throw err;
   } finally {
     audio?.dispose();
     for (const img of images.values()) img.close();

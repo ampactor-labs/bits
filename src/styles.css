@@ -53,8 +53,15 @@ body {
 
 .screen {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 16px 24px;
+}
+
+/* The stage owns the whole screen; only the list gets gutters. */
+.app-stage .screen {
+  overflow: hidden;
+  padding: 0;
 }
 
 .source-list {
@@ -99,7 +106,7 @@ body {
 
 .source-row .size {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-hint);
 }
 
 .source-row .delete {
@@ -167,8 +174,7 @@ body {
   height: 100%;
   max-width: 100%;
   aspect-ratio: 9 / 16;
-  background: #0b0a09;
-  border-radius: 14px;
+  background: var(--stage);
   overflow: hidden;
   touch-action: none;
   user-select: none;
@@ -191,7 +197,7 @@ body {
   bottom: 10px;
   width: 100%;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-hint);
   color: var(--accent-2);
   pointer-events: none;
 }
@@ -234,6 +240,54 @@ body {
   padding: 0 var(--s-4);
 }
 
+.rotate-card {
+  display: none;
+}
+
+@media (orientation: landscape) and (max-height: 520px) {
+  .rotate-card {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    background: var(--bg);
+    font-size: var(--fs-title);
+    text-align: center;
+  }
+
+  .rotate-card p {
+    margin: 0;
+  }
+
+  .rotate-sub {
+    color: var(--muted);
+    font-size: var(--fs-body);
+  }
+}
+
+/* Render progress belongs on the stage, not hidden behind a panel. */
+.render-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-4);
+  background: var(--overlay);
+}
+
+.render-phase {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+}
+
 .recdot {
   position: absolute;
   top: 10px;
@@ -249,87 +303,196 @@ body {
   }
 }
 
-.bar {
+/* Timeline: its own full-width row, so the scrubber is the width of the
+ * phone rather than 74px of it (audit F14). */
+.timeline {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 2px 2px 6px;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-3) 0;
+  --wave-color: var(--muted);
 }
 
-.bar .rec {
-  min-width: 54px;
-  min-height: 54px;
-  padding: 0;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #1a120a;
-  font-size: 20px;
-}
-
-.bar .rec.stop {
-  background: var(--accent-2);
-  color: #0d1520;
-}
-
-.bar .ghost {
-  background: transparent;
-  color: var(--text);
-  min-width: 44px;
-  padding: 0 8px;
-  font-size: 18px;
-}
-
-.bar .ghost.on {
-  color: var(--accent-2);
-}
-
-.bar .progress {
+.timeline .track {
   position: relative;
   flex: 1;
-  height: 8px;
-  border-radius: 4px;
+  min-width: 0;
+  height: 44px;
+  touch-action: none;
+}
+
+.timeline .track-clip {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-1);
   background: var(--panel);
   overflow: hidden;
 }
 
-.bar .fill {
+.timeline .wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.7;
+}
+
+.timeline .fill {
   position: absolute;
   inset: 0 auto 0 0;
   background: var(--accent);
-  opacity: 0.85;
-}
-
-.bar .beat {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--accent-2);
-  opacity: 0.5;
-}
-
-.bar .seek {
-  position: absolute;
-  inset: -18px 0;
-  width: 100%;
-  margin: 0;
-  opacity: 0;
-  min-height: 44px;
-}
-
-.bar .seek:disabled {
+  opacity: 0.22;
   pointer-events: none;
 }
 
-.bar .time {
+.timeline .beat {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent-2);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* A playhead you can see and aim at, instead of an invisible input. */
+.timeline .playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  margin-left: -1.5px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.timeline .playhead::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg);
+}
+
+.timeline .seek {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.timeline .seek:disabled {
+  pointer-events: none;
+}
+
+.timeline .times {
+  flex: 0 0 auto;
+  min-width: 74px;
+  text-align: right;
+  font-size: var(--fs-hint);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.timeline .times-sep,
+.timeline .times-total {
+  color: var(--muted);
+}
+
+/* The dock never changes shape: record swaps for stop, the rest dim. */
+.dock {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  height: var(--dock-h);
+  padding: 0 var(--s-3) env(safe-area-inset-bottom);
+}
+
+.dock-rec {
+  min-width: 56px;
+  min-height: 56px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+}
+
+.dock-rec .dock-glyph {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-ink);
+}
+
+.dock-stop {
+  background: var(--accent-2);
+}
+
+.dock-stop .dock-glyph {
+  border-radius: 3px;
+  background: var(--accent-2-ink);
+}
+
+.dock .on {
+  color: var(--accent-2);
+}
+
+/* A strip laid over the stage, not a row above it. */
+.stagebox {
+  --banner-top: 48px;
+}
+
+.titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 48px;
+  padding: 0 var(--s-2);
+  background: linear-gradient(to bottom, rgb(11 10 9 / 78%), rgb(11 10 9 / 0%));
+}
+
+.titlebar-name,
+.titlebar-input {
+  flex: 1;
   min-width: 0;
+  min-height: 40px;
+  padding: 0 var(--s-2);
+  background: transparent;
+  color: var(--text);
+  font: 700 var(--fs-title) var(--font);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-input {
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  background: var(--bg);
+  text-align: left;
 }
 
 .kit {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 70px;
+  bottom: calc(var(--dock-h) + env(safe-area-inset-bottom));
   z-index: 5;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(6px);
@@ -426,7 +589,7 @@ body {
 .foleyrow {
   display: flex;
   gap: 6px;
-  padding: 2px 2px 4px;
+  padding: var(--s-2) var(--s-3) 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
 }
@@ -465,7 +628,7 @@ body {
 .transport .time {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-hint);
   min-width: 88px;
   text-align: center;
 }
@@ -478,6 +641,6 @@ input[type='range'] {
 
 .status {
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-hint);
   padding: 8px 2px;
 }

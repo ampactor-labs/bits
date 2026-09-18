@@ -56,8 +56,18 @@ import {
   importSoundFile,
   soundExtension,
 } from '../media/audioImport';
+import { peaksFromMono } from '../engine/peaks';
+import { Dock } from './stage/Dock';
+import { TitleBar } from './stage/TitleBar';
+import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
-import { voiceMap, renderShow, visualsOf, type RenderProgress } from '../media/render';
+import {
+  RenderCancelled,
+  voiceMap,
+  renderShow,
+  visualsOf,
+  type RenderProgress,
+} from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
 import { drawStage, loadStageImages, type PuppetVisual, type StageImages } from '../media/stageDraw';
 
@@ -101,7 +111,7 @@ const newId = () => crypto.randomUUID().slice(0, 8);
 const LONG_PRESS_MS = 650;
 const HOLD_SAMPLE_S = 0.25;
 
-export function Stage({ showId }: { showId: string }) {
+export function Stage({ showId, onBack }: { showId: string; onBack: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
 
@@ -128,6 +138,7 @@ export function Stage({ showId }: { showId: string }) {
   const timeTextRef = useRef<HTMLSpanElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const seekRef = useRef<HTMLInputElement>(null);
+  const handleRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
   const banner = useBanner();
   /** Errors are a banner over a stage that stays mounted. Replacing the
@@ -152,9 +163,12 @@ export function Stage({ showId }: { showId: string }) {
   const [textDraft, setTextDraft] = useState('');
   /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
   const undoRef = useRef<() => void>(() => {});
+  const seenDemoHintRef = useRef(false);
+  const renderAbortRef = useRef<AbortController | null>(null);
   const [rendering, setRendering] = useState<RenderProgress | null>(null);
   const [rendered, setRendered] = useState<File | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
+  const [peaks, setPeaks] = useState<Float32Array | null>(null);
   const [redoCount, setRedoCount] = useState(0);
   const [kitOpen, setKitOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -204,6 +218,35 @@ export function Stage({ showId }: { showId: string }) {
     setMode(m);
   };
 
+  /** Guidance lives in the banner over the top of the stage. It used to be
+   *  13px along the bottom, where the puppets and the cancel pill covered
+   *  it (audit F25). */
+  useEffect(() => {
+    const hints: Partial<Record<Mode, string>> = {
+      snipping: 'draw a line across a puppet',
+      mouthing: 'tap where the mouth goes',
+      eyeing: 'tap where the eyes go',
+      pinning: 'tap an uncut photo puppet to pin it',
+    };
+    const text = mode === 'bodyAssign' ? bodyHint : hints[mode];
+    const banner = bannerRef.current;
+    if (text) {
+      banner.hint(text, {
+        label: 'cancel',
+        run: () => {
+          modeRef.current = 'idle';
+          setMode('idle');
+        },
+      });
+    } else if (mode === 'idle' && showId === 'show-demo' && !seenDemoHintRef.current) {
+      // The demo is a real bit, and saying so is the whole tutorial.
+      seenDemoHintRef.current = true;
+      banner.hint('watch it once. then open the tools and wreck it.');
+    } else if (banner.current?.kind === 'hint') {
+      banner.clear();
+    }
+  }, [mode, bodyHint, showId]);
+
   const vibrate = (ms: number) => navigator.vibrate?.(ms);
   const durationS = projectSnap.audio?.durationS ?? 0;
 
@@ -248,6 +291,8 @@ export function Stage({ showId }: { showId: string }) {
     if (mix) {
       voiceRef.current = computeVoiceTrack(mix.samples, mix.sampleRate);
       setOnsets(detectOnsets(mix.samples, mix.sampleRate));
+      // Enough buckets for a full-width waveform on any phone.
+      setPeaks(peaksFromMono(mix.samples, 600));
     }
   }, []);
 
@@ -313,6 +358,9 @@ export function Stage({ showId }: { showId: string }) {
       fillRef.current.style.width = dur ? `${(clock / dur) * 100}%` : '0%';
     }
     if (seekRef.current) seekRef.current.value = String(clock);
+    if (handleRef.current) {
+      handleRef.current.style.left = dur ? `${(clock / dur) * 100}%` : '0%';
+    }
   }, []);
 
   const currentClock = useCallback((): number => {
@@ -1289,6 +1337,9 @@ export function Stage({ showId }: { showId: string }) {
   const doRender = async () => {
     if (rendering) return;
     stop();
+    setKitOpen(false);
+    const abort = new AbortController();
+    renderAbortRef.current = abort;
     let wakeLock: WakeLockSentinel | null = null;
     try {
       wakeLock = (await navigator.wakeLock?.request('screen').catch(() => null)) ?? null;
@@ -1298,11 +1349,15 @@ export function Stage({ showId }: { showId: string }) {
         getAssetBlob: async (id) => getAsset(id),
         fileName: `${projectRef.current.title || 'show'}.mp4`,
         onProgress: setRendering,
+        signal: abort.signal,
       });
       setRendered(out);
+      toast.show('rendered', { action: { label: 'share', run: () => void shareOrDownload(out) } });
     } catch (err) {
-      fail(err);
+      // Backing out is not a failure worth a banner.
+      if (!(err instanceof RenderCancelled)) fail(err);
     } finally {
+      renderAbortRef.current = null;
       setRendering(null);
       void wakeLock?.release().catch(() => {});
     }
@@ -1313,11 +1368,6 @@ export function Stage({ showId }: { showId: string }) {
     setT(v);
     paintClock(v);
   };
-
-  const fmt = (s: number) =>
-    `${Math.floor(s / 60)}:${Math.floor(s % 60)
-      .toString()
-      .padStart(2, '0')}`;
 
   const passCount = projectSnap.events.filter((e) => e.kind === 'PASS').length;
   const puppets = castOf(projectSnap).filter((p) => !p.back);
@@ -1346,6 +1396,14 @@ export function Stage({ showId }: { showId: string }) {
       <div className="stagearea">
         <div ref={frameRef} className={`stagebox mode-${mode}`}>
           <canvas ref={canvasRef} />
+          <TitleBar
+            title={projectSnap.title}
+            onRename={(title) =>
+              commit((p) => ({ ...p, title, updatedAt: new Date().toISOString() }))
+            }
+            onBack={onBack}
+            onMenu={() => setKitOpen((k) => !k)}
+          />
           <BannerView />
           {mode === 'needsAudio' && (
             <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
@@ -1401,18 +1459,23 @@ export function Stage({ showId }: { showId: string }) {
               </button>
             </div>
           )}
+          {rendering && (
+            <div className="render-overlay" onPointerDown={(e) => e.stopPropagation()}>
+              <ProgressRing value={rendering.fraction} label="rendering" size={56} />
+              <p className="render-phase">
+                {rendering.phase === 'video'
+                  ? 'drawing'
+                  : rendering.phase === 'audio'
+                    ? 'mixing'
+                    : 'packing'}{' '}
+                {Math.round(rendering.fraction * 100)}%
+              </p>
+              <button onClick={() => renderAbortRef.current?.abort()}>cancel</button>
+            </div>
+          )}
           {mode === 'recording' && <span className="recdot">●</span>}
           {counting && <div className="stage-hintline">🥁 count-in…</div>}
-          {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
-          {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
-          {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
-          {mode === 'pinning' && (
-            <div className="stage-hintline">tap an uncut photo puppet to pin it</div>
-          )}
-          {mode === 'bodyAssign' && <div className="stage-hintline">{bodyHint}</div>}
-          {mode === 'idle' && showId === 'show-demo' && (
-            <div className="stage-hintline">▶ watch it once. then open ⋮⋮ and wreck it.</div>
-          )}
+
           <video ref={pipVideoRef} className="pip" muted playsInline hidden={!bodyActive} />
 
           {placing && (
@@ -1470,77 +1533,34 @@ export function Stage({ showId }: { showId: string }) {
       )}
 
       {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
-        <div className="bar">
-          {!busy ? (
-            <>
-              <button
-                className="rec"
-                aria-label="record a pass"
-                disabled={puppets.length === 0 || placing || mode === 'doodling' || counting}
-                onClick={() => void start(true)}
-              >
-                ⏺
-              </button>
-              <button
-                className="ghost"
-                aria-label="play"
-                disabled={durationS <= 0 || placing || mode === 'doodling' || counting}
-                onClick={() => void start(false)}
-              >
-                ▶
-              </button>
-            </>
-          ) : (
-            <button className="rec stop" aria-label="stop" onClick={stop}>
-              ■
-            </button>
-          )}
-          <div className="progress">
-            {onsets.map((o, i) => (
-              <span
-                key={i}
-                className="beat"
-                style={{ left: `${durationS ? (o / durationS) * 100 : 0}%` }}
-              />
-            ))}
-            <div
-              ref={fillRef}
-              className="fill"
-              style={{ width: durationS ? `${(t / durationS) * 100}%` : '0%' }}
-            />
-            <input
-              ref={seekRef}
-              className="seek"
-              type="range"
-              min={0}
-              max={durationS || 1}
-              step={0.01}
-              value={t}
-              disabled={busy}
-              onChange={(e) => seek(Number(e.target.value))}
-              aria-label="playhead"
-            />
-          </div>
-          <span ref={timeTextRef} className="time">
-            {fmt(t)}
-          </span>
-          <button
-            className="ghost"
-            aria-label="undo"
-            disabled={busy || projectSnap.events.length === 0}
-            onClick={undo}
-          >
-            ↺
-          </button>
-          <button
-            className={`ghost${kitOpen ? ' on' : ''}`}
-            aria-label="kit"
+        <>
+          <Timeline
+            durationS={durationS}
+            peaks={peaks}
+            onsets={onsets}
             disabled={busy}
-            onClick={() => setKitOpen((k) => !k)}
-          >
-            ⋮⋮
-          </button>
-        </div>
+            onSeek={seek}
+            fillRef={fillRef}
+            handleRef={handleRef}
+            seekRef={seekRef}
+            timeTextRef={timeTextRef}
+            initialT={t}
+          />
+          <Dock
+            busy={busy}
+            canRecord={puppets.length > 0 && !placing && mode !== 'doodling' && !counting}
+            canPlay={durationS > 0 && !placing && mode !== 'doodling' && !counting}
+            canUndo={projectSnap.events.length > 0}
+            canRedo={redoCount > 0}
+            toolsOpen={kitOpen}
+            onRecord={() => void start(true)}
+            onPlay={() => void start(false)}
+            onStop={stop}
+            onUndo={undo}
+            onRedo={redo}
+            onTools={() => setKitOpen((k) => !k)}
+          />
+        </>
       )}
 
       {kitOpen && !busy && mode === 'idle' && (

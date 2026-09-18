@@ -33,7 +33,6 @@ const SHOTS = process.env.UX_SHOTS_DIR || join(process.cwd(), 'dist-ux-shots');
 /** id -> the milestone that closes it. Delete an entry when it passes. */
 const GAPS = {
   'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
-  'no-instructive-text-under-15px': 'M2, when the banner replaces the hint line',
   'every-button-has-a-name': 'M4, when emoji controls become labelled icons',
 };
 
@@ -170,15 +169,21 @@ try {
     );
   const openTools = async () => {
     if (!(await page.$('.kit'))) {
-      await tapLabel('kit');
+      await tapLabel('tools');
       await sleep(300);
     }
   };
   const closeTools = async () => {
     if (await page.$('.kit')) {
-      await tapLabel('kit');
+      await tapLabel('tools');
       await sleep(200);
     }
+  };
+  const goToList = async () => {
+    // Already there: the list has no back control of its own.
+    if (await page.$('.source-list, .empty')) return;
+    await tapLabel('bits');
+    await sleep(700);
   };
   const castDoodle = async () => {
     await openTools();
@@ -285,8 +290,7 @@ try {
 
   // ---- the new-user path ---------------------------------------------
   const madeSound = await phase('new-bit-gets-sound', async () => {
-    await tapText('.topbar button', 'bits');
-    await sleep(600);
+    await goToList();
     await tapText('.transport button', '+ new bit');
     await sleep(600);
     await shot('needs-sound');
@@ -387,9 +391,9 @@ try {
       await tapLabel('play');
       await sleep(2000);
       const commits = await page.evaluate(() => window.__bits.commits());
-      const clock = await page.$eval('.bar .time', (e) => (e.textContent ?? '').trim());
-      const fill = await page.$eval('.bar .fill', (e) => e.style.width);
-      if (await page.$('.bar .stop')) await tapLabel('stop');
+      const clock = await page.$eval('.timeline .times span', (e) => (e.textContent ?? '').trim());
+      const fill = await page.$eval('.timeline .fill', (e) => e.style.width);
+      if (await page.$('.dock-stop')) await tapLabel('stop');
       check('playback-does-not-rerender-every-frame', commits <= 4, `${commits} commits in 2s`);
       // Painting through refs must not mean painting nothing.
       check(
@@ -403,8 +407,7 @@ try {
   // The headline change of M1, proven rather than asserted: a person who
   // will not talk out loud can still start a bit.
   await phase('a-file-becomes-a-bits-sound', async () => {
-    await tapText('.topbar button', 'bits');
-    await sleep(600);
+    await goToList();
     await tapText('.transport button', '+ new bit');
     await sleep(600);
     const wav = makeWav(join(SHOTS, 'import-fixture.wav'));
@@ -423,8 +426,7 @@ try {
   // Deleting used to be one unguarded tap inside the row's own tap area,
   // with the assets purged immediately (audit F6).
   await phase('delete-is-undoable', async () => {
-    await tapText('.topbar button', 'bits');
-    await sleep(700);
+    await goToList();
     const rowsBefore = (await page.$$('.source-row')).length;
     if (rowsBefore === 0) throw new Error('no bits to delete');
     const more = await page.$('.source-row [aria-label^="more for"]');
@@ -445,6 +447,25 @@ try {
       rowsAfter === rowsBefore - 1 && rowsRestored === rowsBefore,
       `${rowsBefore} -> ${rowsAfter} -> ${rowsRestored}`,
     );
+  });
+
+  // A short landscape window would make a 9:16 stage a postage stamp.
+  await phase('landscape-says-turn-the-phone', async () => {
+    await goToList();
+    const rows = await page.$$('.source-row .row-open');
+    if (rows.length === 0) throw new Error('no bits to open');
+    await rows[0].tap();
+    await sleep(800);
+    await page.setViewport({ width: 844, height: 390, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    await sleep(400);
+    await shot('landscape');
+    const shown = await page.evaluate(() => {
+      const card = document.querySelector('.rotate-card');
+      return !!card && getComputedStyle(card).display !== 'none';
+    });
+    check('landscape-says-turn-the-phone', shown, shown ? 'card shown' : 'stage left squashed');
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    await sleep(400);
   });
 
   check('no-system-dialog-appeared', dialogs.length === 0, dialogs.join(' | '));

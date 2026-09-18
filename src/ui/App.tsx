@@ -28,21 +28,31 @@ function Screens() {
   const [screen, setScreen] = useState<Screen>({ kind: 'shows' });
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <span className="wordmark">BITS</span>
-        <span className="spacer" />
-        {screen.kind === 'stage' && (
-          <button onClick={() => setScreen({ kind: 'shows' })}>bits</button>
-        )}
-      </header>
+    <div className={`app${screen.kind === 'stage' ? ' app-stage' : ''}`}>
+      {/* The stage carries its own title strip, laid over the stage rather
+          than above it, so it does not cost the stage 48px of height. */}
+      {screen.kind === 'shows' && (
+        <header className="topbar">
+          <span className="wordmark">BITS</span>
+          <span className="spacer" />
+        </header>
+      )}
       <main className="screen">
         {screen.kind === 'shows' ? (
           <Shows onOpen={(showId) => setScreen({ kind: 'stage', showId })} />
         ) : (
-          <Stage showId={screen.showId} />
+          <Stage showId={screen.showId} onBack={() => setScreen({ kind: 'shows' })} />
         )}
       </main>
+      {/* A 9:16 stage in a short landscape window is a postage stamp. The
+          stage keeps its state underneath; a landscape stage with its own
+          aspect comes later. */}
+      {screen.kind === 'stage' && (
+        <div className="rotate-card">
+          <p>turn your phone.</p>
+          <p className="rotate-sub">the stage is tall.</p>
+        </div>
+      )}
     </div>
   );
 }
