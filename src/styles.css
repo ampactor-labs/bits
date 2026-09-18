@@ -546,9 +546,15 @@ body {
   min-height: 46px;
   padding: 0;
   border-radius: 12px;
-  background: #2a2622;
-  font-size: 20px;
+  background: var(--raised);
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+
+.chip-thumb {
+  width: 44px;
+  height: 44px;
 }
 
 .chip.on {
@@ -557,7 +563,8 @@ body {
 
 .chip.add {
   background: transparent;
-  border: 1.5px dashed var(--muted);
+  border: 1.5px dashed var(--line);
+  color: var(--muted);
 }
 
 .stagepills {

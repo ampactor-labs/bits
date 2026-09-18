@@ -33,7 +33,6 @@ const SHOTS = process.env.UX_SHOTS_DIR || join(process.cwd(), 'dist-ux-shots');
 /** id -> the milestone that closes it. Delete an entry when it passes. */
 const GAPS = {
   'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
-  'every-button-has-a-name': 'M4, when emoji controls become labelled icons',
 };
 
 /** A 2s 440Hz mono WAV, written by hand so the import path is exercised
@@ -187,7 +186,7 @@ try {
   };
   const castDoodle = async () => {
     await openTools();
-    await tapText('.kit .chip.add', '✏️');
+    await tapLabel('draw a puppet');
     await sleep(200);
     await dragStage([
       [0.32, 0.3],

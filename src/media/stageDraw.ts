@@ -488,6 +488,31 @@ function drawMouth(
   ctx.restore();
 }
 
+/** A puppet on its own, centred and scaled to fit a square. Chips used to
+ *  be one emoji per type, so a photo and a word were both a smiley and
+ *  three doodles were three pencils (audit F12). */
+export function drawPuppetThumbnail(
+  ctx: Ctx2D,
+  spec: PuppetSpec,
+  image: ImageBitmap | undefined,
+  size: number,
+  seed: number,
+): void {
+  ctx.clearRect(0, 0, size, size);
+  const pad = size * 0.12;
+  const box = size - pad * 2;
+  // Keep the puppet's own proportions inside the square.
+  const ratio = spec.w / Math.max(1e-6, spec.h);
+  const w = ratio >= 1 ? box : box * ratio;
+  const h = ratio >= 1 ? box / ratio : box;
+  ctx.save();
+  ctx.translate(size / 2, size / 2);
+  const images: StageImages = new Map();
+  if (image) images.set('thumb', image);
+  drawContent(ctx, spec, 'thumb', w, h, images, 0, seed);
+  ctx.restore();
+}
+
 /** Load cutout bitmaps for a cast; rects and doodles need none. */
 export async function loadStageImages(
   cast: ShowPuppet[],

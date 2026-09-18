@@ -57,6 +57,8 @@ import {
   soundExtension,
 } from '../media/audioImport';
 import { peaksFromMono } from '../engine/peaks';
+import { IconButton } from '../kit/IconButton';
+import { CastChip, puppetLabel } from './stage/CastChip';
 import { Dock } from './stage/Dock';
 import { TitleBar } from './stage/TitleBar';
 import { Timeline } from './stage/Timeline';
@@ -1230,9 +1232,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const centerOnStage = (p: ShowPuppet) => recastWith(p, { x: 0.5, y: 0.55 });
 
   const dropPuppet = (p: ShowPuppet) => {
+    const index = castOf(projectRef.current).findIndex((x) => x.id === p.id);
     setSelectedId(null);
     commit((proj) => appendEvent(proj, { kind: 'DROP', id: newId(), at: 0, puppetId: p.id }));
-    toast.undoable('dropped from the cast', undoRef.current);
+    toast.undoable(`dropped ${puppetLabel(p, Math.max(0, index))}`, undoRef.current);
   };
 
 
@@ -1374,8 +1377,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const busy = mode === 'playing' || mode === 'recording';
 
   const selected = selectedId ? castOf(projectSnap).find((p) => p.id === selectedId) : undefined;
-  const chipGlyph = (p: ShowPuppet) =>
-    p.back ? '🖼' : p.spec.type === 'doodle' ? '✏️' : p.spec.type === 'rect' ? '▦' : '🙂';
 
   const enterMode = (m: Mode) => {
     setKitOpen(false);
@@ -1587,38 +1588,51 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           </div>
 
           <div className="kitrow rail">
-            {castOf(projectSnap).map((p) => (
-              <button
+            {castOf(projectSnap).map((p, i) => (
+              <CastChip
                 key={p.id}
-                className={`chip${selectedId === p.id ? ' on' : ''}`}
-                onClick={() => setSelectedId((s) => (s === p.id ? null : p.id))}
-              >
-                {chipGlyph(p)}
-              </button>
+                puppet={p}
+                index={i}
+                images={imagesRef.current}
+                seed={projectSnap.seed}
+                selected={selectedId === p.id}
+                onClick={() => setSelectedId((sel) => (sel === p.id ? null : p.id))}
+              />
             ))}
-            <button className="chip add" onClick={() => photoInputRef.current?.click()}>
-              ＋
-            </button>
-            <button className="chip add" onClick={() => snapInputRef.current?.click()}>
-              📷
-            </button>
-            <button className="chip add" onClick={() => enterMode('doodling')}>
-              ✏️
-            </button>
-            <button className="chip add" onClick={() => backdropInputRef.current?.click()}>
-              🖼
-            </button>
-            <button
+            <IconButton
+              icon="photo"
+              label="add a photo"
               className="chip add"
-              aria-label="add a word"
+              onClick={() => photoInputRef.current?.click()}
+            />
+            <IconButton
+              icon="selfie"
+              label="take a selfie"
+              className="chip add"
+              onClick={() => snapInputRef.current?.click()}
+            />
+            <IconButton
+              icon="doodle"
+              label="draw a puppet"
+              className="chip add"
+              onClick={() => enterMode('doodling')}
+            />
+            <IconButton
+              icon="backdrop"
+              label="add a backdrop"
+              className="chip add"
+              onClick={() => backdropInputRef.current?.click()}
+            />
+            <IconButton
+              icon="text"
+              label="add a word"
+              className="chip add"
               onClick={() => {
                 setTextDraft('');
                 setKitOpen(false);
                 setSheet({ kind: 'text' });
               }}
-            >
-              Ⓣ
-            </button>
+            />
           </div>
 
           {selected && (
@@ -1747,7 +1761,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         ref={snapInputRef}
         type="file"
         accept="image/*"
-        capture="environment"
+        capture="user"
         hidden
         onChange={(e) => {
           void castPhoto(e.target.files);
