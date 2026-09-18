@@ -1,6 +1,39 @@
 import { ALL_FORMATS, AudioBufferSink, BlobSource, Input, type InputAudioTrack } from 'mediabunny';
 
 /** A probed, decodable audio track. Owns its Input; dispose when done. */
+/** Decode the given sources in order and write their PCM into one
+ *  audio-only mp4. Shared by "extend the bit" and by importing a file
+ *  whose container carries video we do not want to keep. */
+export async function encodeAudioOnly(handles: AudioSourceHandle[]): Promise<Blob | null> {
+  if (handles.length === 0) return null;
+  try {
+    const {
+      AudioBufferSource,
+      BufferTarget,
+      Mp4OutputFormat,
+      Output,
+      QUALITY_MEDIUM,
+      getFirstEncodableAudioCodec,
+    } = await import('mediabunny');
+    const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) ?? 'opus';
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat(), target });
+    const src = new AudioBufferSource({ codec, bitrate: QUALITY_MEDIUM });
+    output.addAudioTrack(src);
+    await output.start();
+    for (const handle of handles) {
+      for await (const { buffer } of handle.makeSink().buffers()) {
+        await src.add(buffer);
+      }
+    }
+    src.close();
+    await output.finalize();
+    return target.buffer ? new Blob([target.buffer], { type: 'video/mp4' }) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Concatenate two recordings into one (the "extend the bit" path): decode
  *  both, butt-join the PCM, re-encode. */
 export async function concatAudio(a: Blob, b: Blob): Promise<Blob | null> {
@@ -11,25 +44,7 @@ export async function concatAudio(a: Blob, b: Blob): Promise<Blob | null> {
     return null;
   }
   try {
-    const { AudioBufferSource, BufferTarget, Mp4OutputFormat, Output, QUALITY_MEDIUM } =
-      await import('mediabunny');
-    const { getFirstEncodableAudioCodec } = await import('mediabunny');
-    const codec = (await getFirstEncodableAudioCodec(['aac', 'opus'])) ?? 'opus';
-    const target = new BufferTarget();
-    const output = new Output({ format: new Mp4OutputFormat(), target });
-    const src = new AudioBufferSource({ codec, bitrate: QUALITY_MEDIUM });
-    output.addAudioTrack(src);
-    await output.start();
-    for (const handle of [ha, hb]) {
-      for await (const { buffer } of handle.makeSink().buffers()) {
-        await src.add(buffer);
-      }
-    }
-    src.close();
-    await output.finalize();
-    return target.buffer ? new Blob([target.buffer], { type: 'video/mp4' }) : null;
-  } catch {
-    return null;
+    return await encodeAudioOnly([ha, hb]);
   } finally {
     ha.dispose();
     hb.dispose();

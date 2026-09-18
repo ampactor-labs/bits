@@ -44,6 +44,16 @@ import {
   type WireMods,
 } from '../engine/wires';
 import type { WireSource, WireTarget } from '../engine/recipe';
+import { BannerView, useBanner } from '../kit/Banner';
+import { Sheet } from '../kit/Sheet';
+import { useToast } from '../kit/Toast';
+import { ProgressRing } from '../kit/Controls';
+import {
+  NoSoundInFileError,
+  SOUND_FILE_ACCEPT,
+  importSoundFile,
+  soundExtension,
+} from '../media/audioImport';
 import { countCommit, probe } from '../e2e/probe';
 import { voiceMap, renderShow, visualsOf, type RenderProgress } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
@@ -110,7 +120,30 @@ export function Stage({ showId }: { showId: string }) {
   const [mode, setMode] = useState<Mode>('loading');
   const modeRef = useRef<Mode>('loading');
   const [t, setT] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
+  const banner = useBanner();
+  /** Errors are a banner over a stage that stays mounted. Replacing the
+   *  whole screen with one line of text left no way back (audit F4). */
+  const bannerRef = useRef(banner);
+  bannerRef.current = banner;
+  const fail = useCallback(
+    (err: unknown) =>
+      bannerRef.current.error(err instanceof Error ? err.message : String(err)),
+    [],
+  );
+  /** Casting a photo can take seconds on a cold model; say so. */
+  const [casting, setCasting] = useState(false);
+  /** Set when the stored recipe would not parse: the bytes are kept and
+   *  offered back rather than overwritten. */
+  const [damagedRaw, setDamagedRaw] = useState<string | null>(null);
+  /** In-app sheets replace window.prompt and window.confirm: a system
+   *  dialog breaks the instrument feel and looks foreign in a PWA. */
+  const [sheet, setSheet] = useState<
+    null | { kind: 'text' } | { kind: 'retake'; mode: 'replace' | 'extend' }
+  >(null);
+  const [textDraft, setTextDraft] = useState('');
+  /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
+  const undoRef = useRef<() => void>(() => {});
   const [rendering, setRendering] = useState<RenderProgress | null>(null);
   const [rendered, setRendered] = useState<File | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
@@ -220,7 +253,10 @@ export function Stage({ showId }: { showId: string }) {
         try {
           projectRef.current = parseProject(saved);
         } catch {
-          projectRef.current = createProject('untitled bit');
+          // Swapping in a blank project threw the bytes away silently. Keep
+          // them, say so, and offer the file back (audit F4).
+          setDamagedRaw(saved);
+          bannerRef.current.error("this bit's recipe is damaged; nothing was overwritten");
         }
       }
       visualsRef.current = visualsOf(projectRef.current);
@@ -241,7 +277,7 @@ export function Stage({ showId }: { showId: string }) {
       await reloadImages();
       if (!cancelled) setModeBoth(jamRef.current ? 'idle' : 'needsAudio');
     })().catch((err: unknown) => {
-      if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      if (!cancelled) fail(err);
     });
     return () => {
       cancelled = true;
@@ -252,7 +288,7 @@ export function Stage({ showId }: { showId: string }) {
       for (const img of imagesRef.current.values()) img.close();
       imagesRef.current = new Map();
     };
-  }, [showId, reloadImages, analyzeAudio]);
+  }, [showId, reloadImages, analyzeAudio, fail]);
 
   const currentClock = useCallback((): number => {
     const audio = jamRef.current?.positionS();
@@ -754,12 +790,16 @@ export function Stage({ showId }: { showId: string }) {
           };
           dirtyRef.current = true;
           clearLongPress();
+          // A hesitation used to delete the puppet (audit F5). Now holding
+          // selects it and says where its tools are. It must not open the
+          // panel itself: the panel would appear under the held finger and
+          // the release would activate whatever button landed there.
           longPressRef.current = setTimeout(() => {
             stagingRef.current = null;
-            commit((p) =>
-              appendEvent(p, { kind: 'DROP', id: newId(), at: 0, puppetId: hit.puppet.id }),
-            );
-            vibrate(40);
+            setSelectedId(hit.puppet.id);
+            bannerRef.current.hint('picked it up. open the tools to layer, wire or drop it.');
+            vibrate(10);
+            dirtyRef.current = true;
           }, LONG_PRESS_MS);
         }
       }
@@ -860,7 +900,15 @@ export function Stage({ showId }: { showId: string }) {
         const staging = stagingRef.current;
         stagingRef.current = null;
         const existing = castOf(projectRef.current).find((p) => p.id === staging.puppetId);
-        if (existing) {
+        // A tap that moved nothing used to append a CAST identical to the
+        // one before it, so undo had a no-op to step through first.
+        const moved =
+          !!existing &&
+          (Math.abs(existing.home.x - staging.x) > 1e-4 ||
+            Math.abs(existing.home.y - staging.y) > 1e-4 ||
+            Math.abs(existing.home.scale - staging.scale) > 1e-4 ||
+            Math.abs(existing.home.rot - staging.rot) > 1e-4);
+        if (existing && moved) {
           const recast: CastEvent = {
             kind: 'CAST',
             id: newId(),
@@ -910,7 +958,7 @@ export function Stage({ showId }: { showId: string }) {
     const assetId = await saveAsset(blob, 'webm');
     const handle = await AudioSourceHandle.open(blob);
     if (!handle) {
-      setError('could not read the recording; try again');
+      banner.error('could not read the recording; try again');
       setModeBoth('needsAudio');
       return;
     }
@@ -930,51 +978,96 @@ export function Stage({ showId }: { showId: string }) {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const snapInputRef = useRef<HTMLInputElement>(null);
   const backdropInputRef = useRef<HTMLInputElement>(null);
+  const soundFileInputRef = useRef<HTMLInputElement>(null);
 
   const castPhoto = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
-    const cutout = await makeCutout(file);
-    const assetId = await saveAsset(cutout.blob, 'png');
-    const frame = frameRef.current;
-    const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
-    const w = 0.38;
-    const h = w * stageRatio * (cutout.height / cutout.width);
-    commit((p) =>
-      appendEvent(p, {
-        kind: 'CAST',
-        id: newId(),
-        at: 0,
-        puppetId: newId(),
-        puppet: { type: 'cutout', assetId, w, h },
-        x: 0.5,
-        y: 0.55,
-        scale: 1,
-        rot: 0,
-      }),
-    );
-    await reloadImages();
+    // The segmenter's first run downloads 11MB of wasm and a model. Saying
+    // nothing for that long reads as a broken app (audit F7).
+    setCasting(true);
+    try {
+      const cutout = await makeCutout(file);
+      const assetId = await saveAsset(cutout.blob, 'png');
+      const frame = frameRef.current;
+      const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
+      const w = 0.38;
+      const h = w * stageRatio * (cutout.height / cutout.width);
+      commit((p) =>
+        appendEvent(p, {
+          kind: 'CAST',
+          id: newId(),
+          at: 0,
+          puppetId: newId(),
+          puppet: { type: 'cutout', assetId, w, h },
+          x: 0.5,
+          y: 0.55,
+          scale: 1,
+          rot: 0,
+        }),
+      );
+      await reloadImages();
+      if (cutout.fallback === 'no-person') toast.show('no person found, kept the whole photo');
+      else if (cutout.fallback === 'no-model') toast.show('cutting out is unavailable, kept the whole photo');
+    } catch {
+      banner.error("couldn't read that photo");
+    } finally {
+      setCasting(false);
+    }
   };
 
   const onBackdropPicked = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
-    const assetId = await saveAsset(file, 'img');
-    commit((p) =>
-      appendEvent(p, {
-        kind: 'CAST',
-        id: newId(),
-        at: 0,
-        puppetId: newId(),
-        puppet: { type: 'cutout', assetId, w: 1, h: 1 },
-        x: 0.5,
-        y: 0.5,
-        scale: 1,
-        rot: 0,
-        back: true,
-      }),
-    );
-    await reloadImages();
+    try {
+      const assetId = await saveAsset(file, 'img');
+      commit((p) =>
+        appendEvent(p, {
+          kind: 'CAST',
+          id: newId(),
+          at: 0,
+          puppetId: newId(),
+          puppet: { type: 'cutout', assetId, w: 1, h: 1 },
+          x: 0.5,
+          y: 0.5,
+          scale: 1,
+          rot: 0,
+          back: true,
+        }),
+      );
+      await reloadImages();
+    } catch {
+      banner.error("couldn't read that image");
+    }
+  };
+
+  /** Sound from a file: a voice memo, a song, the audio off a video. The
+   *  mic used to be the only way in, which asked a person to talk out loud
+   *  before anything happened at all (audit F28). */
+  const pickSoundFile = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setCasting(true);
+    try {
+      const sound = await importSoundFile(file);
+      const assetId = await saveAsset(sound.blob, soundExtension(sound, file));
+      const handle = await AudioSourceHandle.open(sound.blob);
+      if (!handle) throw new NoSoundInFileError();
+      audioBlobRef.current = sound.blob;
+      jamRef.current?.dispose();
+      jamRef.current = new JamAudio(handle.makeSink());
+      await analyzeAudio(sound.blob);
+      commit((p) => ({ ...p, audio: { assetId, durationS: sound.durationS } }));
+      setSoundLost(false);
+      playheadRef.current = 0;
+      setT(0);
+      setModeBoth('idle');
+      if (sound.extracted) toast.show('took the sound off that video');
+    } catch (err) {
+      banner.error(err instanceof NoSoundInFileError ? 'no sound in that file' : "couldn't read that file");
+    } finally {
+      setCasting(false);
+    }
   };
 
 
@@ -1067,6 +1160,7 @@ export function Stage({ showId }: { showId: string }) {
   const dropPuppet = (p: ShowPuppet) => {
     setSelectedId(null);
     commit((proj) => appendEvent(proj, { kind: 'DROP', id: newId(), at: 0, puppetId: p.id }));
+    toast.undoable('dropped from the cast', undoRef.current);
   };
 
 
@@ -1077,7 +1171,7 @@ export function Stage({ showId }: { showId: string }) {
     try {
       poseDriverRef.current = await PoseDriver.create(video);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      fail(err);
       setModeBoth('idle');
       return;
     }
@@ -1096,21 +1190,40 @@ export function Stage({ showId }: { showId: string }) {
   };
 
   const startRetake = (mode: 'replace' | 'extend') => {
-    const warning =
-      mode === 'replace'
-        ? 'record new sound for this bit? your moves stay, but they may land differently.'
-        : 'record more sound onto the end of the bit?';
-    if (!window.confirm(warning)) return;
-    retakeModeRef.current = mode;
     setKitOpen(false);
+    setSheet({ kind: 'retake', mode });
+  };
+
+  const confirmRetake = (mode: 'replace' | 'extend') => {
+    retakeModeRef.current = mode;
+    setSheet(null);
     setModeBoth('needsAudio');
+  };
+
+  const addTextPuppet = (raw: string) => {
+    const text = raw.trim();
+    setSheet(null);
+    if (!text) return;
+    commit((p) =>
+      appendEvent(p, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: newId(),
+        puppet: { type: 'text', text: text.slice(0, 40), w: 0.56, h: 0.1 },
+        x: 0.5,
+        y: 0.2,
+        scale: 1,
+        rot: 0,
+      }),
+    );
   };
 
   const exportBit = async () => {
     try {
       await shareOrDownload(await exportBundle(projectRef.current));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      fail(err);
     }
   };
 
@@ -1123,6 +1236,8 @@ export function Stage({ showId }: { showId: string }) {
     applyProject((p) => ({ ...p, events: p.events.slice(0, -1) }), false);
     void reloadImages();
   };
+
+  undoRef.current = undo;
 
   const redo = () => {
     const event = redoRef.current.pop();
@@ -1147,7 +1262,7 @@ export function Stage({ showId }: { showId: string }) {
       });
       setRendered(out);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      fail(err);
     } finally {
       setRendering(null);
       void wakeLock?.release().catch(() => {});
@@ -1167,8 +1282,6 @@ export function Stage({ showId }: { showId: string }) {
   const passCount = projectSnap.events.filter((e) => e.kind === 'PASS').length;
   const puppets = castOf(projectSnap).filter((p) => !p.back);
   const busy = mode === 'playing' || mode === 'recording';
-
-  if (error) return <p className="error">{error}</p>;
 
   const selected = selectedId ? castOf(projectSnap).find((p) => p.id === selectedId) : undefined;
   const chipGlyph = (p: ShowPuppet) =>
@@ -1193,19 +1306,51 @@ export function Stage({ showId }: { showId: string }) {
       <div className="stagearea">
         <div ref={frameRef} className={`stagebox mode-${mode}`}>
           <canvas ref={canvasRef} />
+          <BannerView />
           {mode === 'needsAudio' && (
             <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
               <p>
                 {soundLost
-                  ? 'the sound for this bit is missing. record it again.'
+                  ? 'the sound for this bit is missing. record it again, or use a file.'
                   : 'every bit starts with the sound.'}
               </p>
-              <button className="primary" onClick={() => void recordBit()}>
-                ⏺ record the bit
-              </button>
+              <div className="cta-row">
+                <button className="primary" onClick={() => void recordBit()} disabled={casting}>
+                  record the bit
+                </button>
+                <button onClick={() => soundFileInputRef.current?.click()} disabled={casting}>
+                  use a file
+                </button>
+              </div>
+              {casting && <ProgressRing value={null} label="reading that file" />}
               {projectSnap.audio && !soundLost && (
                 <button onClick={() => setModeBoth('idle')}>keep the old sound</button>
               )}
+              {damagedRaw && (
+                <button
+                  onClick={() =>
+                    void shareOrDownload(
+                      new File([damagedRaw], `${showId}.damaged.json`, {
+                        type: 'application/json',
+                      }),
+                    )
+                  }
+                >
+                  save the damaged file
+                </button>
+              )}
+            </div>
+          )}
+          {mode === 'idle' && durationS > 0 && puppets.length === 0 && (
+            <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
+              <p>now cast a puppet.</p>
+              <div className="cta-row">
+                <button className="primary" onClick={() => photoInputRef.current?.click()}>
+                  a photo
+                </button>
+                <button onClick={() => enterMode('doodling')}>draw one</button>
+              </div>
+              {casting && <ProgressRing value={null} label="cutting out" />}
             </div>
           )}
           {mode === 'micLive' && (
@@ -1218,25 +1363,6 @@ export function Stage({ showId }: { showId: string }) {
           )}
           {mode === 'recording' && <span className="recdot">●</span>}
           {counting && <div className="stage-hintline">🥁 count-in…</div>}
-          {mode === 'recording' && (
-            <div className="foleyrow" onPointerDown={(e) => e.stopPropagation()}>
-              <button className="pill" onClick={() => foley('boing')}>
-                boing
-              </button>
-              <button className="pill" onClick={() => foley('slap')}>
-                slap
-              </button>
-              <button className="pill" onClick={() => foley('honk')}>
-                honk
-              </button>
-              <button className="pill" onClick={() => foley('scratch')}>
-                scrtch
-              </button>
-              <button className="pill" onClick={() => foley('drop')}>
-                drop
-              </button>
-            </div>
-          )}
           {mode === 'snipping' && <div className="stage-hintline">draw a line across a puppet</div>}
           {mode === 'mouthing' && <div className="stage-hintline">tap where the mouth goes</div>}
           {mode === 'eyeing' && <div className="stage-hintline">tap where the eyes go</div>}
@@ -1283,6 +1409,26 @@ export function Stage({ showId }: { showId: string }) {
         </div>
       </div>
 
+      {mode === 'recording' && (
+        <div className="foleyrow" onPointerDown={(e) => e.stopPropagation()}>
+          <button className="pill" onClick={() => foley('boing')}>
+            boing
+          </button>
+          <button className="pill" onClick={() => foley('slap')}>
+            slap
+          </button>
+          <button className="pill" onClick={() => foley('honk')}>
+            honk
+          </button>
+          <button className="pill" onClick={() => foley('scratch')}>
+            scratch
+          </button>
+          <button className="pill" onClick={() => foley('drop')}>
+            drop
+          </button>
+        </div>
+      )}
+
       {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
         <div className="bar">
           {!busy ? (
@@ -1298,7 +1444,7 @@ export function Stage({ showId }: { showId: string }) {
               <button
                 className="ghost"
                 aria-label="play"
-                disabled={passCount === 0 || placing || mode === 'doodling' || counting}
+                disabled={durationS <= 0 || placing || mode === 'doodling' || counting}
                 onClick={() => void start(false)}
               >
                 ▶
@@ -1397,22 +1543,11 @@ export function Stage({ showId }: { showId: string }) {
             </button>
             <button
               className="chip add"
+              aria-label="add a word"
               onClick={() => {
-                const text = window.prompt('what should it say?')?.trim();
-                if (!text) return;
-                commit((p) =>
-                  appendEvent(p, {
-                    kind: 'CAST',
-                    id: newId(),
-                    at: 0,
-                    puppetId: newId(),
-                    puppet: { type: 'text', text: text.slice(0, 40), w: 0.56, h: 0.1 },
-                    x: 0.5,
-                    y: 0.2,
-                    scale: 1,
-                    rot: 0,
-                  }),
-                );
+                setTextDraft('');
+                setKitOpen(false);
+                setSheet({ kind: 'text' });
               }}
             >
               Ⓣ
@@ -1495,6 +1630,42 @@ export function Stage({ showId }: { showId: string }) {
         </div>
       )}
 
+      {sheet?.kind === 'text' && (
+        <Sheet title="what should it say?" onClose={() => setSheet(null)}>
+          <input
+            className="text-field"
+            value={textDraft}
+            autoFocus
+            maxLength={40}
+            aria-label="the word"
+            onChange={(e) => setTextDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') addTextPuppet(textDraft);
+            }}
+          />
+          <button className="primary" onClick={() => addTextPuppet(textDraft)}>
+            put it on stage
+          </button>
+        </Sheet>
+      )}
+
+      {sheet?.kind === 'retake' && (
+        <Sheet
+          title={sheet.mode === 'replace' ? 'retake the sound' : 'extend the sound'}
+          onClose={() => setSheet(null)}
+        >
+          <p className="sheet-copy">
+            {sheet.mode === 'replace'
+              ? 'your moves stay, but they may land differently against new sound.'
+              : 'the new sound joins onto the end; everything you performed stays put.'}
+          </p>
+          <button className="primary" onClick={() => confirmRetake(sheet.mode)}>
+            {sheet.mode === 'replace' ? 'record new sound' : 'record more'}
+          </button>
+          <button onClick={() => setSheet(null)}>keep what I have</button>
+        </Sheet>
+      )}
+
       <input
         ref={photoInputRef}
         type="file"
@@ -1523,6 +1694,16 @@ export function Stage({ showId }: { showId: string }) {
         hidden
         onChange={(e) => {
           void onBackdropPicked(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={soundFileInputRef}
+        type="file"
+        accept={SOUND_FILE_ACCEPT}
+        hidden
+        onChange={(e) => {
+          void pickSoundFile(e.target.files);
           e.target.value = '';
         }}
       />

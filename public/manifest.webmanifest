@@ -1,7 +1,7 @@
 {
   "name": "BITS",
   "short_name": "BITS",
-  "description": "A video instrument. Perform the edit.",
+  "description": "A puppet show instrument. Record the bit, cast puppets, perform in passes.",
   "id": "/bits/",
   "start_url": ".",
   "scope": ".",

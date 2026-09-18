@@ -2,7 +2,9 @@
 // grabs. Wrists are the handles; coordinates come out mirrored so moving
 // your right hand right moves the puppet right on screen.
 
-import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+// Dynamic, like the segmenter: the pose model is another 6MB and its JS
+// has no business in the first paint.
+import type { PoseLandmarker } from '@mediapipe/tasks-vision';
 
 export interface BodyHands {
   right: { x: number; y: number } | null;
@@ -48,8 +50,9 @@ export class PoseDriver {
 
   static async create(video: HTMLVideoElement): Promise<PoseDriver> {
     const base = `${import.meta.env.BASE_URL}mediapipe`;
-    const fileset = await FilesetResolver.forVisionTasks(base);
-    const landmarker = await PoseLandmarker.createFromOptions(fileset, {
+    const vision = await import('@mediapipe/tasks-vision');
+    const fileset = await vision.FilesetResolver.forVisionTasks(base);
+    const landmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: `${base}/pose_landmarker_lite.task` },
       runningMode: 'VIDEO',
       numPoses: 1,

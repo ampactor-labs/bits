@@ -2,7 +2,10 @@
 // sticker when not. The fallback keeps the show castable on any device; the
 // segmenter just makes it Gilliam.
 
-import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
+// The tasks-vision bundle is ~155KB of JS on top of an 11MB wasm and a
+// model. Importing it dynamically keeps all three off the first paint: a
+// person who never casts a photo never pays for the scissors.
+import type { ImageSegmenter } from '@mediapipe/tasks-vision';
 
 const MAX_SIDE = 1024;
 const CONFIDENCE = 0.5;
@@ -14,8 +17,9 @@ function getSegmenter(): Promise<ImageSegmenter | null> {
   segmenterPromise ??= (async () => {
     try {
       const base = `${import.meta.env.BASE_URL}mediapipe`;
-      const fileset = await FilesetResolver.forVisionTasks(base);
-      return await ImageSegmenter.createFromOptions(fileset, {
+      const vision = await import('@mediapipe/tasks-vision');
+      const fileset = await vision.FilesetResolver.forVisionTasks(base);
+      return await vision.ImageSegmenter.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: `${base}/selfie_segmenter.tflite` },
         runningMode: 'IMAGE',
         outputConfidenceMasks: true,
@@ -28,10 +32,16 @@ function getSegmenter(): Promise<ImageSegmenter | null> {
   return segmenterPromise;
 }
 
+/** True when the model was unavailable or saw no person, so the whole
+ *  frame was kept. The caller says so rather than leaving the person to
+ *  wonder why their photo is a rectangle. */
+export type CutoutFallback = false | 'no-model' | 'no-person';
+
 export interface Cutout {
   blob: Blob;
   width: number;
   height: number;
+  fallback: CutoutFallback;
 }
 
 export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
@@ -45,7 +55,7 @@ export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
   bitmap.close();
 
   const segmenter = await getSegmenter();
-  if (!segmenter) return canvasToCutout(canvas);
+  if (!segmenter) return canvasToCutout(canvas, 'no-model');
 
   const mask = await new Promise<Float32Array | null>((resolve) => {
     try {
@@ -58,7 +68,7 @@ export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
       resolve(null);
     }
   });
-  if (!mask) return canvasToCutout(canvas);
+  if (!mask) return canvasToCutout(canvas, 'no-model');
 
   const img = ctx.getImageData(0, 0, w, h);
   let minX = w;
@@ -81,7 +91,7 @@ export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
     }
   }
   // A near-empty mask means the model saw no person: keep the whole frame.
-  if (hits < w * h * 0.01) return canvasToCutout(canvas);
+  if (hits < w * h * 0.01) return canvasToCutout(canvas, 'no-person');
 
   ctx.putImageData(img, 0, 0);
   const bx = Math.max(0, minX - PAD_PX);
@@ -90,13 +100,17 @@ export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
   const bh = Math.min(h, maxY + PAD_PX) - by;
   const trimmed = new OffscreenCanvas(bw, bh);
   trimmed.getContext('2d')!.drawImage(canvas, bx, by, bw, bh, 0, 0, bw, bh);
-  return canvasToCutout(trimmed);
+  return canvasToCutout(trimmed, false);
 }
 
-async function canvasToCutout(canvas: OffscreenCanvas): Promise<Cutout> {
+async function canvasToCutout(
+  canvas: OffscreenCanvas,
+  fallback: CutoutFallback,
+): Promise<Cutout> {
   return {
     blob: await canvas.convertToBlob({ type: 'image/png' }),
     width: canvas.width,
     height: canvas.height,
+    fallback,
   };
 }

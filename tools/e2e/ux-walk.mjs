@@ -18,7 +18,7 @@
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -35,13 +35,33 @@ const GAPS = {
   'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
   'no-instructive-text-under-15px': 'M2, when the banner replaces the hint line',
   'every-button-has-a-name': 'M4, when emoji controls become labelled icons',
-  'empty-stage-says-what-to-do': 'M1',
-  'play-works-before-any-pass': 'M1',
-  'held-finger-never-drops': 'M1',
-  'pass-phase-reachable': 'M1 (blocked by held-finger-never-drops)',
-  'sound-can-come-from-a-file': 'M1',
   'playback-does-not-rerender-every-frame': 'M0b, when the clock leaves React state',
 };
+
+/** A 2s 440Hz mono WAV, written by hand so the import path is exercised
+ *  with a real file rather than a mock. */
+function makeWav(path, seconds = 2, rate = 16000) {
+  const n = seconds * rate;
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + n * 2, 4);
+  buf.write('WAVEfmt ', 8);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    const env = i % (rate / 2) < rate / 4 ? 1 : 0.2;
+    buf.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000 * env), 44 + i * 2);
+  }
+  writeFileSync(path, buf);
+  return path;
+}
 
 const results = [];
 const check = (id, ok, detail) => {
@@ -326,6 +346,9 @@ try {
       await sleep(400);
       const added = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
       check('held-finger-never-drops', !added.includes('DROP'), added.join(',') || 'nothing added');
+      // A hold that changes nothing should not append anything either,
+      // or undo has a no-op to step through before it reaches real work.
+      check('a-hold-appends-nothing', added.length === 0, added.join(',') || 'clean');
     });
 
     await phase('pass-phase-reachable', async () => {
@@ -370,9 +393,61 @@ try {
     });
   }
 
+  // The headline change of M1, proven rather than asserted: a person who
+  // will not talk out loud can still start a bit.
+  await phase('a-file-becomes-a-bits-sound', async () => {
+    await tapText('.topbar button', 'bits');
+    await sleep(600);
+    await tapText('.transport button', '+ new bit');
+    await sleep(600);
+    const wav = makeWav(join(SHOTS, 'import-fixture.wav'));
+    const input = await page.$('input[type=file][accept*="audio"]');
+    if (!input) throw new Error('no sound file input on the first screen');
+    await input.uploadFile(wav);
+    await page.waitForFunction(
+      () => (window.__bits.project()?.audio?.durationS ?? 0) > 0,
+      { timeout: 30000 },
+    );
+    const dur = await page.evaluate(() => window.__bits.project().audio.durationS);
+    await shot('sound-from-file');
+    check('a-file-becomes-a-bits-sound', Math.abs(dur - 2) < 0.3, `${dur.toFixed(2)}s`);
+  });
+
+  // Deleting used to be one unguarded tap inside the row's own tap area,
+  // with the assets purged immediately (audit F6).
+  await phase('delete-is-undoable', async () => {
+    await tapText('.topbar button', 'bits');
+    await sleep(700);
+    const rowsBefore = (await page.$$('.source-row')).length;
+    if (rowsBefore === 0) throw new Error('no bits to delete');
+    const more = await page.$('.source-row [aria-label^="more for"]');
+    if (!more) throw new Error('no row menu');
+    await more.tap();
+    await sleep(300);
+    check('delete-asks-first', !!(await page.$('.sheet')), 'menu sheet opened');
+    await tapText('.sheet button', 'delete');
+    await sleep(700);
+    const rowsAfter = (await page.$$('.source-row')).length;
+    const undo = await page.$('.toast-action');
+    if (!undo) throw new Error('no undo offered after delete');
+    await undo.tap();
+    await sleep(900);
+    const rowsRestored = (await page.$$('.source-row')).length;
+    check(
+      'delete-is-undoable',
+      rowsAfter === rowsBefore - 1 && rowsRestored === rowsBefore,
+      `${rowsBefore} -> ${rowsAfter} -> ${rowsRestored}`,
+    );
+  });
+
   check('no-system-dialog-appeared', dialogs.length === 0, dialogs.join(' | '));
   check('no-page-errors', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
-  check('no-dead-end', !(await page.$('.error')));
+  // A dead end is: the stage gone, or an error still standing on it.
+  const deadEnd = await page.evaluate(() => ({
+    stage: !!document.querySelector('.stagebox') || !!document.querySelector('.source-list, .empty'),
+    error: document.querySelector('.banner-error')?.textContent ?? '',
+  }));
+  check('no-dead-end', deadEnd.stage && !deadEnd.error, deadEnd.error || 'stage intact');
 } catch (err) {
   check('the-walkthrough-ran', false, String(err && err.message ? err.message : err));
 } finally {
