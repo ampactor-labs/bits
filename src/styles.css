@@ -498,8 +498,16 @@ body {
   position: absolute;
   z-index: 6;
   display: flex;
-  gap: 2px;
-  padding: 4px;
+  /* Six 44px touch targets are 264px and the stage inside a 390px phone
+     is about 290. They fit only with nothing between them; on anything
+     narrower — a small phone, or the shorter stage the lanes leave — the
+     bar wraps to a second row rather than running off the edge with its
+     last tools unreachable. */
+  gap: 0;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100% - 12px);
+  padding: 2px;
   border-radius: 14px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(8px);
@@ -929,4 +937,185 @@ input[type='range'] {
   box-shadow:
     0 0 0 2px var(--panel),
     0 0 0 5px var(--text);
+}
+
+/* Lanes: the passes, as spans over the timeline's own axis. Capped at a
+ * third of the stage and scrolling inside, so it can stay open while the
+ * bit plays and the playhead runs through it. */
+.lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 2px;
+  border-top: 1px solid var(--line);
+}
+
+.lanes-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lanes-head .status {
+  flex: 1;
+  padding: 0;
+}
+
+.lanes-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Three lanes, then it scrolls: a cast of six must not push the stage
+     off the screen to show a cast of six. */
+  max-height: 124px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.lane {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lane-name {
+  flex: 0 0 74px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  font-size: var(--fs-hint);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--raised);
+}
+
+.lane-name.on {
+  background: var(--accent-2);
+  color: var(--accent-2-ink);
+}
+
+.lane-track {
+  position: relative;
+  flex: 1;
+  height: 36px;
+  border-radius: var(--r-1);
+  background: var(--raised);
+  min-width: 0;
+}
+
+.span {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--accent-2);
+}
+
+/* A mouthed puppet talks exactly while one of its passes covers the
+ * moment. The stripes are that rule, drawn. */
+.span-talks {
+  background: repeating-linear-gradient(
+    115deg,
+    var(--accent-2) 0 5px,
+    color-mix(in srgb, var(--accent-2) 55%, var(--bg)) 5px 10px
+  );
+}
+
+.span-muted {
+  background: var(--line);
+}
+
+.span.on {
+  box-shadow: 0 0 0 2px var(--text);
+}
+
+/* Only the selected span carries edge grips, or every span in the panel
+ * would be ringed with touch targets that overlap each other. */
+.span-edge {
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  width: 30px;
+  touch-action: none;
+}
+
+.span-edge::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: calc(50% - 1.5px);
+  width: 3px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.span-edge-from {
+  left: -15px;
+}
+
+.span-edge-to {
+  right: -15px;
+}
+
+.lanes-axis {
+  position: relative;
+  height: 26px;
+  margin-left: 82px;
+  border-radius: var(--r-1);
+  background: var(--panel);
+  touch-action: none;
+}
+
+.loop-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+}
+
+.lanes-playhead {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.lane-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lane-actions .status {
+  flex: 1;
+  padding: 0;
+}
+
+.lanes .iconbtn.on,
+.lane-actions .iconbtn.on {
+  background: var(--raised-hi);
+  border-radius: 12px;
+}
+
+/* On the stage the timeline and, when open, the lanes sit between the
+ * dock and the stage. Toasts clear them: news should not hide the
+ * transport it is news about. */
+body:has(.app-stage) {
+  --toast-bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + 60px);
+}
+
+body:has(.lanes) {
+  --toast-bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + 60px + 40vh);
 }

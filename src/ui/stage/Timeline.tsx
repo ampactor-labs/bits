@@ -8,6 +8,7 @@
 // cost no React renders.
 
 import { useEffect, useRef, type RefObject } from 'react';
+import { IconButton } from '../../kit/IconButton';
 
 export interface TimelineProps {
   durationS: number;
@@ -24,6 +25,9 @@ export interface TimelineProps {
   /** What the sound kept. Outside it is drawn as thrown away, so a
    *  trimmed bit does not look like a broken one. */
   trim: { from: number; to: number } | null;
+  lanesOpen: boolean;
+  passCount: number;
+  onLanes: () => void;
 }
 
 const fmt = (s: number) =>
@@ -43,6 +47,9 @@ export function Timeline({
   timeTextRef,
   initialT,
   trim,
+  lanesOpen,
+  passCount,
+  onLanes,
 }: TimelineProps) {
   const waveRef = useRef<HTMLCanvasElement>(null);
 
@@ -122,6 +129,12 @@ export function Timeline({
         <span className="times-sep"> / </span>
         <span className="times-total">{fmt(trim ? trim.to - trim.from : durationS)}</span>
       </span>
+      <IconButton
+        icon={lanesOpen ? 'collapse' : 'lanes'}
+        label={lanesOpen ? 'close the lanes' : `the passes (${passCount})`}
+        className={lanesOpen ? 'on' : ''}
+        onClick={onLanes}
+      />
     </div>
   );
 }

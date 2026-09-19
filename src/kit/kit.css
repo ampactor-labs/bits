@@ -28,7 +28,9 @@
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(var(--dock-h) + env(safe-area-inset-bottom) + var(--s-3));
+  /* Raised on the stage, where the transport sits above the dock: see
+     --toast-bottom in styles.css. */
+  bottom: var(--toast-bottom, calc(var(--dock-h) + env(safe-area-inset-bottom) + var(--s-3)));
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
@@ -51,7 +53,9 @@
   box-shadow: 0 6px 24px rgb(0 0 0 / 45%);
   color: var(--text);
   font-size: var(--fs-hint);
-  pointer-events: auto;
+  /* A toast is news, not a wall. Only its undo takes a tap; everything
+     under it stays reachable, which on the stage is the transport. */
+  pointer-events: none;
 }
 
 .toast-text {
@@ -60,6 +64,7 @@
 }
 
 .toast-action {
+  pointer-events: auto;
   min-height: 40px;
   padding: 0 var(--s-3);
   background: transparent;

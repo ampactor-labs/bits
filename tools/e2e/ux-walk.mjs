@@ -636,6 +636,157 @@ try {
       await closeTools();
     });
 
+    // A pass used to be invisible: audible and visible in motion, but not
+    // findable, silenceable, shortenable or removable (audit F22, F23).
+    await phase('a-pass-is-a-thing-you-can-see', async () => {
+      await tapLabel('the passes (1)');
+      await sleep(400);
+      await shot('lanes');
+      const spans = await page.$$('.lanes .span');
+      check('a-pass-is-a-thing-you-can-see', spans.length === 1, `${spans.length} span(s)`);
+      const overStage = await page.evaluate(() => {
+        const stage = document.querySelector('.stagebox')?.getBoundingClientRect();
+        const lanes = document.querySelector('.lanes')?.getBoundingClientRect();
+        if (!stage || !lanes) return 1;
+        const covered =
+          Math.max(0, Math.min(stage.bottom, lanes.bottom) - Math.max(stage.top, lanes.top)) /
+          stage.height;
+        return covered;
+      });
+      check('the-lanes-cover-at-most-a-third', overStage <= 0.34, `${Math.round(overStage * 100)}%`);
+      // The talker rule, drawn: a mouthed puppet's span says it talks.
+      const striped = await page.evaluate(
+        () => document.querySelectorAll('.lanes .span-talks').length,
+      );
+      check('a-talking-pass-says-so', striped === 1, `${striped} striped`);
+    });
+
+    await phase('a-pass-can-be-muted-and-taken-out', async () => {
+      await (await page.$('.lanes .span')).tap();
+      await sleep(300);
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      await tapLabel('mute it');
+      await sleep(300);
+      const muted = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      check('muting-a-pass-is-one-event', muted.join(',') === 'MUTE', muted.join(',') || 'nothing');
+      const grey = await page.$$('.lanes .span-muted');
+      check('a-muted-pass-still-shows', grey.length === 1, `${grey.length} muted span(s)`);
+      await tapLabel('let it play');
+      await sleep(300);
+
+      await tapLabel('take this pass out');
+      await sleep(400);
+      const gone = await page.$$('.lanes .span');
+      const undo = await page.$('.toast-action');
+      check('a-pass-can-be-taken-out', gone.length === 0, `${gone.length} left`);
+      check('taking-a-pass-out-is-undoable', !!undo, undo ? 'undo offered' : 'no undo');
+      if (undo) await undo.tap();
+      await sleep(500);
+      const back = await page.$$('.lanes .span');
+      check('undo-brings-the-pass-back', back.length === 1, `${back.length} span(s)`);
+    });
+
+    // Looping is what makes passes feel like overdubs: the lap you just
+    // performed has to play on the next one, which means the sim is rebuilt
+    // rather than rewound.
+    await phase('a-loop-plays-the-pass-you-just-recorded', async () => {
+      await page.$eval('.lanes-axis', (el) => {
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(
+          new PointerEvent('pointerdown', { clientX: r.left + 2, clientY: r.top + 8, bubbles: true }),
+        );
+        el.dispatchEvent(
+          new PointerEvent('pointermove', {
+            clientX: r.left + r.width * 0.9,
+            clientY: r.top + 8,
+            bubbles: true,
+          }),
+        );
+        el.dispatchEvent(
+          new PointerEvent('pointerup', {
+            clientX: r.left + r.width * 0.9,
+            clientY: r.top + 8,
+            bubbles: true,
+          }),
+        );
+      });
+      await sleep(300);
+      const band = await page.$('.loop-band');
+      check('a-stretch-can-be-looped', !!band, band ? 'band shown' : 'no band');
+
+      const before = await page.evaluate(() => window.__bits.passSampleCounts().length);
+      await tapLabel('play');
+      // Long enough for at least one wrap of a bit under three seconds.
+      await sleep(4200);
+      const stillPlaying = await page.$('.dock-stop');
+      if (stillPlaying) await tapLabel('stop');
+      await sleep(400);
+      const after = await page.evaluate(() => window.__bits.passSampleCounts().length);
+      check(
+        'looping-goes-round-without-recording-anything',
+        !!stillPlaying && after === before,
+        `playing=${!!stillPlaying}, ${before} -> ${after} passes`,
+      );
+      // Hearing one puppet is a preview, not an edit: it must leave the
+      // recipe alone, or "let me listen to this one" costs an undo.
+      const beforeSolo = await page.evaluate(() => window.__bits.eventKinds().length);
+      const lane = await page.$('.lane-name');
+      if (lane) await lane.tap();
+      await sleep(300);
+      const afterSolo = await page.evaluate(() => window.__bits.eventKinds().length);
+      check('hearing-one-puppet-writes-nothing', afterSolo === beforeSolo, `${afterSolo - beforeSolo} events`);
+      if (lane) await lane.tap();
+      await sleep(200);
+
+      // Punching in: the stretch is where a new pass begins and ends.
+      const region = await page.evaluate(() => {
+        const band = document.querySelector('.loop-band');
+        const axis = document.querySelector('.lanes-axis');
+        if (!band || !axis) return null;
+        const b = band.getBoundingClientRect();
+        const a = axis.getBoundingClientRect();
+        const dur = window.__bits.project().audio.durationS;
+        return { from: ((b.left - a.left) / a.width) * dur, to: ((b.right - a.left) / a.width) * dur };
+      });
+      const passesBefore = await page.evaluate(() => window.__bits.passSampleCounts().length);
+      await tapLabel('record a pass');
+      await waitMode('recording', 20000);
+      await dragStage(
+        [
+          [0.5, 0.4],
+          [0.6, 0.5],
+          [0.4, 0.55],
+        ],
+        120,
+      );
+      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await sleep(600);
+      const punched = await page.evaluate(() => {
+        const passes = window.__bits.project().events.filter((e) => e.kind === 'PASS');
+        const last = passes[passes.length - 1];
+        if (!last) return null;
+        const times = [];
+        for (let i = 0; i < last.samples.length; i += 3) times.push(last.samples[i]);
+        return { first: Math.min(...times), last: Math.max(...times), n: passes.length };
+      });
+      check(
+        'recording-inside-a-stretch-stays-inside-it',
+        !!region &&
+          !!punched &&
+          punched.n === passesBefore + 1 &&
+          punched.first >= region.from - 0.2 &&
+          punched.last <= region.to + 0.1,
+        region && punched
+          ? `${punched.first.toFixed(2)}-${punched.last.toFixed(2)} in ${region.from.toFixed(2)}-${region.to.toFixed(2)}`
+          : 'no region or no pass',
+      );
+
+      await tapLabel('stop looping');
+      await sleep(200);
+      await tapLabel('close the lanes');
+      await sleep(250);
+    });
+
     await phase('the-mode-menu-is-gone', async () => {
       const kit = await page.$('.kit');
       check('the-mode-menu-is-gone', !kit, kit ? 'the kit is still here' : 'no kit');

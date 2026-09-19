@@ -29,6 +29,7 @@ import {
   castOf,
   createShowSim,
   eyesOf,
+  lanePasses,
   localToWorld,
   mouthOf,
   pinsOf,
@@ -78,6 +79,7 @@ import { MoreSheet } from './stage/sheets/MoreSheet';
 import { ShowMenu } from './stage/sheets/ShowMenu';
 import { SoundSheet, type SoundTrim } from './stage/sheets/SoundSheet';
 import { RecordPanel, clock as clockText } from './stage/RecordPanel';
+import { Lanes, type Lane, type LoopRegion } from './stage/Lanes';
 import { TitleBar } from './stage/TitleBar';
 import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
@@ -247,6 +249,24 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [counting, setCounting] = useState(false);
   const [corpse, setCorpse] = useState(false);
+  const corpseRef = useRef(corpse);
+  corpseRef.current = corpse;
+  const [lanesOpen, setLanesOpen] = useState(false);
+  const [selectedPassId, setSelectedPassId] = useState<string | null>(null);
+  /** Solo is a preview, not a recipe change: the sim is built from a
+   *  project with the other puppets' passes stripped, exactly as corpse
+   *  recording does. Nothing is written, so nothing needs undoing. */
+  const [soloId, setSoloId] = useState<string | null>(null);
+  const soloRef = useRef<string | null>(null);
+  soloRef.current = soloId;
+  const [loop, setLoop] = useState<LoopRegion | null>(null);
+  const loopRef = useRef<LoopRegion | null>(null);
+  loopRef.current = loop;
+  const lanesPlayheadRef = useRef<HTMLDivElement>(null);
+  /** Set by the loop when a lap ends, read once by the frame loop: a wrap
+   *  has to rebuild the sim, and doing that inside the draw is asking for
+   *  a half-advanced frame. */
+  const wrapRef = useRef(false);
   /** The recipe names audio we can't load or decode (imported bit whose
    *  bundle lacked it, OPFS eviction): offer a re-record, never a dead end. */
   const [soundLost, setSoundLost] = useState(false);
@@ -321,6 +341,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const commitGrabRef = useRef<() => void>(() => {});
   /** stopBit is defined below the frame loop, which enforces the cap. */
   const stopBitRef = useRef<() => void>(() => {});
+  const buildSimRef = useRef<(recording: boolean, from: number) => ShowSim>(
+    () => createShowSim(createProject('')),
+  );
+  const wrapLoopRef = useRef<() => void>(() => {});
 
   const setModeBoth = (m: Mode) => {
     modeRef.current = m;
@@ -550,6 +574,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
    *  of the stage, at sixty frames a second. */
   const paintClock = useCallback((clock: number) => {
     const dur = projectRef.current.audio?.durationS ?? 0;
+    const lanesHead = lanesPlayheadRef.current;
+    if (lanesHead) lanesHead.style.left = `${dur > 0 ? (clock / dur) * 100 : 0}%`;
     const time = timeTextRef.current;
     if (time) {
       const text = `${Math.floor(clock / 60)}:${Math.floor(clock % 60)
@@ -574,8 +600,15 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
 
   const commitOneGrab = useCallback(
     (grab: Grab) => {
-      const dur = projectRef.current.audio?.durationS ?? 0;
-      const clock = Math.min(dur, Math.max(0, currentClock()));
+      const audio = projectRef.current.audio;
+      // Punch-out is exact: a pass stops where the stretch does, not a
+      // frame or two past it where nothing will ever play it back.
+      const end = Math.min(
+        audio?.durationS ?? 0,
+        audio?.trim?.to ?? Infinity,
+        loopRef.current?.to ?? Infinity,
+      );
+      const clock = Math.min(end, Math.max(0, currentClock()));
       const lastT = grab.samples[grab.samples.length - 3]!;
       if (clock - lastT > 1 / 120) grab.samples.push(clock, grab.x, grab.y);
       if (grab.samples.length < 6) return;
@@ -596,6 +629,51 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     },
     [commit, currentClock],
   );
+
+  /** What the sim is allowed to see. Blind recording hides every earlier
+   *  pass; soloing hides everyone else's. Both are previews: neither
+   *  writes anything, so neither needs undoing. */
+  const simProjectFor = useCallback((recording: boolean): Project => {
+    const project = projectRef.current;
+    const blind = recording && corpseRef.current;
+    const solo = soloRef.current;
+    if (!blind && !solo) return project;
+    return {
+      ...project,
+      events: project.events.filter(
+        (e) => e.kind !== 'PASS' || (!blind && (!solo || e.puppetId === solo)),
+      ),
+    };
+  }, []);
+
+  const buildSim = useCallback(
+    (recording: boolean, from: number): ShowSim => {
+      const sim = createShowSim(simProjectFor(recording), 0, (id, channel, tt) => {
+        const finger = grabRef.current;
+        if (
+          finger &&
+          finger.puppetId === id &&
+          sameChannel(finger.channel, channel) &&
+          tt >= finger.samples[0]!
+        ) {
+          return { x: finger.x, y: finger.y };
+        }
+        for (const g of bodyGrabsRef.current) {
+          if (g.puppetId === id && sameChannel(g.channel, channel) && tt >= g.samples[0]!) {
+            return { x: g.x, y: g.y };
+          }
+        }
+        return null;
+      });
+      sim.advanceTo(from);
+      return sim;
+    },
+    [simProjectFor],
+  );
+
+  useEffect(() => {
+    buildSimRef.current = buildSim;
+  }, [buildSim]);
 
   const commitGrab = useCallback(() => {
     const grab = grabRef.current;
@@ -650,8 +728,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         }
       }
     }
+    // A stretch is where playing starts and where a punched-in pass
+    // begins and ends; without one the trim decides, and without that the
+    // whole take does.
+    const region = loopRef.current;
+    const low = Math.max(fromLimit, region?.from ?? 0);
+    const high = Math.min(toLimit, region?.to ?? dur);
     let from = playheadRef.current;
-    if (from >= toLimit - 0.05 || from < fromLimit) from = fromLimit;
+    if (from >= high - 0.05 || from < low) from = low;
     playheadRef.current = from;
     prevSquashRef.current = new Map();
     liveImpactCountRef.current = 0;
@@ -662,32 +746,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       setCounting(false);
     }
 
-    // Corpse mode: record blind; earlier passes stay hidden until playback.
-    const simProject =
-      recording && corpse
-        ? {
-            ...projectRef.current,
-            events: projectRef.current.events.filter((e) => e.kind !== 'PASS'),
-          }
-        : projectRef.current;
-    const sim = createShowSim(simProject, 0, (id, channel, tt) => {
-      const finger = grabRef.current;
-      if (
-        finger &&
-        finger.puppetId === id &&
-        sameChannel(finger.channel, channel) &&
-        tt >= finger.samples[0]!
-      ) {
-        return { x: finger.x, y: finger.y };
-      }
-      for (const g of bodyGrabsRef.current) {
-        if (g.puppetId === id && sameChannel(g.channel, channel) && tt >= g.samples[0]!) {
-          return { x: g.x, y: g.y };
-        }
-      }
-      return null;
-    });
-    sim.advanceTo(from);
+    const sim = buildSimRef.current(recording, from);
     simRef.current = sim;
     clockFromRef.current = from;
     prevClockRef.current = from;
@@ -696,10 +755,37 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     setModeBoth(recording ? 'recording' : 'playing');
   };
 
+  /** Go round again: close the open grabs so the lap just performed
+   *  becomes a pass, rebuild the sim so the next lap plays it, and start
+   *  the sound over at the top of the stretch. */
+  const wrapLoop = useCallback(() => {
+    const region = loopRef.current;
+    if (!region) return;
+    if (modeRef.current === 'recording') commitGrabRef.current();
+    const from = region.from;
+    playheadRef.current = from;
+    prevClockRef.current = from;
+    prevSquashRef.current = new Map();
+    simRef.current = buildSimRef.current(modeRef.current === 'recording', from);
+    clockFromRef.current = from;
+    wallStartRef.current = performance.now();
+    void jamRef.current?.play(from);
+    paintClock(from);
+    vibrate(8);
+  }, [paintClock]);
+
+  useEffect(() => {
+    wrapLoopRef.current = wrapLoop;
+  }, [wrapLoop]);
+
   // Frame loop: clock, simulation, drawing, seek previews, hold sampling.
   useEffect(() => {
     const loop = () => {
       rafRef.current = requestAnimationFrame(loop);
+      if (wrapRef.current) {
+        wrapRef.current = false;
+        wrapLoopRef.current();
+      }
       const canvas = canvasRef.current;
       const frame = frameRef.current;
       if (!canvas || !frame) return;
@@ -734,7 +820,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       }
 
       if (m === 'playing' || m === 'recording') {
-        const stopAt = project.audio?.trim?.to ?? dur;
+        const region = loopRef.current;
+        const stopAt = Math.min(region?.to ?? Infinity, project.audio?.trim?.to ?? dur);
         const now = currentClock();
         const clock = Math.max(clockFromRef.current, Math.min(stopAt, now));
         playheadRef.current = clock;
@@ -823,7 +910,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           );
         }
         layoutOverlays();
-        if (now >= stopAt) stop();
+        if (now >= stopAt) {
+          // A lap ends where the stretch does. The sim only ever runs
+          // forward, so going round again means building a new one — from
+          // a project that now includes the pass just performed, which is
+          // the whole point of looping.
+          if (region && region.to - region.from > 0.2) wrapRef.current = true;
+          else stop();
+        }
         return;
       }
 
@@ -1930,6 +2024,41 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     }
   };
 
+  // ---- lanes ----------------------------------------------------------
+  const lanes: Lane[] = lanesOpen
+    ? castOf(projectSnap)
+        .map((p, i) => ({
+          puppetId: p.id,
+          name: puppetLabel(p, i),
+          mouthed: !!mouthOf(projectSnap, p.id),
+          passes: lanePasses(projectSnap, p.id),
+        }))
+        .filter((l) => l.passes.length > 0)
+    : [];
+
+  const mutePass = (passId: string, muted: boolean) =>
+    commit((p) => appendEvent(p, { kind: 'MUTE', id: newId(), at: 0, puppetId: '', passId, muted }));
+
+  const trimPass = (passId: string, from: number, to: number) =>
+    commit((p) =>
+      appendEvent(p, { kind: 'TRIM', id: newId(), at: 0, puppetId: '', passId, from, to }),
+    );
+
+  const deletePass = (passId: string) => {
+    const owner = projectRef.current.events.find((e) => e.id === passId)?.puppetId ?? '';
+    setSelectedPassId(null);
+    commit((p) =>
+      appendEvent(p, {
+        kind: 'REMOVE',
+        id: newId(),
+        at: 0,
+        puppetId: owner,
+        target: { pass: passId },
+      }),
+    );
+    toast.undoable('took that pass out', undoRef.current);
+  };
+
   /** Trimming is metadata, not an event: it changes what plays and what
    *  renders, never what was performed. */
   const setTrim = (trim: SoundTrim | null) => {
@@ -2168,6 +2297,23 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         </div>
       )}
 
+      {lanesOpen && mode !== 'doodling' && mode !== 'micLive' && mode !== 'needsAudio' && (
+        <Lanes
+          lanes={lanes}
+          durationS={durationS}
+          selectedPassId={selectedPassId}
+          soloPuppetId={soloId}
+          loop={loop}
+          playheadRef={lanesPlayheadRef}
+          onSelectPass={setSelectedPassId}
+          onMute={mutePass}
+          onDelete={deletePass}
+          onTrim={trimPass}
+          onSolo={setSoloId}
+          onLoop={setLoop}
+        />
+      )}
+
       {mode === 'doodling' && (
         <DoodleBar
           ink={ink}
@@ -2195,6 +2341,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
               timeTextRef={timeTextRef}
               initialT={t}
               trim={projectSnap.audio?.trim ?? null}
+              lanesOpen={lanesOpen}
+              passCount={passCount}
+              onLanes={() => {
+                setLanesOpen((open) => !open);
+                setSelectedPassId(null);
+                setSoloId(null);
+              }}
             />
           )}
           <Dock

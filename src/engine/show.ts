@@ -161,10 +161,21 @@ export interface EffectivePass {
   to: number;
 }
 
+/** A pass with everything the lanes need to draw it, including the ones
+ *  the sim ignores: a muted pass you cannot see is a muted pass you cannot
+ *  bring back. */
+export interface LanePass extends EffectivePass {
+  /** What was recorded, before any trim. */
+  rawFrom: number;
+  rawTo: number;
+  muted: boolean;
+  trimmed: boolean;
+}
+
 /** A MUTE, TRIM or REMOVE whose target is absent from the project we were
  *  handed is ignored rather than an error: corpse recording simulates a
  *  project with the passes stripped out but everything else intact. */
-export function effectivePasses(project: Project, puppetId: string): EffectivePass[] {
+export function lanePasses(project: Project, puppetId: string): LanePass[] {
   const removed = new Set<string>();
   const muted = new Map<string, boolean>();
   const trims = new Map<string, { from: number; to: number }>();
@@ -173,19 +184,36 @@ export function effectivePasses(project: Project, puppetId: string): EffectivePa
     else if (e.kind === 'MUTE') muted.set(e.passId, e.muted);
     else if (e.kind === 'TRIM') trims.set(e.passId, { from: e.from, to: e.to });
   }
-  const out: EffectivePass[] = [];
+  const out: LanePass[] = [];
   for (const e of project.events) {
     if (e.kind !== 'PASS' || e.puppetId !== puppetId) continue;
-    if (removed.has(e.id) || muted.get(e.id) === true) continue;
-    const first = e.samples[0]!;
-    const last = e.samples[e.samples.length - 3]!;
+    // A removed pass is gone from the lanes too: undo brings it back, and
+    // a tombstone you can un-tick would make REMOVE mean two things.
+    if (removed.has(e.id)) continue;
+    const rawFrom = e.samples[0]!;
+    const rawTo = e.samples[e.samples.length - 3]!;
     const trim = trims.get(e.id);
-    const from = trim ? Math.max(first, trim.from) : first;
-    const to = trim ? Math.min(last, trim.to) : last;
+    const from = trim ? Math.max(rawFrom, trim.from) : rawFrom;
+    const to = trim ? Math.min(rawTo, trim.to) : rawTo;
     if (to < from) continue;
-    out.push({ event: e, from, to });
+    out.push({
+      event: e,
+      from,
+      to,
+      rawFrom,
+      rawTo,
+      muted: muted.get(e.id) === true,
+      trimmed: !!trim && (from > rawFrom + 1e-6 || to < rawTo - 1e-6),
+    });
   }
   return out;
+}
+
+/** The passes the sim honours: live, unmuted, within their trim. */
+export function effectivePasses(project: Project, puppetId: string): EffectivePass[] {
+  return lanePasses(project, puppetId)
+    .filter((p) => !p.muted)
+    .map(({ event, from, to }) => ({ event, from, to }));
 }
 
 /** Live passes for a puppet, ignoring their windows. */
