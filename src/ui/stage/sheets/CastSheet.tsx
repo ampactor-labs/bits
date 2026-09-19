@@ -32,7 +32,7 @@ const TILES: { kind: CastKind; icon: IconName; label: string; sub: string }[] = 
   { kind: 'doodle', icon: 'doodle', label: 'draw one', sub: 'it will boil' },
   { kind: 'word', icon: 'text', label: 'a word', sub: 'it boils too' },
   { kind: 'backdrop', icon: 'backdrop', label: 'a backdrop', sub: 'behind everyone' },
-  { kind: 'sticker', icon: 'sticker', label: 'a sticker', sub: 'soon' },
+  { kind: 'sticker', icon: 'sticker', label: 'a sticker', sub: 'star, heart, cloud…' },
 ];
 
 export function CastSheet({
@@ -63,7 +63,7 @@ export function CastSheet({
           <button
             key={t.kind}
             className="cast-tile"
-            disabled={t.kind === 'sticker' || busy}
+            disabled={busy}
             onClick={() => onPick(t.kind)}
           >
             <Icon name={t.icon} size={28} />

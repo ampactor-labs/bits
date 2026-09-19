@@ -17,6 +17,7 @@ import {
   saveProjectJson,
 } from '../media/opfs';
 import { Sheet } from '../kit/Sheet';
+import { onInstallAvailable, promptInstall } from '../pwa/install';
 import { IconButton } from '../kit/IconButton';
 import { useToast } from '../kit/Toast';
 import { useBanner } from '../kit/Banner';
@@ -137,6 +138,8 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   const [rows, setRows] = useState<ShowRow[] | null>(null);
   const [status, setStatus] = useState('');
   const [menu, setMenu] = useState<Menu>(null);
+  const [canInstall, setCanInstall] = useState(false);
+  useEffect(() => onInstallAvailable(setCanInstall), []);
   const [renameText, setRenameText] = useState('');
   const importRef = useRef<HTMLInputElement>(null);
   const onOpenRef = useRef(onOpen);
@@ -316,6 +319,17 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
           + new bit
         </button>
         <button onClick={() => importRef.current?.click()}>open a bit file</button>
+        {canInstall && (
+          <button
+            onClick={() => {
+              void promptInstall().then((outcome) => {
+                if (outcome === 'accepted') toast.show('BITS is on your home screen');
+              });
+            }}
+          >
+            keep it on your phone
+          </button>
+        )}
         {status && <span className="status">{status}</span>}
       </div>
       {rows === null ? null : rows.length === 0 ? (

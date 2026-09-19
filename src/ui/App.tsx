@@ -26,14 +26,18 @@ function UpdateWatch() {
 
 function Screens() {
   const [screen, setScreen] = useState<Screen>({ kind: 'shows' });
+  /** A wide bit wants the landscape window it is being told to leave. */
+  const [wide, setWide] = useState(false);
 
   return (
-    <div className={`app${screen.kind === 'stage' ? ' app-stage' : ''}`}>
+    <div
+      className={`app${screen.kind === 'stage' ? ' app-stage' : ''}${wide ? ' wide-bit' : ''}`}
+    >
       {/* The stage carries its own title strip, laid over the stage rather
           than above it, so it does not cost the stage 48px of height. */}
       {screen.kind === 'shows' && (
         <header className="topbar">
-          <span className="wordmark">BITS</span>
+          <h1 className="wordmark">BITS</h1>
           <span className="spacer" />
         </header>
       )}
@@ -41,14 +45,18 @@ function Screens() {
         {screen.kind === 'shows' ? (
           <Shows onOpen={(showId) => setScreen({ kind: 'stage', showId })} />
         ) : (
-          <Stage showId={screen.showId} onBack={() => setScreen({ kind: 'shows' })} />
+          <Stage
+            showId={screen.showId}
+            onBack={() => setScreen({ kind: 'shows' })}
+            onAspect={(a) => setWide(a === '16:9')}
+          />
         )}
       </main>
       {/* A 9:16 stage in a short landscape window is a postage stamp. The
           stage keeps its state underneath; a landscape stage with its own
           aspect comes later. */}
       {screen.kind === 'stage' && (
-        <div className="rotate-card">
+        <div className="rotate-card" role="status">
           <p>turn your phone.</p>
           <p className="rotate-sub">the stage is tall.</p>
         </div>

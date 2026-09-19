@@ -125,8 +125,10 @@ export function voiceMap(
 export async function renderShow(options: RenderShowOptions): Promise<File> {
   const { project } = options;
   const fps = options.fps ?? 30;
-  const outW = even(options.width ?? 720);
-  const outH = even(options.height ?? 1280);
+  // The film is the shape of the stage it was performed on.
+  const wide = project.aspect === '16:9';
+  const outW = even(options.width ?? (wide ? 1280 : 720));
+  const outH = even(options.height ?? (wide ? 720 : 1280));
   const progress = options.onProgress ?? (() => {});
   const stopIfCancelled = () => {
     if (options.signal?.aborted) throw new RenderCancelled();

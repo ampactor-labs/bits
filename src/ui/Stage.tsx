@@ -82,6 +82,7 @@ import { Halo, type HaloAction } from './stage/Halo';
 import { Handles, type HandleSpec } from './stage/Handles';
 import { CastSheet, type CastKind } from './stage/sheets/CastSheet';
 import { DOODLE_COLORS, DoodleBar, type DoodleInk } from './stage/DoodleBar';
+import { STICKERS, stickerSpec } from './stage/stickers';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { ShowMenu } from './stage/sheets/ShowMenu';
 import { RenderSheet } from './stage/sheets/RenderSheet';
@@ -180,7 +181,17 @@ const REMOVE_BAND = 0.2;
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-export function Stage({ showId, onBack }: { showId: string; onBack: () => void }) {
+export function Stage({
+  showId,
+  onBack,
+  onAspect,
+}: {
+  showId: string;
+  onBack: () => void;
+  /** The app frame needs to know: a wide bit stops the turn-your-phone
+   *  card, which is about a tall stage in a short window. */
+  onAspect?: (aspect: '9:16' | '16:9') => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
 
@@ -251,6 +262,20 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
   const undoRef = useRef<() => void>(() => {});
   const seenDemoHintRef = useRef(false);
+  /** Three things nobody guesses, said once each, ever. They go through the
+   *  banner rather than a tour: a tour you cannot leave is worse than a
+   *  control you have not found yet. */
+  const coachRef = useRef<string | null>(null);
+  const coach = useCallback((key: string, say: string) => {
+    const flag = `bits-coach-${key}`;
+    try {
+      if (localStorage.getItem(flag)) return;
+      localStorage.setItem(flag, '1');
+    } catch {
+      // Private mode: say it every time rather than never.
+    }
+    coachRef.current = say;
+  }, []);
   const renderAbortRef = useRef<AbortController | null>(null);
   const [rendering, setRendering] = useState<RenderProgress | null>(null);
   const [rendered, setRendered] = useState<File | null>(null);
@@ -266,6 +291,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const corpseRef = useRef(corpse);
   corpseRef.current = corpse;
   const [lanesOpen, setLanesOpen] = useState(false);
+  const onAspectRef = useRef(onAspect);
+  useEffect(() => {
+    onAspectRef.current = onAspect;
+  }, [onAspect]);
+  useEffect(() => {
+    onAspectRef.current?.(projectSnap.aspect ?? '9:16');
+  }, [projectSnap.aspect]);
+  useEffect(() => () => onAspectRef.current?.('9:16'), []);
   /** Perform: the stage and nothing else. Two people, four hands, no
    *  chrome to fat-finger. */
   const [performing, setPerforming] = useState(false);
@@ -370,9 +403,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(true);
   const commitGrabRef = useRef<() => void>(() => {});
+  const coachRef2 = useRef<(key: string, say: string) => void>(() => {});
   /** stopBit is defined below the frame loop, which enforces the cap. */
   const stopBitRef = useRef<() => void>(() => {});
   const startRef = useRef<(recording: boolean) => void>(() => {});
+  const seekRef2 = useRef<(t: number) => void>(() => {});
+  const finishDoodleRef = useRef<(keep: boolean) => void>(() => {});
+  const sheetRef = useRef<unknown>(null);
   const commitOneGrabRef = useRef<(grab: Grab) => void>(() => {});
   const buildSimRef = useRef<(recording: boolean, from: number) => ShowSim>(
     () => createShowSim(createProject('')),
@@ -413,6 +450,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       // The demo is a real bit, and saying so is the whole tutorial.
       seenDemoHintRef.current = true;
       banner.hint('watch it once. then tap a puppet and wreck it.');
+    } else if (mode === 'idle' && coachRef.current) {
+      const say = coachRef.current;
+      coachRef.current = null;
+      banner.hint(say);
     } else if (banner.current?.kind === 'hint') {
       banner.clear();
     }
@@ -761,6 +802,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const fingers = [...grabsRef.current.values()];
     grabsRef.current.clear();
     for (const g of fingers) commitOneGrab(g);
+    if (fingers.length > 0) coachRef2.current('film', 'the ⋯ at the top makes the film.');
     const body = bodyGrabsRef.current;
     bodyGrabsRef.current = [];
     for (const g of body) commitOneGrab(g);
@@ -769,7 +811,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   useEffect(() => {
     commitGrabRef.current = commitGrab;
     commitOneGrabRef.current = commitOneGrab;
-  }, [commitGrab, commitOneGrab]);
+    coachRef2.current = coach;
+  }, [commitGrab, commitOneGrab, coach]);
 
   const stop = useCallback(() => {
     // Hand the playhead back to React so the scrubber and the clock agree
@@ -838,6 +881,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     prevClockRef.current = from;
     wallStartRef.current = performance.now() + 50;
     void jamRef.current?.play(from);
+    if (recording) coach('perform', 'hold a puppet while it plays. that is a pass.');
     setModeBoth(recording ? 'recording' : 'playing');
   };
 
@@ -877,6 +921,50 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     }, 1100);
     return () => clearTimeout(id);
   }, [curtain]);
+
+  /** Keys, for anyone on a laptop or with a keyboard paired to a phone.
+   *  Space plays and stops, the arrows scrub, Escape backs out of whatever
+   *  is open. Nothing here is the only way to do anything. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      // Never steal a key from a field, a slider or a menu.
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const m = modeRef.current;
+      if (e.key === 'Escape') {
+        if (sheetRef.current) {
+          setSheet(null);
+        } else if (m !== 'idle' && m !== 'playing' && m !== 'recording') {
+          if (m === 'doodling') finishDoodleRef.current(false);
+          else setModeBoth('idle');
+        } else if (m === 'playing' || m === 'recording') {
+          stop();
+        } else {
+          setSelectedId(null);
+        }
+        e.preventDefault();
+        return;
+      }
+      if (e.key === ' ') {
+        if (m === 'playing' || m === 'recording') stop();
+        else if (m === 'idle') startRef.current(false);
+        else return;
+        e.preventDefault();
+        return;
+      }
+      if (m !== 'idle') return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const dur = projectRef.current.audio?.durationS ?? 0;
+        if (dur <= 0) return;
+        const step = e.shiftKey ? 1 : 0.1;
+        seekRef2.current(playheadRef.current + (e.key === 'ArrowRight' ? step : -step));
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [stop]);
 
   // Frame loop: clock, simulation, drawing, seek previews, hold sampling.
   useEffect(() => {
@@ -1836,6 +1924,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       );
       setSelectedId(id);
       setSheet(null);
+      coach('tools', 'tap a puppet to pick it up. its tools appear above it.');
       await reloadImages();
       if (cutout.fallback === 'no-person') toast.show('no person found, kept the whole photo');
       else if (cutout.fallback === 'no-model')
@@ -1956,6 +2045,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     });
     const id = newId();
     setSelectedId(id);
+    coach('tools', 'tap a puppet to pick it up. its tools appear above it.');
     commit((p) =>
       appendEvent(p, {
         kind: 'CAST',
@@ -2095,6 +2185,30 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     retakeModeRef.current = mode;
     setSheet(null);
     setModeBoth('needsAudio');
+  };
+
+  /** Ready-made puppets, cycling so tapping twice gives two different
+   *  ones rather than a picker nobody needs. */
+  const stickerCountRef = useRef(0);
+  const castSticker = () => {
+    const spec = stickerSpec(stickerCountRef.current++);
+    const id = newId();
+    const spot = freeSpot();
+    setSelectedId(id);
+    commit((p) =>
+      appendEvent(p, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: id,
+        puppet: spec,
+        x: spot.x,
+        y: spot.y,
+        scale: 1,
+        rot: 0,
+      }),
+    );
+    toast.show(`${STICKERS[(stickerCountRef.current - 1) % STICKERS.length]!.name} is on stage`);
   };
 
   const addTextPuppet = (raw: string) => {
@@ -2282,6 +2396,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     return i < 0 ? null : puppetLabel(cast[i]!, i);
   })();
 
+  seekRef2.current = seek;
+  finishDoodleRef.current = finishDoodle;
+  sheetRef.current = sheet;
+
+  /** Absent means the tall stage every bit has had so far. */
+  const aspect = projectSnap.aspect ?? '9:16';
+
   const placing =
     mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning';
 
@@ -2330,6 +2451,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     if (kind === 'selfie') return snapInputRef.current?.click();
     if (kind === 'backdrop') return backdropInputRef.current?.click();
     setSheet(null);
+    if (kind === 'sticker') return castSticker();
     if (kind === 'doodle') return enterMode('doodling');
     if (kind === 'word') {
       setTextDraft('');
@@ -2340,8 +2462,22 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   return (
     <div className={`showstage${performing ? ' performing' : ''}`}>
       <div className="stagearea">
-        <div ref={frameRef} className={`stagebox mode-${mode}`}>
-          <canvas ref={canvasRef} />
+        <div
+          ref={frameRef}
+          className={`stagebox mode-${mode}`}
+          style={{ aspectRatio: aspect === '16:9' ? '16 / 9' : '9 / 16' }}
+        >
+          {/* The stage is a picture that changes; its state is spoken by
+              the banner, the clock and the lanes rather than by the pixels. */}
+          <canvas
+            ref={canvasRef}
+            role="img"
+            aria-label={
+              puppets.length === 0
+                ? 'an empty stage'
+                : `the stage, with ${puppets.length} puppet${puppets.length === 1 ? '' : 's'}`
+            }
+          />
           {!performing && (
           <TitleBar
             title={projectSnap.title}
@@ -2670,6 +2806,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           trails={wireLevel('', 'on', 'trails')}
           foley={wireLevel('', 'on', 'foley')}
           corpse={corpse}
+          aspect={aspect}
+          onAspect={(next) =>
+            commit((p) => ({ ...p, aspect: next, updatedAt: new Date().toISOString() }))
+          }
           onRender={() => {
             setSheet(null);
             void doRender();

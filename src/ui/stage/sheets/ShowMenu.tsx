@@ -15,6 +15,8 @@ export interface ShowMenuProps {
   trails: number;
   foley: number;
   corpse: boolean;
+  aspect: '9:16' | '16:9';
+  onAspect: (aspect: '9:16' | '16:9') => void;
   onRender: () => void;
   onShareRender: () => void;
   onBitFile: () => void;
@@ -57,6 +59,19 @@ export function ShowMenu(props: ShowMenuProps) {
           onClick={props.onPerform}
         />
         <IconButton icon="sound" label="the sound" showLabel onClick={props.onSound} />
+      </div>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">shape</span>
+        <Segmented
+          label="the shape of the stage and the film"
+          value={props.aspect}
+          options={[
+            { value: '9:16' as const, label: 'tall' },
+            { value: '16:9' as const, label: 'wide' },
+          ]}
+          onChange={props.onAspect}
+        />
       </div>
 
       <div className="sheet-row">

@@ -250,6 +250,9 @@ export interface Project {
   /** Metadata; never changes pixels, so it needs no version bump. */
   updatedAt?: string;
   sound?: { source: 'mic' | 'file'; name?: string };
+  /** The shape of the stage, and of the film. Absent means the tall one
+   *  every bit has had so far, so nothing already made changes shape. */
+  aspect?: '9:16' | '16:9';
   /** Where a bit came from, when it arrived as someone else's file. It is
    *  a credit, not a link: nothing is fetched and nothing merges. */
   remixOf?: { title: string; id: string };
@@ -309,6 +312,9 @@ export function parseProject(text: string): Project {
   }
   if (typeof p.seed !== 'number' || !Array.isArray(p.events)) {
     throw new Error('recipe: malformed body');
+  }
+  if (p.aspect !== undefined && p.aspect !== '9:16' && p.aspect !== '16:9') {
+    throw new Error('recipe: aspect must be 9:16 or 16:9');
   }
   // A credit line straight from a stranger's file: it reaches the screen,
   // so it has to be the shape the screen expects.

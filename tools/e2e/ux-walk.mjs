@@ -1266,23 +1266,105 @@ try {
     );
   });
 
-  // A short landscape window would make a 9:16 stage a postage stamp.
+  // A tall bit in a short landscape window is a postage stamp. A wide bit
+  // is what that window is for.
   await phase('landscape-says-turn-the-phone', async () => {
     await goToList();
-    const rows = await page.$$('.source-row .row-open');
-    if (rows.length === 0) throw new Error('no bits to open');
-    await rows[0].tap();
-    await sleep(800);
-    await page.setViewport({ width: 844, height: 390, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    // A bit with sound: one without has no timeline to look at, and the
+    // list now holds a shared bit that arrived as recipe only.
+    const withSound = await page.evaluateHandle(() =>
+      Array.from(document.querySelectorAll('.source-row')).find((r) =>
+        /\d:\d\d/.test(r.querySelector('.size')?.textContent ?? ''),
+      )?.querySelector('.row-open'),
+    );
+    const row = withSound.asElement();
+    if (!row) throw new Error('no bit with sound to open');
+    await row.tap();
+    await sleep(900);
+    const land = { width: 844, height: 390, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
+    const port = { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
+    const cardShown = () =>
+      page.evaluate(() => {
+        const card = document.querySelector('.rotate-card');
+        return !!card && getComputedStyle(card).display !== 'none';
+      });
+    await page.setViewport(land);
     await sleep(400);
     await shot('landscape');
-    const shown = await page.evaluate(() => {
-      const card = document.querySelector('.rotate-card');
-      return !!card && getComputedStyle(card).display !== 'none';
-    });
-    check('landscape-says-turn-the-phone', shown, shown ? 'card shown' : 'stage left squashed');
-    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    check('landscape-says-turn-the-phone', await cardShown(), 'tall bit in a short window');
+
+    // Make it a wide bit; the card has nothing to say any more.
+    await page.setViewport(port);
     await sleep(400);
+    await tapLabel('this bit');
+    await sleep(350);
+    await tapText('.sheet-row .segment', 'wide');
+    await sleep(300);
+    await (await page.$('.sheet [aria-label="close"]')).tap();
+    await sleep(300);
+    await page.setViewport(land);
+    await sleep(500);
+    await shot('landscape-wide');
+    const wideOk = await page.evaluate(() => {
+      const r = document.querySelector('.stagebox')?.getBoundingClientRect();
+      return r ? r.width / r.height : 0;
+    });
+    check(
+      'a-wide-bit-keeps-the-landscape-window',
+      !(await cardShown()) && Math.abs(wideOk - 16 / 9) < 0.05,
+      `card=${await cardShown()}, aspect ${wideOk.toFixed(2)}`,
+    );
+    check(
+      'the-shape-is-in-the-recipe',
+      (await page.evaluate(() => window.__bits.project()?.aspect)) === '16:9',
+      String(await page.evaluate(() => window.__bits.project()?.aspect)),
+    );
+    await page.setViewport(port);
+    await sleep(400);
+    await tapLabel('this bit');
+    await sleep(350);
+    await tapText('.sheet-row .segment', 'tall');
+    await sleep(250);
+    await (await page.$('.sheet [aria-label="close"]')).tap();
+    await sleep(250);
+  });
+
+  // Keys, for anyone on a laptop or with a keyboard paired to a phone.
+  await phase('the-keyboard-can-drive-it', async () => {
+    const before = await page.$eval('.timeline .fill', (e) => e.style.width);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await sleep(300);
+    const after = await page.$eval('.timeline .fill', (e) => e.style.width);
+    check('arrows-scrub', before !== after, `${before} -> ${after}`);
+    await page.keyboard.press('Space');
+    await sleep(700);
+    const playing = !!(await page.$('.dock-stop'));
+    await page.keyboard.press('Space');
+    await sleep(400);
+    check(
+      'space-plays-and-stops',
+      playing && !(await page.$('.dock-stop')),
+      `played=${playing}`,
+    );
+  });
+
+  // Ready-made puppets, which behave exactly like drawn ones.
+  await phase('a-sticker-is-a-puppet', async () => {
+    await openTools();
+    await tapText('.cast-tile', 'a sticker');
+    await sleep(700);
+    const last = await page.evaluate(() => {
+      const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+      const p = casts[casts.length - 1]?.puppet;
+      return p ? { type: p.type, name: p.name, strokes: p.strokes?.length ?? 0 } : null;
+    });
+    check(
+      'a-sticker-is-a-puppet',
+      last?.type === 'doodle' && !!last.name && last.strokes > 0,
+      JSON.stringify(last),
+    );
+    await closeTools();
   });
 
   check('no-system-dialog-appeared', dialogs.length === 0, dialogs.join(' | '));

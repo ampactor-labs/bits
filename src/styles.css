@@ -35,6 +35,7 @@ body {
 }
 
 .wordmark {
+  margin: 0;
   font-weight: 800;
   font-size: 20px;
   letter-spacing: 0.18em;
@@ -245,8 +246,10 @@ body {
   display: none;
 }
 
+/* A tall bit in a short landscape window is a postage stamp. A wide bit
+ * is exactly what the window is for, so it says nothing. */
 @media (orientation: landscape) and (max-height: 520px) {
-  .rotate-card {
+  .app:not(.wide-bit) .rotate-card {
     position: fixed;
     inset: 0;
     z-index: var(--z-overlay);
