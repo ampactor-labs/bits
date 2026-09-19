@@ -291,12 +291,22 @@ Pull the timeline up and each puppet gets a lane. Passes are colored spans. Talk
 
 ## 6. Roadmap
 
-### Now: stop the bleeding (about a week)
+**Status, `cf61509`: all of it is built.** The roadmap below is the audit
+as written, kept for the record. `docs/ux-audit/PLAN.md` is what was
+actually followed — it splits the same work into M0a through M10, adds
+the recipe-v1 engine work the roadmap did not see coming, and pulls sound
+import to the front. Every milestone is on
+`claude/bits-ux-audit-dqik4b`, one commit each. What is *not* done is the
+one thing that was never schedulable: the iPhone pass. Every
+platform-sensitive path feature-detects and falls back, so nothing waits
+on it.
+
+### Now: stop the bleeding (about a week) — done, M1
 
 1. F1 kit max-height and scroll (one CSS rule) as a stopgap.
 2. F3 disabled styles plus an empty-stage prompt with a ＋.
 3. F5 long-press no longer drops; drop moves into a confirm or an undo toast.
-4. F6 confirm plus undo toast on list delete; move ✕ out of the row tap area.
+4. F6 list delete asks, and the assets wait for the undo window to close.
 5. F4 errors as a banner, stage stays.
 6. F7 progress chip and error toasts for photo casting; catch every `void` promise.
 7. F8 play whenever audio exists.
@@ -305,7 +315,9 @@ Pull the timeline up and each puppet gets a lane. Passes are colored spans. Talk
 10. F27 set the demo flag after the build resolves; add "open the demo" to the empty list.
 11. F33 manifest and meta copy.
 
-### Next: make it legible (two to three weeks)
+*The stopgap at 1 was never needed: the kit is gone.*
+
+### Next: make it legible (two to three weeks) — done, M2 to M5
 
 - Title on the stage header; list rows with poster frame, duration, date; F22, F32.
 - Chips as thumbnails with labels; on-stage selection synced to chips; F12, F13.
@@ -316,44 +328,62 @@ Pull the timeline up and each puppet gets a lane. Passes are colored spans. Talk
 - Mic screen with meter, timer, cancel; F23.
 - Auto-offset casts; selfie camera default; F30.
 
-### Later: the looper is visible (about a month)
+### Later: the looper is visible (about a month) — done, M6, M7, M10
 
 - Lanes with mute, solo, delete, trim, punch-in; talking spans; loop region; F15, F16.
 - Sound import and trim; F28.
 - Perform mode; corpse on the record button; body assignment from the halo.
 - Accessibility pass: labels, focus order, keyboard; F40 to F42.
 
-### Someday
+### Someday — done, M8 to M10, except the last line
 
 - Voices per puppet as separate takes.
 - Share target and nearby share for bit files; remix chain metadata.
 - Landscape stage and 16:9 export.
 - Stickers.
 - iOS Safari verification, or a clear "Android Chrome" statement on the site.
+  **Still open.** No iPhone has been near it.
 
 ## 7. Appendix: measurements
 
-Taken on the production build with an emulated iPhone 14 (390x844) unless noted.
+Taken on the production build with an emulated iPhone 14 (390x844) unless
+noted. The "at `c9ff5a2`" column is the audit as first written. The "now"
+column is the same build re-measured at `cf61509` on
+`claude/bits-ux-audit-dqik4b`, after M0a through M10 — and it is not
+eyeballed either: `tools/e2e/ux-walk.mjs` records every number in the
+same run that asserts on it and writes `dist-ux-shots/measurements.md`,
+so the table can be re-taken with one command.
 
-| Measurement | Value |
-|---|---|
-| Kit coverage of the stage, nothing selected | 83% |
-| Kit coverage, puppet selected | 100%, rail scrolled off screen |
-| Kit top edge on 375x667 with a puppet selected | −123px (above the viewport) |
-| Render button top on 375x667 with a puppet selected | −111px |
-| Timeline width | 74px |
-| Scrubber opacity | 0 |
-| Guidance text size | 13px |
-| Disabled button opacity | 1 (identical to enabled) |
-| Tools in the kit's last row | 12 |
-| Taps to add a mouth and eyes to one puppet | 6 (open kit, mouth, tap, open kit, eyes, tap) |
-| Events appended by "back" with one other puppet | 2 (N for N puppets) |
-| Hold time that deletes a puppet | 650ms, under 1.5% movement |
-| Confirmation before list delete | none |
-| Foley pills clipped at 390px | 2 of 5 |
-| Time from tapping ⏺ start in body mode to recording | 1.8s (model cached) |
+| Measurement | At `c9ff5a2` | Now |
+|---|---|---|
+| Worst overlay coverage of the stage | 83% (kit, nothing selected) | 20% (a sheet) |
+| Overlay coverage with a puppet selected | 100%, rail scrolled off screen | 9% (the puppet's own tools) |
+| Worst top edge on 375x667, tools open | −123px (kit header above the viewport) | on screen |
+| Render control on 375x667 with a puppet selected | −111px | on screen |
+| Timeline width | 74px (19% of the window) | 216px (55% of the window) |
+| Scrubber | opacity 0, no thumb | a 48px touch target with an 18px handle |
+| Time shown on the transport | current only | `0:00 / 0:12` |
+| Smallest visible text size | 13px | 15px |
+| Disabled button opacity | 1 (identical to enabled) | 0.4 |
+| Tools in one row | 12 (the kit's last row) | 6 (a puppet's own toolbar) |
+| Taps to add a mouth | 3 (open kit, mouth, tap) | 3 (tap puppet, mouth, tap) |
+| Taps to add a mouth *and* eyes | 6 | 5 — the puppet stays selected |
+| Events appended by sending a puppet to the back | 2 (N for N puppets) | 1 (`REORDER`) |
+| Events appended by a 1.1s hold on a puppet | 1 (`DROP`) | 0 |
+| Confirmation before deleting a bit | none | a menu, then an undo for five seconds |
+| Foley pills clipped at 390px | 2 of 5 | 0 of 5 |
+| A pass, once recorded | invisible | a span in the lanes, mutable and trimmable |
+| Ways to start a bit without talking out loud | 0 | 1 (any audio or video file) |
+
+Two rows the original table could not have: the walkthrough now carries
+76 assertions, up from a driver that only took screenshots, and it
+records the event kinds each phase leaves in the recipe so a refactor
+that changes what a person's actions record fails in CI rather than on a
+phone.
 
 ### Screenshot index
+
+`shots/` is the audit as written, at `c9ff5a2`:
 
 - `shots/01-first-run.png` first exposure, the demo stage and its 13px hint
 - `shots/02-kit-open.png` the kit: twelve tools, unlabeled chips, buttons on a same-color panel
@@ -367,10 +397,39 @@ Taken on the production build with an emulated iPhone 14 (390x844) unless noted.
 - `shots/10-landscape.png` landscape
 - `shots/11-se-kit-selected.png` iPhone SE size, the kit's header and rail above the screen
 
+`shots-now/` is the same walk at `cf61509`, written by
+`npm run test:ux`:
+
+- `shots-now/first-run.png` the demo, with a hint that says what to do to it
+- `shots-now/tools-open.png` casting: six ways in, each saying what it does
+- `shots-now/small-phone.png` the same at 375x667, nothing above the screen
+- `shots-now/needs-sound.png` sound first, from the mic **or** a file
+- `shots-now/recording.png` a take, with a level, a clock and a way out
+- `shots-now/cast.png` a doodle on stage
+- `shots-now/halo.png` a selected puppet wearing its own tools
+- `shots-now/handle-removing.png` a mouth dragged clear, and told what letting go does
+- `shots-now/doodle-tools.png` drawing: four inks, three widths, an eraser, below the drawing
+- `shots-now/two-photos.png` two casts that did not land on each other
+- `shots-now/lanes.png` passes as spans, the talking one striped
+- `shots-now/trim.png` the sound as a thing you can top and tail
+- `shots-now/curtain.png` the reveal after a blind take
+- `shots-now/perform.png` perform: the stage and nothing else
+- `shots-now/list.png` a list that tells bits apart
+- `shots-now/landscape-wide.png` a wide bit in the window it is for
+
 ### How to reproduce
 
 ```
 npm ci && npm run build && npx vite preview --port 4173
 ```
 
-Then open `http://localhost:4173/bits/` in Chrome's device mode as an iPhone 14, and follow walkthrough 2.1. The headless driver used for this audit launched Chromium with `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream` so the mic and camera flows run unattended.
+Then open `http://localhost:4173/bits/` in Chrome's device mode as an
+iPhone 14. Or, for the numbers rather than the feel:
+
+```
+npm run test:ux
+```
+
+which drives the production build in a phone-emulated headless Chromium
+with a fake mic and camera, writes `dist-ux-shots/measurements.md` and
+the screenshots above, and fails if any of the 76 assertions regress.

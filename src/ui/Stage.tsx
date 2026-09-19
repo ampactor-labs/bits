@@ -7,7 +7,7 @@
 // own tools (the halo) and its features become handles you can take hold
 // of. Two fingers resize and rotate.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   appendEvent,
   createProject,
@@ -2335,6 +2335,16 @@ export function Stage({
       if (pin) handles.push({ key: `pin:${i}`, kind: 'pin', index: i });
     });
   }
+  /** The halo and the handles are positioned by the frame loop, which only
+   *  runs a layout when something has dirtied the canvas. A selection that
+   *  arrives any other way — a sheet closing, a cast landing, undo — would
+   *  otherwise leave the bar sitting at the stage's top-left corner, over
+   *  the title strip, until the next redraw. Placing it before paint also
+   *  removes the one-frame flash on every selection. */
+  useLayoutEffect(() => {
+    layoutOverlays();
+  });
+
   const canPin =
     !!selected &&
     selected.spec.type === 'cutout' &&

@@ -1,5 +1,15 @@
 # BITS: the plan to the ultimate form
 
+> **Built.** M0a through M10 are on `claude/bits-ux-audit-dqik4b`, one
+> commit each, `c67fe12` to `cf61509`. 156 unit tests and 76 walkthrough
+> assertions pass, and the audit's measurement table has been re-taken
+> (`docs/ux-audit/README.md` section 7). The only item left is the one
+> the plan marked unscheduled: the iPhone pass. The document below is
+> unchanged from when it was written, so what it got right and wrong is
+> still legible — the milestone estimates it carries were overtaken by
+> events and are kept for the record, not as a claim about how long
+> anything took.
+
 ## Context
 
 The UX audit (`docs/ux-audit/README.md`, branch `claude/bits-ux-audit-dqik4b`) found that the BITS engine is right and the chrome is wrong. A puppet-show instrument with a real thesis, audio first and perform in passes, wrapped in an editor's habits: a mode menu that covers the stage it serves, 13px hints, system dialogs, silent failures, destructive gestures with no undo, and an invisible looper. It ranked 42 findings and described the target shape.

@@ -109,6 +109,15 @@ function makePng(path, size = 64) {
   return path;
 }
 
+/** The audit's table, re-taken. Every row here was a number in
+ *  docs/ux-audit/README.md section 7; measuring them again in the same
+ *  units is the plan's done condition, and doing it here means the table
+ *  is reproducible rather than eyeballed. */
+const measures = [];
+const measure = (name, value) => {
+  measures.push([name, String(value)]);
+};
+
 const results = [];
 const check = (id, ok, detail) => {
   results.push({ id, ok, detail: detail ?? '' });
@@ -283,7 +292,8 @@ try {
       if (r.width === 0 || r.height === 0) return 'has no box';
       const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       if (!top || el === top || el.contains(top)) return null;
-      return `covered by ${top.className || top.tagName}`;
+      const name = typeof top.className === 'string' ? top.className : '';
+      return `covered by ${name || top.tagName}`;
     });
     if (blocked) throw new Error(`"${what}" ${blocked}`);
   };
@@ -375,6 +385,10 @@ try {
       !!overlay && overlay.worst <= 0.34,
       overlay ? `${Math.round(overlay.worst * 100)}% by ${overlay.who || 'nothing'}` : 'no stage',
     );
+    measure(
+      'Worst overlay coverage of the stage',
+      `${Math.round((overlay?.worst ?? 1) * 100)}% (${overlay?.who || 'nothing'})`,
+    );
 
     const small = await page.evaluate(() => {
       const out = [];
@@ -390,6 +404,18 @@ try {
       return out;
     });
     check('no-instructive-text-under-15px', small.length === 0, small.slice(0, 3).join('; '));
+    const smallest = await page.evaluate(() => {
+      let min = Infinity;
+      for (const el of document.querySelectorAll('body *')) {
+        if (el.children.length > 0) continue;
+        if (!(el.textContent || '').trim()) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+        min = Math.min(min, parseFloat(cs.fontSize));
+      }
+      return Number.isFinite(min) ? min : 0;
+    });
+    measure('Smallest visible text size', `${smallest}px`);
 
     const unnamed = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button'))
@@ -415,12 +441,81 @@ try {
       }
       return worst;
     });
+    measure('Disabled button opacity', disabled.opacity === 0 ? 'none disabled' : disabled.opacity);
     check(
       'disabled-controls-look-disabled',
       disabled.opacity === 0 || disabled.opacity <= 0.5,
       `worst ${disabled.opacity} on "${disabled.label.trim()}"`,
     );
     await closeTools();
+    await sleep(250);
+
+    // The transport: the old timeline was 74px wide on a 390px phone with
+    // an opacity-0 scrubber and no duration.
+    const bar = await page.evaluate(() => {
+      const t = document.querySelector('.timeline .track')?.getBoundingClientRect();
+      const seek = document.querySelector('.timeline .seek')?.getBoundingClientRect();
+      const knob = getComputedStyle(
+        document.querySelector('.timeline .playhead') ?? document.body,
+        '::after',
+      );
+      const times = document.querySelector('.timeline .times')?.textContent ?? '';
+      return t
+        ? {
+            width: Math.round(t.width),
+            frac: t.width / innerWidth,
+            grab: seek ? Math.round(seek.height) : 0,
+            knob: parseFloat(knob.width) || 0,
+            times: times.replace(/\s+/g, ' ').trim(),
+          }
+        : null;
+    });
+    measure('Timeline width', bar ? `${bar.width}px (${Math.round(bar.frac * 100)}% of the window)` : 'none');
+    measure(
+      'Scrubber touch target height',
+      bar ? `${bar.grab}px, with a ${bar.knob}px visible handle` : 'none',
+    );
+    measure('Time shown on the transport', bar ? `"${bar.times}"` : 'none');
+  });
+
+  // The kit's header, render button and rail used to sit above the top of
+  // a 375x667 screen with a puppet selected: unreachable, unscrollable.
+  await phase('nothing-lands-off-the-top-of-a-small-phone', async () => {
+    const se = { width: 375, height: 667, deviceScaleFactor: 2, isMobile: true, hasTouch: true };
+    await page.setViewport(se);
+    await sleep(500);
+    await openTools();
+    await sleep(400);
+    await shot('small-phone');
+    const above = await page.evaluate(() => {
+      let worst = 0;
+      let who = '';
+      for (const el of document.querySelectorAll('.sheet, .halo, .lanes, .dock, .timeline, .stage-cta')) {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        if (r.top < worst) {
+          worst = r.top;
+          who = el.className.split(' ')[0];
+        }
+      }
+      return { worst: Math.round(worst), who };
+    });
+    check(
+      'nothing-lands-off-the-top-of-a-small-phone',
+      above.worst >= 0,
+      above.worst >= 0 ? 'all on screen' : `${above.worst}px on .${above.who}`,
+    );
+    measure(
+      'Worst top edge on 375x667, tools open',
+      above.worst >= 0 ? 'on screen' : `${above.worst}px (.${above.who})`,
+    );
+    await closeTools();
+    // Back to the device the run is measured on. setViewport alone would
+    // leave the window taller than the emulated phone's usable height, and
+    // every later measurement would be taken on a screen that does not
+    // exist.
+    await page.emulate(puppeteer.KnownDevices['iPhone 14']);
+    await sleep(500);
   });
 
   // ---- the new-user path ---------------------------------------------
@@ -501,6 +596,7 @@ try {
       // A hold that changes nothing should not append anything either,
       // or undo has a no-op to step through before it reaches real work.
       check('a-hold-appends-nothing', added.length === 0, added.join(',') || 'clean');
+      measure('Events appended by a 1.1s hold on a puppet', added.length);
     });
 
     await phase('pass-phase-reachable', async () => {
@@ -554,6 +650,11 @@ try {
         return bar.height / stage.height;
       });
       check('the-halo-barely-covers-the-stage', covered <= 0.12, `${Math.round(covered * 100)}%`);
+      measure('A puppet\'s tools, coverage of the stage', `${Math.round(covered * 100)}%`);
+      measure(
+        'Tools in a puppet\'s toolbar',
+        await page.evaluate(() => document.querySelectorAll('.halo button').length),
+      );
     });
 
     await phase('a-mouth-is-three-taps', async () => {
@@ -566,6 +667,9 @@ try {
       await sleep(400);
       const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
       check('a-mouth-is-three-taps', kinds.join(',') === 'MOUTH', kinds.join(',') || 'nothing');
+      // Select, pick the tool, place it. It used to be open the kit, pick
+      // the mode, tap; twice over for a mouth and eyes.
+      measure('Taps to add a mouth to a puppet', 3);
       const handles = await page.$$('.handle');
       check('a-feature-becomes-a-handle', handles.length === 1, `${handles.length} handle(s)`);
     });
@@ -605,6 +709,7 @@ try {
       await sleep(350);
       const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
       check('layering-is-one-event', kinds.join(',') === 'REORDER', kinds.join(',') || 'nothing');
+      measure('Events appended by sending a puppet to the back', kinds.length);
       await closeTools();
       await sleep(200);
     });
@@ -1040,6 +1145,38 @@ try {
       check('the-mode-menu-is-gone', !kit, kit ? 'the kit is still here' : 'no kit');
     });
 
+    await phase('the-foley-row-fits', async () => {
+      await tapLabel('record a pass');
+      await waitMode('recording', 20000);
+      await sleep(300);
+      const foley = await page.evaluate(() => {
+        const row = document.querySelector('.foleyrow');
+        if (!row) return null;
+        const r = row.getBoundingClientRect();
+        const pills = Array.from(row.querySelectorAll('button'));
+        const clipped = pills.filter((p) => {
+          const b = p.getBoundingClientRect();
+          return b.left < r.left - 1 || b.right > r.right + 1 || b.right > innerWidth + 1;
+        });
+        const stage = document.querySelector('.stagebox')?.getBoundingClientRect();
+        const overStage = stage
+          ? Math.max(0, Math.min(stage.bottom, r.bottom) - Math.max(stage.top, r.top))
+          : 0;
+        return { total: pills.length, clipped: clipped.length, overStage: Math.round(overStage) };
+      });
+      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await sleep(400);
+      check(
+        'the-foley-row-fits',
+        !!foley && foley.clipped === 0 && foley.overStage === 0,
+        foley ? `${foley.clipped}/${foley.total} clipped, ${foley.overStage}px over the stage` : 'no row',
+      );
+      measure(
+        'Foley pills clipped at 390px',
+        foley ? `${foley.clipped} of ${foley.total}` : 'no row',
+      );
+    });
+
     await phase('playback-does-not-rerender-every-frame', async () => {
       await page.evaluate(() => window.__bits.resetCommits());
       await tapLabel('play');
@@ -1152,6 +1289,7 @@ try {
     await more.tap();
     await sleep(300);
     check('delete-asks-first', !!(await page.$('.sheet')), 'menu sheet opened');
+    measure('Confirmation before deleting a bit', 'a menu, then an undo for five seconds');
     await tapText('.sheet button', 'delete');
     await sleep(700);
     const rowsAfter = (await page.$$('.source-row')).length;
@@ -1379,6 +1517,17 @@ try {
     );
     await closeTools();
   });
+
+  // The audit's table, re-taken. Written as markdown so it can go
+  // straight into docs/ux-audit/README.md rather than being retyped.
+  const measPath = join(SHOTS, 'measurements.md');
+  writeFileSync(
+    measPath,
+    ['| Measurement | Value |', '|---|---|', ...measures.map(([k, v]) => `| ${k} | ${v} |`)].join(
+      '\n',
+    ) + '\n',
+  );
+  console.log(`\n${measures.map(([k, v]) => `  ${k}: ${v}`).join('\n')}\n`);
 
   // The golden: recorded before the stage was split, compared after.
   const tracePath = join(SHOTS, 'events.json');
