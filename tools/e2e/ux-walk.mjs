@@ -18,7 +18,7 @@
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 
@@ -167,16 +167,29 @@ try {
     shotN += 1;
     await page.screenshot({ path: join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`) });
   };
+  /** What each phase left in the recipe, as event kinds. This is the
+   *  golden the stage split is judged against: a refactor may move every
+   *  line in the file, but the bit a person makes by doing the same things
+   *  has to come out identical. Counts and timings vary with the mic;
+   *  kinds do not. */
+  const trace = [];
   /** A phase that cannot take the rest of the run down with it. */
   const phase = async (id, fn) => {
+    let ok = true;
     try {
       await fn();
-      return true;
     } catch (err) {
       check(id, false, String(err && err.message ? err.message : err).slice(0, 120));
       await shot(`failed-${id}`).catch(() => {});
-      return false;
+      ok = false;
     }
+    try {
+      const kinds = await page.evaluate(() => window.__bits?.eventKinds?.() ?? null);
+      if (kinds) trace.push([id, kinds.join(',')]);
+    } catch {
+      // No stage mounted: nothing to record for this phase.
+    }
+    return ok;
   };
 
   const stageBox = () =>
@@ -1366,6 +1379,31 @@ try {
     );
     await closeTools();
   });
+
+  // The golden: recorded before the stage was split, compared after.
+  const tracePath = join(SHOTS, 'events.json');
+  writeFileSync(tracePath, JSON.stringify(trace, null, 2));
+  const goldenPath = join(process.cwd(), 'tools', 'e2e', 'golden-events.json');
+  if (process.env.UX_RECORD_GOLDEN) {
+    writeFileSync(goldenPath, JSON.stringify(trace, null, 2));
+    console.log(`recorded ${trace.length} phases to ${goldenPath}`);
+  } else if (existsSync(goldenPath)) {
+    const golden = JSON.parse(readFileSync(goldenPath, 'utf8'));
+    const want = new Map(golden);
+    const diffs = [];
+    for (const [id, kinds] of trace) {
+      if (!want.has(id)) continue;
+      if (want.get(id) !== kinds) diffs.push(id);
+    }
+    const missing = golden.filter(([id]) => !trace.some(([t]) => t === id)).map(([id]) => id);
+    check(
+      'the-recipe-a-walkthrough-builds-is-unchanged',
+      diffs.length === 0 && missing.length === 0,
+      [...diffs.map((d) => `${d} differs`), ...missing.map((m) => `${m} missing`)]
+        .join('; ')
+        .slice(0, 160),
+    );
+  }
 
   check('no-system-dialog-appeared', dialogs.length === 0, dialogs.join(' | '));
   check('no-page-errors', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
