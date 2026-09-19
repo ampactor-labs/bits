@@ -58,7 +58,13 @@ export default defineConfig({
         test: {
           name: 'engine',
           environment: 'node',
-          include: ['src/engine/**/*.test.ts', 'src/media/**/*.test.ts'],
+          // The stage machine is pure data about modes, so it runs here
+          // rather than in jsdom with the components it governs.
+          include: [
+            'src/engine/**/*.test.ts',
+            'src/media/**/*.test.ts',
+            'src/ui/**/*.test.ts',
+          ],
         },
       },
       {
