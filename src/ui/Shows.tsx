@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { parseProject, serializeProject } from '../engine/recipe';
+import { parseProject, serializeProject, type Project } from '../engine/recipe';
+import { castOf } from '../engine/show';
+import { ShowPoster } from './ShowPoster';
 import { deleteAsset } from '../media/assets';
 import { importBundle, referencedAssets } from '../media/bundle';
 import {
@@ -30,6 +32,33 @@ interface ShowRow {
   id: string;
   title: string;
   passes: number;
+  cast: number;
+  durationS: number;
+  updatedAt: string;
+  remixOf: string | null;
+  project: Project | null;
+}
+
+/** "3 passes · 0:12 · yesterday". The list used to say only the title and
+ *  a pass count, so three bits called "untitled bit" were one bit three
+ *  times over (audit F35). */
+export function rowSummary(row: ShowRow, now = Date.now()): string {
+  const bits: string[] = [];
+  if (row.cast > 0) bits.push(`${row.cast} in the cast`);
+  bits.push(`${row.passes} pass${row.passes === 1 ? '' : 'es'}`);
+  if (row.durationS > 0) {
+    bits.push(
+      `${Math.floor(row.durationS / 60)}:${Math.floor(row.durationS % 60)
+        .toString()
+        .padStart(2, '0')}`,
+    );
+  }
+  const when = Date.parse(row.updatedAt);
+  if (!Number.isNaN(when)) {
+    const days = Math.floor((now - when) / 86400000);
+    bits.push(days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`);
+  }
+  return bits.join(' · ');
 }
 
 async function loadRows(): Promise<ShowRow[]> {
@@ -44,21 +73,51 @@ async function loadRows(): Promise<ShowRow[]> {
         id,
         title: p.title,
         passes: p.events.filter((e) => e.kind === 'PASS').length,
+        cast: castOf(p).length,
+        durationS: p.audio?.durationS ?? 0,
+        updatedAt: p.updatedAt ?? p.createdAt,
+        remixOf: p.remixOf?.title ?? null,
+        project: p,
       });
     } catch {
-      out.push({ id, title: id, passes: 0 });
+      out.push({
+        id,
+        title: id,
+        passes: 0,
+        cast: 0,
+        durationS: 0,
+        updatedAt: '',
+        remixOf: null,
+        project: null,
+      });
     }
   }
   return out;
 }
 
-/** Collect the assets a trashed recipe owned, then drop the recipe. */
+/** Collect the assets a trashed recipe owned, then drop the recipe.
+ *
+ *  An asset a living bit still names is left alone. A duplicate shares its
+ *  originals rather than copying eleven megabytes of photo, so collecting
+ *  blind would empty the copy the moment the original went. */
 async function collectTrashed(id: string): Promise<void> {
   const json = await loadTrashedJson(id);
   if (json) {
     try {
       const p = parseProject(json);
-      for (const assetId of referencedAssets(p)) await deleteAsset(assetId);
+      const keep = new Set<string>();
+      for (const other of await listProjectIds(SHOW_PREFIX)) {
+        const otherJson = await loadProjectJson(other);
+        if (!otherJson) continue;
+        try {
+          for (const a of referencedAssets(parseProject(otherJson))) keep.add(a);
+        } catch {
+          // Unparseable neighbours cannot vouch for anything.
+        }
+      }
+      for (const assetId of referencedAssets(p)) {
+        if (!keep.has(assetId)) await deleteAsset(assetId);
+      }
     } catch {
       // Unparseable: drop the recipe alone.
     }
@@ -83,9 +142,12 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
   const onOpenRef = useRef(onOpen);
   const toast = useToast();
   const banner = useBanner();
+  /** Mirrored so the import path can be a stable callback. */
+  const bannerRef = useRef(banner);
   useEffect(() => {
     onOpenRef.current = onOpen;
-  }, [onOpen]);
+    bannerRef.current = banner;
+  }, [onOpen, banner]);
 
   const openDemo = useCallback(async () => {
     try {
@@ -99,6 +161,49 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
       banner.error('could not build the demo');
     }
   }, [banner]);
+
+  const importBit = useCallback(async (file: File | null | undefined) => {
+    if (!file) return;
+    setStatus('opening…');
+    try {
+      const incoming = await importBundle(file);
+      // A credit, not a link: nothing is fetched and nothing merges. It
+      // survives being remixed again, so a chain stays legible.
+      const project: Project = {
+        ...incoming,
+        id: crypto.randomUUID(),
+        updatedAt: new Date().toISOString(),
+        ...(incoming.remixOf
+          ? { remixOf: incoming.remixOf }
+          : { remixOf: { title: incoming.title, id: incoming.id } }),
+      };
+      const id = freshShowId();
+      await saveProjectJson(id, serializeProject(project));
+      setStatus('');
+      onOpenRef.current(id);
+    } catch (err) {
+      setStatus('');
+      bannerRef.current.error(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  /** A bit shared in from elsewhere waits in the worker's inbox; the
+   *  redirect that brought us here says so. */
+  useEffect(() => {
+    if (!new URLSearchParams(location.search).has('inbox')) return;
+    history.replaceState(null, '', location.pathname);
+    void (async () => {
+      try {
+        const resp = await fetch('inbox-file');
+        if (resp.status !== 200) return;
+        const blob = await resp.blob();
+        const name = decodeURIComponent(resp.headers.get('x-bits-name') ?? 'shared.json');
+        await importBit(new File([blob], name, { type: blob.type }));
+      } catch {
+        bannerRef.current.error('that share could not be opened');
+      }
+    })();
+  }, [importBit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,19 +238,26 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
 
   const newShow = () => onOpen(freshShowId());
 
-  const importBit = async (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file) return;
-    setStatus('opening…');
+  /** A copy to wreck, with the original left alone. The assets are shared
+   *  rather than copied: eleven megabytes of photo per duplicate would
+   *  fill a phone, and collection now checks who else is using one. */
+  const duplicate = async (row: ShowRow) => {
+    setMenu(null);
+    const json = await loadProjectJson(row.id);
+    if (!json) return;
     try {
-      const project = await importBundle(file);
+      const copy: Project = {
+        ...parseProject(json),
+        id: crypto.randomUUID(),
+        title: `${row.title} again`,
+        updatedAt: new Date().toISOString(),
+      };
       const id = freshShowId();
-      await saveProjectJson(id, serializeProject(project));
-      setStatus('');
-      onOpen(id);
-    } catch (err) {
-      setStatus('');
-      banner.error(err instanceof Error ? err.message : String(err));
+      await saveProjectJson(id, serializeProject(copy));
+      setRows(await loadRows());
+      toast.show(`copied ${row.title}`);
+    } catch {
+      banner.error('that bit could not be copied');
     }
   };
 
@@ -196,7 +308,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
           accept=".json,application/json"
           hidden
           onChange={(e) => {
-            void importBit(e.target.files);
+            void importBit(e.target.files?.[0]);
             e.target.value = '';
           }}
         />
@@ -217,9 +329,11 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
           {rows.map((r) => (
             <li key={r.id} className="source-row">
               <button className="row-open" onClick={() => onOpen(r.id)}>
-                <span className="name">{r.title}</span>
-                <span className="size">
-                  {r.passes} pass{r.passes === 1 ? '' : 'es'}
+                <ShowPoster showId={r.id} project={r.project} />
+                <span className="row-lines">
+                  <span className="name">{r.title}</span>
+                  <span className="size">{rowSummary(r)}</span>
+                  {r.remixOf && <span className="size">after {r.remixOf}</span>}
                 </span>
               </button>
               <IconButton
@@ -238,6 +352,7 @@ export function Shows({ onOpen }: { onOpen: (showId: string) => void }) {
       {menu?.kind === 'menu' && (
         <Sheet title={menu.row.title} onClose={() => setMenu(null)}>
           <button onClick={() => setMenu({ kind: 'rename', row: menu.row })}>rename</button>
+          <button onClick={() => void duplicate(menu.row)}>make a copy</button>
           <button onClick={() => void remove(menu.row)}>delete</button>
         </Sheet>
       )}

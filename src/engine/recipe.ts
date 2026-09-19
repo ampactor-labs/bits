@@ -235,6 +235,9 @@ export interface Project {
   /** Metadata; never changes pixels, so it needs no version bump. */
   updatedAt?: string;
   sound?: { source: 'mic' | 'file'; name?: string };
+  /** Where a bit came from, when it arrived as someone else's file. It is
+   *  a credit, not a link: nothing is fetched and nothing merges. */
+  remixOf?: { title: string; id: string };
 }
 
 export function createProject(title: string, now = new Date()): Project {
@@ -291,6 +294,14 @@ export function parseProject(text: string): Project {
   }
   if (typeof p.seed !== 'number' || !Array.isArray(p.events)) {
     throw new Error('recipe: malformed body');
+  }
+  // A credit line straight from a stranger's file: it reaches the screen,
+  // so it has to be the shape the screen expects.
+  if (p.remixOf !== undefined) {
+    const r = p.remixOf as Record<string, unknown> | null;
+    if (typeof r !== 'object' || r === null || typeof r.title !== 'string' || typeof r.id !== 'string') {
+      throw new Error('recipe: remixOf needs a title and an id');
+    }
   }
 
   // Ids must be unique and references must point backwards, or the same

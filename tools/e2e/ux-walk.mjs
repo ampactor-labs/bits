@@ -1088,6 +1088,118 @@ try {
     );
   });
 
+  // Three bits called "untitled bit" used to be one bit three times over
+  // (audit F35).
+  await phase('the-list-tells-bits-apart', async () => {
+    await goToList();
+    await sleep(900);
+    const rows = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.source-row')).map((r) => ({
+        poster: !!r.querySelector('.poster img'),
+        summary: (r.querySelector('.size')?.textContent ?? '').trim(),
+      })),
+    );
+    await shot('list');
+    check(
+      'a-row-says-more-than-its-title',
+      rows.length > 0 && rows.every((r) => /pass/.test(r.summary) && /ago|today|yesterday/.test(r.summary)),
+      rows.map((r) => r.summary).join(' | ').slice(0, 90),
+    );
+    check(
+      'a-row-carries-a-still-of-the-bit',
+      rows.some((r) => r.poster),
+      `${rows.filter((r) => r.poster).length}/${rows.length} with a still`,
+    );
+  });
+
+  // A copy to wreck, with the original left alone. The two share their
+  // assets, so deleting one must not empty the other.
+  await phase('a-bit-can-be-copied', async () => {
+    await goToList();
+    const before = (await page.$$('.source-row')).length;
+    const more = await page.$('.source-row [aria-label^="more for"]');
+    await more.tap();
+    await sleep(300);
+    await tapText('.sheet button', 'make a copy');
+    await sleep(900);
+    const rows = await page.$$eval('.source-row .name', (els) => els.map((e) => e.textContent));
+    check(
+      'a-bit-can-be-copied',
+      rows.length === before + 1 && rows.some((t) => /again/.test(t ?? '')),
+      `${before} -> ${rows.length}`,
+    );
+
+    // Delete the original; the copy must keep its puppets.
+    const copyIdx = rows.findIndex((t) => /again/.test(t ?? ''));
+    const originalIdx = copyIdx === 0 ? 1 : 0;
+    const menus = await page.$$('.source-row [aria-label^="more for"]');
+    await menus[originalIdx].tap();
+    await sleep(300);
+    await tapText('.sheet button', 'delete');
+    await sleep(600);
+    const undo = await page.$('.toast-action');
+    // Let the undo window close so the assets are actually collected.
+    await sleep(5400);
+    if (undo) {
+      // The toast is gone by now; nothing to press.
+    }
+    await sleep(600);
+    const stillDrawn = await page.evaluate(() => {
+      const row = Array.from(document.querySelectorAll('.source-row')).find((r) =>
+        /again/.test(r.querySelector('.name')?.textContent ?? ''),
+      );
+      return !!row?.querySelector('.poster img');
+    });
+    check(
+      'a-copy-keeps-its-puppets-when-the-original-goes',
+      stillDrawn,
+      stillDrawn ? 'copy still draws' : 'copy lost its assets',
+    );
+  });
+
+  // The share target: a bit file handed to BITS by another app's share
+  // sheet. It arrives as a POST, which a worker that bails out on
+  // non-GET requests would hand straight back to the network.
+  await phase('a-shared-bit-file-opens-as-a-remix', async () => {
+    await goToList();
+    const posted = await page.evaluate(async () => {
+      if (!(await navigator.serviceWorker.ready.catch(() => null))) return 'no worker';
+      const recipe = JSON.stringify({
+        version: 1,
+        id: 'shared-original',
+        title: 'a bit from a friend',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        seed: 7,
+        events: [],
+      });
+      const bundle = JSON.stringify({ kind: 'bits-bundle', version: 0, recipe, assets: {} });
+      const form = new FormData();
+      form.append('bit', new File([bundle], 'shared.bits.json', { type: 'application/json' }));
+      const resp = await fetch('inbox', { method: 'POST', body: form, redirect: 'follow' });
+      return resp.redirected || resp.url.includes('inbox=1') ? 'redirected' : `no redirect (${resp.status})`;
+    });
+    check('a-share-is-taken-by-the-worker', posted === 'redirected', String(posted));
+
+    // Now open the app the way the redirect would, and let it collect.
+    await page.goto(`${BASE}?e2e&inbox=1`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
+    await sleep(2500);
+    await goToList();
+    await sleep(700);
+    const opened = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.source-row')).map((r) =>
+        Array.from(r.querySelectorAll('.name, .size')).map((e) => e.textContent ?? ''),
+      ),
+    );
+    const flat = opened.flat().join(' | ');
+    check(
+      'a-shared-bit-file-opens-as-a-remix',
+      /a bit from a friend/.test(flat) && /after a bit from a friend/.test(flat),
+      flat.slice(0, 110),
+    );
+  });
+
   // A short landscape window would make a 9:16 stage a postage stamp.
   await phase('landscape-says-turn-the-phone', async () => {
     await goToList();

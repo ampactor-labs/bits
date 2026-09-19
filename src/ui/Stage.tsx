@@ -77,6 +77,8 @@ import { CastSheet, type CastKind } from './stage/sheets/CastSheet';
 import { DOODLE_COLORS, DoodleBar, type DoodleInk } from './stage/DoodleBar';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { ShowMenu } from './stage/sheets/ShowMenu';
+import { RenderSheet } from './stage/sheets/RenderSheet';
+import { posterFor } from '../media/poster';
 import { SoundSheet, type SoundTrim } from './stage/sheets/SoundSheet';
 import { RecordPanel, clock as clockText } from './stage/RecordPanel';
 import { Lanes, type Lane, type LoopRegion } from './stage/Lanes';
@@ -233,6 +235,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     | { kind: 'retake'; mode: 'replace' | 'extend' }
     | { kind: 'cast' }
     | { kind: 'sound' }
+    | { kind: 'render' }
     | { kind: 'more' }
     | { kind: 'show' }
   >(null);
@@ -243,6 +246,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const renderAbortRef = useRef<AbortController | null>(null);
   const [rendering, setRendering] = useState<RenderProgress | null>(null);
   const [rendered, setRendered] = useState<File | null>(null);
+  const [poster, setPoster] = useState<string | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   const [redoCount, setRedoCount] = useState(0);
@@ -423,6 +427,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     [persistSoon],
   );
 
+  /** Any change to the recipe makes the last film out of date, so the
+   *  menu stops offering to share it. */
   const commit = useCallback(
     (mutate: (p: Project) => Project) => applyProject(mutate, true),
     [applyProject],
@@ -2058,7 +2064,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         signal: abort.signal,
       });
       setRendered(out);
-      toast.show('rendered', { action: { label: 'share', run: () => void shareOrDownload(out) } });
+      setPoster(await posterFor(showId, projectRef.current, 160));
+      setSheet({ kind: 'render' });
     } catch (err) {
       // Backing out is not a failure worth a banner.
       if (!(err instanceof RenderCancelled)) fail(err);
@@ -2479,6 +2486,23 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           onDrop={() => {
             setSheet(null);
             dropPuppet(selected);
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
+
+      {sheet?.kind === 'render' && rendered && (
+        <RenderSheet
+          file={rendered}
+          poster={poster}
+          durationS={
+            (projectSnap.audio?.trim?.to ?? durationS) - (projectSnap.audio?.trim?.from ?? 0)
+          }
+          onShare={() => void shareOrDownload(rendered)}
+          onAgain={() => {
+            setRendered(null);
+            setSheet(null);
+            void doRender();
           }}
           onClose={() => setSheet(null)}
         />

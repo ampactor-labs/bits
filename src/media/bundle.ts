@@ -2,9 +2,10 @@
 // single JSON. Send it to someone, they open it, the whole show is theirs to
 // re-perform. The recipe-in-export stance, made portable.
 //
-// Import copies assets under fresh ids: every show owns its assets
-// exclusively, so deleting any show can never break another. Double-imports
-// and re-imports of your own bit stay independent copies.
+// Import copies assets under fresh ids, so an imported bit never shares
+// anything with the bit it came from and double-imports stay independent.
+// Duplicating a bit on this phone is the one case that does share, and
+// collection checks who else is using an asset before dropping it.
 
 import { parseProject, serializeProject, type Project } from '../engine/recipe';
 import { getAsset, saveAsset } from './assets';
