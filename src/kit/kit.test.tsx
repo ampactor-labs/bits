@@ -54,6 +54,55 @@ describe('Toast', () => {
     expect(expire).toHaveBeenCalledOnce();
     expect(screen.queryByText('dropped cat')).toBeNull();
   });
+
+  it('collapses a repeated plain message instead of stacking it', () => {
+    function Plain() {
+      const toast = useToast();
+      return <button onClick={() => toast.show('no person found')}>say</button>;
+    }
+    render(
+      <ToastProvider>
+        <Plain />
+        <ToastView />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText('say'));
+    act(() => void vi.advanceTimersByTime(3000));
+    fireEvent.click(screen.getByText('say'));
+    expect(screen.getAllByText('no person found')).toHaveLength(1);
+    // The repeat restarts the clock rather than queueing behind the first.
+    act(() => void vi.advanceTimersByTime(3000));
+    expect(screen.queryByText('no person found')).toBeTruthy();
+    act(() => void vi.advanceTimersByTime(2500));
+    expect(screen.queryByText('no person found')).toBeNull();
+  });
+
+  it('never stacks more than three, and the dropped one still expires', () => {
+    const expiries = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    function Many() {
+      const toast = useToast();
+      return (
+        <button
+          onClick={() =>
+            expiries.forEach((fn, i) => toast.show(`m${i}`, { action: { label: 'x', run: () => {} }, onExpire: fn }))
+          }
+        >
+          flood
+        </button>
+      );
+    }
+    render(
+      <ToastProvider>
+        <Many />
+        <ToastView />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText('flood'));
+    expect(document.querySelectorAll('.toast')).toHaveLength(3);
+    expect(screen.queryByText('m0')).toBeNull();
+    expect(expiries[0]).toHaveBeenCalledOnce();
+    expect(expiries[3]).not.toHaveBeenCalled();
+  });
 });
 
 function BannerHarness() {

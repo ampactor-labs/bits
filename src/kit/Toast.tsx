@@ -15,6 +15,9 @@ import {
 } from 'react';
 
 export const TOAST_MS = 5000;
+/** Three is already a stack that reaches the timeline. Beyond it the
+ *  oldest goes, expiry and all, so nothing it was holding leaks. */
+const MAX_TOASTS = 3;
 
 export interface ToastAction {
   label: string;
@@ -43,11 +46,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const nextId = useRef(1);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const expiries = useRef(new Map<number, () => void>());
+  /** What is on screen, as a plain store rather than derived from render,
+   *  so two shows in one tick still see each other. */
+  const live = useRef(new Map<number, ToastItem>());
 
   const drop = useCallback((id: number, runExpire: boolean) => {
     const timer = timers.current.get(id);
     if (timer) clearTimeout(timer);
     timers.current.delete(id);
+    live.current.delete(id);
     const onExpire = expiries.current.get(id);
     expiries.current.delete(id);
     if (runExpire) onExpire?.();
@@ -56,6 +63,28 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const show = useCallback<ToastApi['show']>(
     (message, opts) => {
+      const ms = opts?.ms ?? TOAST_MS;
+      // Casting two photos in a row used to stack two identical messages.
+      // A plain repeat is the same news, so it just gets longer to read.
+      // One carrying an undo or an expiry never collapses: each owns its
+      // own piece of work.
+      if (!opts?.action && !opts?.onExpire) {
+        for (const item of live.current.values()) {
+          if (item.message === message && !item.action && !item.onExpire) {
+            const running = timers.current.get(item.id);
+            if (running) clearTimeout(running);
+            timers.current.set(
+              item.id,
+              setTimeout(() => drop(item.id, true), ms),
+            );
+            return;
+          }
+        }
+      }
+      while (live.current.size >= MAX_TOASTS) {
+        const oldest = Math.min(...live.current.keys());
+        drop(oldest, true);
+      }
       const id = nextId.current++;
       const item: ToastItem = { id, message };
       if (opts?.action) item.action = opts.action;
@@ -63,10 +92,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         item.onExpire = opts.onExpire;
         expiries.current.set(id, opts.onExpire);
       }
+      live.current.set(id, item);
       setItems((list) => [...list, item]);
       timers.current.set(
         id,
-        setTimeout(() => drop(id, true), opts?.ms ?? TOAST_MS),
+        setTimeout(() => drop(id, true), ms),
       );
     },
     [drop],
@@ -96,9 +126,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const running = timers.current;
+    const shown = live.current;
     return () => {
       for (const t of running.values()) clearTimeout(t);
       running.clear();
+      shown.clear();
     };
   }, []);
 

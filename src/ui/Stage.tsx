@@ -73,6 +73,7 @@ import { Dock } from './stage/Dock';
 import { Halo, type HaloAction } from './stage/Halo';
 import { Handles, type HandleSpec } from './stage/Handles';
 import { CastSheet, type CastKind } from './stage/sheets/CastSheet';
+import { DOODLE_COLORS, DoodleBar, type DoodleInk } from './stage/DoodleBar';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { ShowMenu } from './stage/sheets/ShowMenu';
 import { TitleBar } from './stage/TitleBar';
@@ -86,7 +87,12 @@ import {
   type RenderProgress,
 } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
-import { drawStage, loadStageImages, type PuppetVisual, type StageImages } from '../media/stageDraw';
+import {
+  drawStage,
+  loadStageImages,
+  type PuppetVisual,
+  type StageImages,
+} from '../media/stageDraw';
 
 type Mode =
   | 'loading'
@@ -201,12 +207,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   toastRef.current = toast;
   bannerRef.current = banner;
   const fail = useCallback(
-    (err: unknown) =>
-      bannerRef.current.error(err instanceof Error ? err.message : String(err)),
+    (err: unknown) => bannerRef.current.error(err instanceof Error ? err.message : String(err)),
     [],
   );
   /** Casting a photo can take seconds on a cold model; say so. */
   const [casting, setCasting] = useState(false);
+  /** Bytes of the scissors fetched so far, 0..1, or null for a wait with
+   *  no number on it. */
+  const [castProgress, setCastProgress] = useState<number | null>(null);
   /** Set when the stored recipe would not parse: the bytes are kept and
    *  offered back rather than overwritten. */
   const [damagedRaw, setDamagedRaw] = useState<string | null>(null);
@@ -275,6 +283,16 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const pointerDownRef = useRef(false);
   const [pointerDown, setPointerDown] = useState(false);
   const strokeRef = useRef<number[][]>([]);
+  /** Parallel to strokeRef, one entry per stroke. */
+  const inkRef = useRef<DoodleInk[]>([]);
+  const [ink, setInk] = useState<DoodleInk>({ color: DOODLE_COLORS[0]!.value, width: 1 });
+  const inkNowRef = useRef(ink);
+  inkNowRef.current = ink;
+  const [erasing, setErasing] = useState(false);
+  const erasingRef = useRef(false);
+  erasingRef.current = erasing;
+  /** Re-renders the bar when a stroke lands or is rubbed out. */
+  const [strokeCount, setStrokeCount] = useState(0);
   const snipStrokeRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const redoRef = useRef<RecipeEvent[]>([]);
@@ -308,13 +326,17 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const text = hints[mode];
     const banner = bannerRef.current;
     if (text) {
-      banner.hint(text, {
-        label: 'cancel',
-        run: () => {
-          modeRef.current = 'idle';
-          setMode('idle');
-        },
-      });
+      // Drawing has its own way out, twice over, on the bar below.
+      if (mode === 'doodling') banner.hint(text);
+      else {
+        banner.hint(text, {
+          label: 'cancel',
+          run: () => {
+            modeRef.current = 'idle';
+            setMode('idle');
+          },
+        });
+      }
     } else if (mode === 'idle' && showId === 'show-demo' && !seenDemoHintRef.current) {
       // The demo is a real bit, and saying so is the whole tutorial.
       seenDemoHintRef.current = true;
@@ -447,7 +469,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const staging = stagingRef.current;
     const live =
       staging && staging.puppetId === id
-        ? { ...puppet, home: { x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot } }
+        ? {
+            ...puppet,
+            home: { x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot },
+          }
         : puppet;
     const cx = (puppet.back ? 0.5 : pose.root.x) * W;
     const cy = (puppet.back ? 0.5 : pose.root.y) * H;
@@ -480,9 +505,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const drag = handleDragRef.current;
     const place = (key: string, lx: number, ly: number) => {
       const world =
-        drag && drag.key === key
-          ? { x: drag.x, y: drag.y }
-          : localToWorld(pose.root, live, lx, ly);
+        drag && drag.key === key ? { x: drag.x, y: drag.y } : localToWorld(pose.root, live, lx, ly);
       positions.set(key, { x: world.x * W, y: world.y * H });
       const el = handleElsRef.current.get(key);
       if (el) el.style.transform = `translate(${world.x * W}px, ${world.y * H}px)`;
@@ -622,7 +645,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     // Corpse mode: record blind; earlier passes stay hidden until playback.
     const simProject =
       recording && corpse
-        ? { ...projectRef.current, events: projectRef.current.events.filter((e) => e.kind !== 'PASS') }
+        ? {
+            ...projectRef.current,
+            events: projectRef.current.events.filter((e) => e.kind !== 'PASS'),
+          }
         : projectRef.current;
     const sim = createShowSim(simProject, 0, (id, channel, tt) => {
       const finger = grabRef.current;
@@ -831,7 +857,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           });
         }
         layoutOverlays();
-        if (modeRef.current === 'doodling') drawStrokes(ctx, W, H, strokeRef.current);
+        if (modeRef.current === 'doodling')
+          drawStrokes(ctx, W, H, strokeRef.current, inkRef.current);
         if (modeRef.current === 'snipping' && snipStrokeRef.current) {
           const s = snipStrokeRef.current;
           ctx.strokeStyle = '#58a6ff';
@@ -877,7 +904,12 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     // replaces ignored the spring's lean, so hits disagreed with the drawer
     // on a leaning puppet, and it knew nothing about flip.
     const toLocal = (p: ShowPuppet, x: number, y: number) =>
-      worldToLocal(lastPosesRef.current.get(p.id)?.root ?? restingPuppet(p.home.x, p.home.y), p, x, y);
+      worldToLocal(
+        lastPosesRef.current.get(p.id)?.root ?? restingPuppet(p.home.x, p.home.y),
+        p,
+        x,
+        y,
+      );
 
     /** Hit a puppet and which handle: a warp pin, a snipped-off piece
      *  (accounting for its swing), or the body. */
@@ -1064,7 +1096,20 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const m = modeRef.current;
 
       if (m === 'doodling') {
+        if (erasingRef.current) {
+          const hit = strokeNear(strokeRef.current, x, y);
+          if (hit >= 0) {
+            strokeRef.current.splice(hit, 1);
+            inkRef.current.splice(hit, 1);
+            setStrokeCount(strokeRef.current.length);
+            vibrate(10);
+            dirtyRef.current = true;
+          }
+          return;
+        }
         strokeRef.current.push([x, y]);
+        inkRef.current.push(inkNowRef.current);
+        setStrokeCount(strokeRef.current.length);
         dirtyRef.current = true;
         return;
       }
@@ -1196,6 +1241,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const m = modeRef.current;
 
       if (m === 'doodling') {
+        if (erasingRef.current) return;
         const stroke = strokeRef.current[strokeRef.current.length - 1];
         if (stroke && e.buttons > 0) {
           stroke.push(x, y);
@@ -1444,8 +1490,9 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     // The segmenter's first run downloads 11MB of wasm and a model. Saying
     // nothing for that long reads as a broken app (audit F7).
     setCasting(true);
+    setCastProgress(0);
     try {
-      const cutout = await makeCutout(file);
+      const cutout = await makeCutout(file, setCastProgress);
       const assetId = await saveAsset(cutout.blob, 'png');
       const frame = frameRef.current;
       const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
@@ -1467,13 +1514,16 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         }),
       );
       setSelectedId(id);
+      setSheet(null);
       await reloadImages();
       if (cutout.fallback === 'no-person') toast.show('no person found, kept the whole photo');
-      else if (cutout.fallback === 'no-model') toast.show('cutting out is unavailable, kept the whole photo');
+      else if (cutout.fallback === 'no-model')
+        toast.show('cutting out is unavailable, kept the whole photo');
     } catch {
       banner.error("couldn't read that photo");
     } finally {
       setCasting(false);
+      setCastProgress(null);
     }
   };
 
@@ -1484,6 +1534,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const assetId = await saveAsset(file, 'img');
       const id = newId();
       setSelectedId(id);
+      setSheet(null);
       commit((p) =>
         appendEvent(p, {
           kind: 'CAST',
@@ -1527,16 +1578,37 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       setModeBoth('idle');
       if (sound.extracted) toast.show('took the sound off that video');
     } catch (err) {
-      banner.error(err instanceof NoSoundInFileError ? 'no sound in that file' : "couldn't read that file");
+      banner.error(
+        err instanceof NoSoundInFileError ? 'no sound in that file' : "couldn't read that file",
+      );
     } finally {
       setCasting(false);
     }
   };
 
+  /** strokeRef and inkRef are parallel and must stay that way: a stale ink
+   *  entry would be written into strokeStyle, whose length has to match
+   *  strokes or the recipe will not parse on the next load. */
+  const resetDoodle = () => {
+    strokeRef.current = [];
+    inkRef.current = [];
+    setStrokeCount(0);
+    setErasing(false);
+  };
+
+  const undoStroke = () => {
+    strokeRef.current.pop();
+    inkRef.current.pop();
+    setStrokeCount(strokeRef.current.length);
+    dirtyRef.current = true;
+  };
 
   const finishDoodle = (keep: boolean) => {
     const strokes = strokeRef.current;
-    strokeRef.current = [];
+    const inks = strokes.map(
+      (_, i) => inkRef.current[i] ?? { color: DOODLE_COLORS[0]!.value, width: 1 },
+    );
+    resetDoodle();
     setModeBoth('idle');
     dirtyRef.current = true;
     if (!keep || strokes.length === 0) return;
@@ -1569,7 +1641,17 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         id: newId(),
         at: 0,
         puppetId: id,
-        puppet: { type: 'doodle', strokes: normalized, w, h },
+        puppet: {
+          type: 'doodle',
+          strokes: normalized,
+          // Every line the same bone at the default width is what a v0
+          // doodle looks like, so it is recorded as no styling at all.
+          ...(inks.some((k) => k.color !== DOODLE_COLORS[0]!.value || k.width !== 1)
+            ? { strokeStyle: inks.map((k) => ({ ...k })) }
+            : {}),
+          w,
+          h,
+        },
         x: minX + w / 2,
         y: minY + h / 2,
         scale: 1,
@@ -1676,15 +1758,12 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     toast.undoable(`dropped ${puppetLabel(p, Math.max(0, index))}`, undoRef.current);
   };
 
-
   /** Foley board: play it now, land it in the recipe at the playhead. */
   const foley = (sfx: SfxName) => {
     const dur = projectRef.current.audio?.durationS ?? 0;
     const clock = Math.min(dur, Math.max(0, currentClock()));
     void jamRef.current?.playSfx(renderSfx(sfx));
-    commit((p) =>
-      appendEvent(p, { kind: 'SOUND', id: newId(), at: clock, puppetId: '', sfx }),
-    );
+    commit((p) => appendEvent(p, { kind: 'SOUND', id: newId(), at: clock, puppetId: '', sfx }));
   };
 
   const startRetake = (mode: 'replace' | 'extend') => {
@@ -1806,7 +1885,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const enterMode = (m: Mode) => {
     setSheet(null);
     setSelectedId(null);
-    if (m === 'doodling') strokeRef.current = [];
+    if (m === 'doodling') resetDoodle();
     setModeBoth(m);
     dirtyRef.current = true;
   };
@@ -1859,11 +1938,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     }
   };
 
+  /** The picker kinds that hand off to the system file sheet leave this
+   *  one open behind them, so the cutting-out progress has somewhere to
+   *  live and a cancelled picker leaves you where you were. */
   const castPick = (kind: CastKind) => {
-    setSheet(null);
     if (kind === 'photo') return photoInputRef.current?.click();
     if (kind === 'selfie') return snapInputRef.current?.click();
     if (kind === 'backdrop') return backdropInputRef.current?.click();
+    setSheet(null);
     if (kind === 'doodle') return enterMode('doodling');
     if (kind === 'word') {
       setTextDraft('');
@@ -1945,7 +2027,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
                 </button>
                 <button onClick={() => enterMode('doodling')}>draw one</button>
               </div>
-              {casting && <ProgressRing value={null} label="cutting out" />}
+              {casting && <ProgressRing value={castProgress} label="cutting out" />}
             </div>
           )}
           {mode === 'micLive' && (
@@ -1982,16 +2064,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
               </button>
             </div>
           )}
-          {mode === 'doodling' && (
-            <div className="stagepills">
-              <button className="pill" onClick={() => finishDoodle(false)}>
-                cancel
-              </button>
-              <button className="pill primary" onClick={() => finishDoodle(true)}>
-                keep it
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -2015,31 +2087,45 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         </div>
       )}
 
+      {mode === 'doodling' && (
+        <DoodleBar
+          ink={ink}
+          erasing={erasing}
+          strokeCount={strokeCount}
+          onInk={setInk}
+          onErasing={setErasing}
+          onCancel={() => finishDoodle(false)}
+          onKeep={() => finishDoodle(true)}
+        />
+      )}
+
       {mode !== 'needsAudio' && mode !== 'micLive' && mode !== 'loading' && (
         <>
-          <Timeline
-            durationS={durationS}
-            peaks={peaks}
-            onsets={onsets}
-            disabled={busy}
-            onSeek={seek}
-            fillRef={fillRef}
-            handleRef={handleRef}
-            seekRef={seekRef}
-            timeTextRef={timeTextRef}
-            initialT={t}
-          />
+          {mode !== 'doodling' && (
+            <Timeline
+              durationS={durationS}
+              peaks={peaks}
+              onsets={onsets}
+              disabled={busy}
+              onSeek={seek}
+              fillRef={fillRef}
+              handleRef={handleRef}
+              seekRef={seekRef}
+              timeTextRef={timeTextRef}
+              initialT={t}
+            />
+          )}
           <Dock
             busy={busy}
             canRecord={puppets.length > 0 && !placing && mode !== 'doodling' && !counting}
             canPlay={durationS > 0 && !placing && mode !== 'doodling' && !counting}
-            canUndo={projectSnap.events.length > 0}
-            canRedo={redoCount > 0}
+            canUndo={mode === 'doodling' ? strokeCount > 0 : projectSnap.events.length > 0}
+            canRedo={mode === 'doodling' ? false : redoCount > 0}
             toolsOpen={sheet?.kind === 'cast'}
             onRecord={() => void start(true)}
             onPlay={() => void start(false)}
             onStop={stop}
-            onUndo={undo}
+            onUndo={mode === 'doodling' ? undoStroke : undo}
             onRedo={redo}
             onTools={() => setSheet(sheet?.kind === 'cast' ? null : { kind: 'cast' })}
           />
@@ -2052,7 +2138,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           images={imagesRef.current}
           seed={projectSnap.seed}
           busy={casting}
-          modelProgress={null}
+          modelProgress={castProgress}
           selectedId={selectedId}
           onPick={castPick}
           onSelect={(id) => {
@@ -2207,17 +2293,47 @@ function applyStagingCast(project: Project, staging: StagingDrag | null): Projec
   );
 }
 
+/** Which stroke a fingertip is on, or -1. Rubbing out a whole line beats a
+ *  pixel eraser on a phone: one tap, and the line it takes is obvious. */
+function strokeNear(strokes: number[][], x: number, y: number): number {
+  const R = 0.045;
+  for (let si = strokes.length - 1; si >= 0; si--) {
+    const stroke = strokes[si]!;
+    for (let i = 0; i + 3 < stroke.length; i += 2) {
+      const ax = stroke[i]!;
+      const ay = stroke[i + 1]!;
+      const bx = stroke[i + 2]!;
+      const by = stroke[i + 3]!;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 === 0 ? 0 : Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / len2));
+      if (Math.hypot(x - (ax + t * dx), y - (ay + t * dy)) < R) return si;
+    }
+    // A dot is a stroke of one point, and has to be rubbed out too.
+    if (stroke.length === 2 && Math.hypot(x - stroke[0]!, y - stroke[1]!) < R) return si;
+  }
+  return -1;
+}
+
 function drawStrokes(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   strokes: number[][],
+  inks: DoodleInk[],
 ): void {
+  const base = Math.max(2, W * 0.012);
   ctx.strokeStyle = '#ece5db';
-  ctx.lineWidth = Math.max(2, W * 0.012);
+  ctx.lineWidth = base;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (const stroke of strokes) {
+  for (const [si, stroke] of strokes.entries()) {
+    const ink = inks[si];
+    if (ink) {
+      ctx.strokeStyle = ink.color;
+      ctx.lineWidth = Math.max(1.5, base * ink.width);
+    }
     ctx.beginPath();
     for (let i = 0; i + 1 < stroke.length; i += 2) {
       const x = stroke[i]! * W;

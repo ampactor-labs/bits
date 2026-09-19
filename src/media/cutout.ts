@@ -12,6 +12,52 @@ const CONFIDENCE = 0.5;
 const PAD_PX = 10;
 
 let segmenterPromise: Promise<ImageSegmenter | null> | null = null;
+let warmPromise: Promise<void> | null = null;
+
+/** The scissors are 11.8MB of wasm and model, once, and MediaPipe reports
+ *  no progress while it fetches them. So they are streamed here first,
+ *  into the HTTP cache, where MediaPipe then finds them: the bytes are
+ *  real and the wait has a number on it (audit F7). */
+export type CutoutProgress = (fraction: number | null) => void;
+
+const WARM_FILES = ['vision_wasm_internal.wasm', 'selfie_segmenter.tflite'];
+
+export function warmSegmenter(onProgress: CutoutProgress): Promise<void> {
+  warmPromise ??= (async () => {
+    const base = `${import.meta.env.BASE_URL}mediapipe`;
+    try {
+      const responses = await Promise.all(
+        WARM_FILES.map((f) => fetch(`${base}/${f}`, { cache: 'force-cache' })),
+      );
+      const sizes = responses.map((r) => Number(r.headers.get('content-length') ?? 0));
+      const total = sizes.reduce((a, b) => a + b, 0);
+      // No Content-Length (chunked or compressed): the wait is honest but
+      // unmeasurable, so say so rather than inventing a number.
+      if (!total || responses.some((r) => !r.ok || !r.body)) {
+        onProgress(null);
+        await Promise.all(responses.map((r) => r.arrayBuffer().catch(() => null)));
+        return;
+      }
+      const read = new Array<number>(responses.length).fill(0);
+      await Promise.all(
+        responses.map(async (r, i) => {
+          const reader = r.body!.getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            read[i] = (read[i] ?? 0) + value.length;
+            onProgress(Math.min(1, read.reduce((a, b) => a + b, 0) / total));
+          }
+        }),
+      );
+    } catch {
+      // The warm-up is an optimisation for the wait, never a requirement:
+      // MediaPipe fetches what it needs either way.
+      onProgress(null);
+    }
+  })();
+  return warmPromise;
+}
 
 function getSegmenter(): Promise<ImageSegmenter | null> {
   segmenterPromise ??= (async () => {
@@ -44,7 +90,10 @@ export interface Cutout {
   fallback: CutoutFallback;
 }
 
-export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
+export async function makeCutout(
+  imageBlob: Blob,
+  onProgress: CutoutProgress = () => {},
+): Promise<Cutout> {
   const bitmap = await createImageBitmap(imageBlob);
   const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
   const w = Math.max(1, Math.round(bitmap.width * scale));
@@ -54,6 +103,8 @@ export async function makeCutout(imageBlob: Blob): Promise<Cutout> {
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
 
+  await warmSegmenter(onProgress);
+  onProgress(null);
   const segmenter = await getSegmenter();
   if (!segmenter) return canvasToCutout(canvas, 'no-model');
 

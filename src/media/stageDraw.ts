@@ -372,7 +372,7 @@ function drawContent(
       ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
       break;
     case 'doodle':
-      drawDoodle(ctx, spec.strokes, pw, ph, tS, seed);
+      drawDoodle(ctx, spec.strokes, spec.strokeStyle, pw, ph, tS, seed);
       break;
     case 'text': {
       // Word puppets: bold characters that boil like doodles. A flipped
@@ -404,6 +404,7 @@ function drawContent(
 function drawDoodle(
   ctx: Ctx2D,
   strokes: number[][],
+  styles: { color: string; width: number }[] | undefined,
   pw: number,
   ph: number,
   tS: number,
@@ -411,12 +412,21 @@ function drawDoodle(
 ): void {
   const variant = Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS;
   const amp = BOIL_AMP * Math.max(pw, ph);
+  const base = Math.max(2, pw * 0.045);
   ctx.strokeStyle = DOODLE_COLOR;
-  ctx.lineWidth = Math.max(2, pw * 0.045);
+  ctx.lineWidth = base;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   let pointIndex = 0;
-  for (const stroke of strokes) {
+  for (let si = 0; si < strokes.length; si++) {
+    const stroke = strokes[si]!;
+    // A doodle drawn before colours existed has no styles at all, so it
+    // keeps the one bone line it was drawn with.
+    const style = styles?.[si];
+    if (style) {
+      ctx.strokeStyle = style.color;
+      ctx.lineWidth = Math.max(1.5, base * style.width);
+    }
     ctx.beginPath();
     for (let i = 0; i + 1 < stroke.length; i += 2) {
       const x = (stroke[i]! - 0.5) * pw + boilNoise(seed, variant, pointIndex) * amp;

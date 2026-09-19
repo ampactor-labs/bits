@@ -19,6 +19,7 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -56,6 +57,55 @@ function makeWav(path, seconds = 2, rate = 16000) {
     buf.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000 * env), 44 + i * 2);
   }
   writeFileSync(path, buf);
+  return path;
+}
+
+/** A small opaque PNG, so casting a photo can be driven from a file
+ *  input without a fixture checked into the repo. */
+function makePng(path, size = 64) {
+  const raw = Buffer.alloc(size * (size * 3 + 1));
+  let p = 0;
+  for (let y = 0; y < size; y++) {
+    raw[p++] = 0;
+    for (let x = 0; x < size; x++) {
+      raw[p++] = 40 + ((x * 3) % 200);
+      raw[p++] = 60 + ((y * 3) % 180);
+      raw[p++] = 200 - ((x + y) % 150);
+    }
+  }
+  const crcTable = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc = (b) => {
+    let c = 0xffffffff;
+    for (const byte of b) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const cs = Buffer.alloc(4);
+    cs.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, cs]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  writeFileSync(
+    path,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', deflateSync(raw)),
+      chunk('IEND', Buffer.alloc(0)),
+    ]),
+  );
   return path;
 }
 
@@ -222,7 +272,7 @@ try {
       [0.5, 0.5],
       [0.32, 0.3],
     ]);
-    await tapText('.stagepills .pill', 'keep it');
+    await tapText('.doodle-done button', 'put it on stage');
     await sleep(400);
   };
 
@@ -484,6 +534,92 @@ try {
       check('layering-is-one-event', kinds.join(',') === 'REORDER', kinds.join(',') || 'nothing');
       await closeTools();
       await sleep(200);
+    });
+
+    // A doodle used to be one bone line at one width, with no way to fix a
+    // stroke short of throwing the whole drawing away.
+    await phase('a-doodle-can-be-drawn-in-colour', async () => {
+      await openTools();
+      await tapText('.cast-tile', 'draw one');
+      await sleep(300);
+      const overStage = await page.evaluate(() => {
+        const stage = document.querySelector('.stagebox')?.getBoundingClientRect();
+        const bar = document.querySelector('.doodlebar')?.getBoundingClientRect();
+        if (!stage || !bar) return null;
+        return Math.max(0, Math.min(stage.bottom, bar.bottom) - Math.max(stage.top, bar.top));
+      });
+      check('drawing-tools-never-cover-the-drawing', overStage === 0, `${overStage}px over the stage`);
+      await tapLabel('orange');
+      await tapLabel('thick');
+      await sleep(150);
+      await dragStage([
+        [0.3, 0.32],
+        [0.46, 0.22],
+        [0.62, 0.36],
+        [0.46, 0.5],
+        [0.3, 0.32],
+      ]);
+      // A second line, rubbed out again: the drawing survives, that line does not.
+      await dragStage([
+        [0.34, 0.6],
+        [0.58, 0.62],
+      ]);
+      await sleep(200);
+      // While drawing, the dock's undo takes the last line.
+      const twoLines = await page.evaluate(() => {
+        const b = document.querySelector('[aria-label="undo"]');
+        return b ? !b.disabled : false;
+      });
+      await tapLabel('rub a line out');
+      await sleep(150);
+      await tapStage(0.46, 0.61);
+      await sleep(250);
+      await shot('doodle-tools');
+      await tapText('.doodle-done button', 'put it on stage');
+      await sleep(500);
+      const spec = await page.evaluate(() => {
+        const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+        return casts[casts.length - 1]?.puppet ?? null;
+      });
+      check('a-doodle-can-be-drawn-in-colour', !!twoLines && !!spec?.strokeStyle, JSON.stringify(spec?.strokeStyle ?? null).slice(0, 60));
+      check(
+        'rubbing-out-takes-one-line-not-the-drawing',
+        spec?.strokes?.length === 1,
+        `${spec?.strokes?.length ?? 0} line(s) kept`,
+      );
+    });
+
+    // Every cast used to arrive at dead centre, so a second photo hid the
+    // first and looked like nothing had happened (audit F14).
+    await phase('two-photos-do-not-stack', async () => {
+      const png = makePng(join(SHOTS, 'cast-fixture.png'));
+      const input = await page.$('input[type=file][accept="image/*"]:not([capture])');
+      if (!input) throw new Error('no photo input');
+      const homes = [];
+      for (let i = 0; i < 2; i++) {
+        await openTools();
+        await input.uploadFile(png);
+        await page.waitForFunction(
+          (want) =>
+            window.__bits
+              .project()
+              .events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'cutout' && !e.back)
+              .length >= want,
+          { timeout: 40000 },
+          i + 1,
+        );
+        const casts = await page.evaluate(() =>
+          window.__bits
+            .project()
+            .events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'cutout' && !e.back)
+            .map((e) => ({ x: e.x, y: e.y })),
+        );
+        homes.push(casts[casts.length - 1]);
+      }
+      await shot('two-photos');
+      const apart = Math.hypot(homes[0].x - homes[1].x, homes[0].y - homes[1].y);
+      check('two-photos-do-not-stack', apart > 0.1, `${apart.toFixed(3)} apart`);
+      await closeTools();
     });
 
     await phase('the-mode-menu-is-gone', async () => {

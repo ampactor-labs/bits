@@ -188,7 +188,9 @@ body {
 
 .stagebox.mode-doodling,
 .stagebox.mode-snipping,
-.stagebox.mode-mouthing {
+.stagebox.mode-mouthing,
+.stagebox.mode-eyeing,
+.stagebox.mode-pinning {
   border-color: var(--accent-2);
 }
 
@@ -745,4 +747,99 @@ input[type='range'] {
   color: var(--muted);
   font-size: var(--fs-hint);
   padding: 8px 2px;
+}
+
+/* Drawing tools, in the timeline's slot. Below the stage, never over it:
+ * a palette that covers the thing being drawn is worse than none. */
+.doodlebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.doodle-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.doodle-sep {
+  width: 1px;
+  height: 24px;
+  margin: 0 2px;
+  background: var(--line);
+  flex-shrink: 0;
+}
+
+.swatch {
+  width: var(--hit);
+  height: var(--hit);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.swatch::before {
+  content: '';
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--swatch);
+  /* Black ink needs an edge, or its swatch is a hole in the panel. */
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 25%);
+}
+
+.swatch.on::before {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 25%),
+    0 0 0 3px var(--panel),
+    0 0 0 5px var(--accent-2);
+}
+
+.nib {
+  width: var(--hit);
+  height: var(--hit);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.nib-dot {
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.nib.on {
+  background: var(--raised-hi);
+  border-radius: 12px;
+}
+
+.doodle-tools .iconbtn.on {
+  background: var(--raised-hi);
+  border-radius: 12px;
+}
+
+.doodle-done {
+  display: flex;
+  gap: 8px;
+}
+
+.doodle-done button {
+  flex: 1;
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
