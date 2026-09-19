@@ -64,7 +64,7 @@ export function TitleBar({ title, onRename, onBack, onMenu }: TitleBarProps) {
           {title || 'untitled bit'}
         </button>
       )}
-      <IconButton icon="more" label="more" onClick={onMenu} />
+      <IconButton icon="more" label="this bit" onClick={onMenu} />
     </div>
   );
 }

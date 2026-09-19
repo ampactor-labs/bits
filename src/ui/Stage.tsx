@@ -1,8 +1,11 @@
 // The stage, whole instrument: record the bit, cast puppets (photo, snap,
 // doodle, backdrop), snip them apart, pin mouths and googly eyes, then
 // perform in passes from any point on the playhead. Grab a body or a
-// snipped-off piece; hold the talker and its mouth speaks. Two fingers
-// resize and rotate while idle; long-press drops from the cast.
+// snipped-off piece; hold the talker and its mouth speaks.
+//
+// While idle a tap selects and a drag moves. A selected puppet wears its
+// own tools (the halo) and its features become handles you can take hold
+// of. Two fingers resize and rotate.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -13,7 +16,10 @@ import {
   type CastEvent,
   type PassEvent,
   type Project,
+  type PuppetSpec,
   type RecipeEvent,
+  type RemoveTarget,
+  type SpringPreset,
 } from '../engine/recipe';
 import { detectOnsets } from '../engine/onsets';
 import { IMPACT_SQUASH, impactSfx, renderSfx, type SfxName } from '../engine/sfx';
@@ -22,7 +28,12 @@ import { pointInPoly } from '../engine/pieces';
 import {
   castOf,
   createShowSim,
+  eyesOf,
+  localToWorld,
+  mouthOf,
+  pinsOf,
   sameChannel,
+  snipsOf,
   worldToLocal,
   type Channel,
   type PuppetPose,
@@ -57,9 +68,13 @@ import {
   soundExtension,
 } from '../media/audioImport';
 import { peaksFromMono } from '../engine/peaks';
-import { IconButton } from '../kit/IconButton';
-import { CastChip, puppetLabel } from './stage/CastChip';
+import { puppetLabel } from './stage/CastChip';
 import { Dock } from './stage/Dock';
+import { Halo, type HaloAction } from './stage/Halo';
+import { Handles, type HandleSpec } from './stage/Handles';
+import { CastSheet, type CastKind } from './stage/sheets/CastSheet';
+import { MoreSheet } from './stage/sheets/MoreSheet';
+import { ShowMenu } from './stage/sheets/ShowMenu';
 import { TitleBar } from './stage/TitleBar';
 import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
@@ -84,8 +99,7 @@ type Mode =
   | 'snipping'
   | 'mouthing'
   | 'eyeing'
-  | 'pinning'
-  | 'bodyAssign';
+  | 'pinning';
 
 interface Grab {
   puppetId: string;
@@ -106,12 +120,42 @@ interface StagingDrag {
   y: number;
   scale: number;
   rot: number;
+  /** Finger-to-home offset at the moment of the grab. Without it the
+   *  puppet snaps its centre to the fingertip on the first move, which was
+   *  invisible only because the drag used to start on contact. */
+  dx: number;
+  dy: number;
   pinch: { baseDist: number; baseAngle: number; baseScale: number; baseRot: number } | null;
 }
 
-const newId = () => crypto.randomUUID().slice(0, 8);
-const LONG_PRESS_MS = 650;
+const newId = () => crypto.randomUUID().slice(0, 12);
+const LONG_PRESS_MS = 500;
 const HOLD_SAMPLE_S = 0.25;
+/** A tap is a release that never travelled this far. In CSS pixels, not a
+ *  fraction of the stage: the old normalised threshold gave nearly twice
+ *  the slop vertically as horizontally on a 9:16 stage. */
+const DRAG_PX = 6;
+/** How near a finger has to land to take hold of a feature. */
+const HANDLE_HIT_PX = 22;
+
+type HandleKey = 'mouth' | 'eyes' | `pin:${number}`;
+
+interface HandleDrag {
+  key: HandleKey;
+  puppet: ShowPuppet;
+  /** Live position in normalised stage coords. */
+  x: number;
+  y: number;
+  /** True while the finger is far enough outside the puppet to remove it. */
+  outside: boolean;
+}
+
+/** How far outside its own box a feature has to be dragged to come off.
+ *  A fifth of the box either way: far enough that nudging a mouth to the
+ *  chin never throws it away, near enough to find without aiming. */
+const REMOVE_BAND = 0.2;
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 export function Stage({ showId, onBack }: { showId: string; onBack: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -125,8 +169,15 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   // re-rendering every frame, fails in CI rather than on a phone.
   useEffect(() => {
     probe.project = () => projectRef.current;
+    probe.stage = () => ({
+      selectedId: selectedIdRef.current,
+      poses: Object.fromEntries(
+        [...lastPosesRef.current].map(([id, pose]) => [id, { x: pose.root.x, y: pose.root.y }]),
+      ),
+    });
     return () => {
       probe.project = null;
+      probe.stage = null;
     };
   }, []);
   useEffect(() => countCommit());
@@ -146,6 +197,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   /** Errors are a banner over a stage that stays mounted. Replacing the
    *  whole screen with one line of text left no way back (audit F4). */
   const bannerRef = useRef(banner);
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   bannerRef.current = banner;
   const fail = useCallback(
     (err: unknown) =>
@@ -160,7 +213,12 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   /** In-app sheets replace window.prompt and window.confirm: a system
    *  dialog breaks the instrument feel and looks foreign in a PWA. */
   const [sheet, setSheet] = useState<
-    null | { kind: 'text' } | { kind: 'retake'; mode: 'replace' | 'extend' }
+    | null
+    | { kind: 'text' }
+    | { kind: 'retake'; mode: 'replace' | 'extend' }
+    | { kind: 'cast' }
+    | { kind: 'more' }
+    | { kind: 'show' }
   >(null);
   const [textDraft, setTextDraft] = useState('');
   /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
@@ -172,7 +230,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const [onsets, setOnsets] = useState<number[]>([]);
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   const [redoCount, setRedoCount] = useState(0);
-  const [kitOpen, setKitOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [counting, setCounting] = useState(false);
   const [corpse, setCorpse] = useState(false);
@@ -198,8 +255,25 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const poseDriverRef = useRef<PoseDriver | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement>(null);
   const [bodyActive, setBodyActive] = useState(false);
-  const [bodyHint, setBodyHint] = useState('');
+  /** bodyMapRef is a ref the frame loop reads; this makes the sheet
+   *  re-render when a hand is assigned. */
+  const [handsVersion, setHandsVersion] = useState(0);
   const stagingRef = useRef<StagingDrag | null>(null);
+  const handleDragRef = useRef<HandleDrag | null>(null);
+  const [removingKey, setRemovingKey] = useState<string | null>(null);
+  /** Handle positions in frame pixels, refreshed every frame so the
+   *  gesture layer can hit-test them itself. The handles are
+   *  pointer-events: none, or the first finger of a pinch would land on one
+   *  instead of on the stage. */
+  const handlePxRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const handleElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const haloBarRef = useRef<HTMLDivElement>(null);
+  const selOutlineRef = useRef<HTMLDivElement>(null);
+  const handleLayerRef = useRef<HTMLDivElement>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  selectedIdRef.current = selectedId;
+  const pointerDownRef = useRef(false);
+  const [pointerDown, setPointerDown] = useState(false);
   const strokeRef = useRef<number[][]>([]);
   const snipStrokeRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -225,12 +299,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
    *  it (audit F25). */
   useEffect(() => {
     const hints: Partial<Record<Mode, string>> = {
-      snipping: 'draw a line across a puppet',
+      snipping: 'drag a line across it to cut',
       mouthing: 'tap where the mouth goes',
       eyeing: 'tap where the eyes go',
-      pinning: 'tap an uncut photo puppet to pin it',
+      pinning: 'tap where it should bend',
+      doodling: 'draw with a finger',
     };
-    const text = mode === 'bodyAssign' ? bodyHint : hints[mode];
+    const text = hints[mode];
     const banner = bannerRef.current;
     if (text) {
       banner.hint(text, {
@@ -243,11 +318,11 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     } else if (mode === 'idle' && showId === 'show-demo' && !seenDemoHintRef.current) {
       // The demo is a real bit, and saying so is the whole tutorial.
       seenDemoHintRef.current = true;
-      banner.hint('watch it once. then open the tools and wreck it.');
+      banner.hint('watch it once. then tap a puppet and wreck it.');
     } else if (banner.current?.kind === 'hint') {
       banner.clear();
     }
-  }, [mode, bodyHint, showId]);
+  }, [mode, showId]);
 
   const vibrate = (ms: number) => navigator.vibrate?.(ms);
   const durationS = projectSnap.audio?.durationS ?? 0;
@@ -345,6 +420,94 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     };
   }, [showId, reloadImages, analyzeAudio, fail]);
 
+  /** Where a puppet's features sit right now, in frame pixels. */
+  const layoutOverlays = useCallback(() => {
+    const frame = frameRef.current;
+    const positions = handlePxRef.current;
+    positions.clear();
+    const id = selectedIdRef.current;
+    const outline = selOutlineRef.current;
+    const bar = haloBarRef.current;
+    if (!frame || !id) {
+      if (outline) outline.style.display = 'none';
+      if (bar) bar.style.display = 'none';
+      return;
+    }
+    const W = frame.clientWidth;
+    const H = frame.clientHeight;
+    const puppet = castOf(projectRef.current).find((p) => p.id === id);
+    const pose = lastPosesRef.current.get(id);
+    const visual = visualsRef.current.get(id);
+    if (!puppet || !pose) {
+      if (outline) outline.style.display = 'none';
+      if (bar) bar.style.display = 'none';
+      return;
+    }
+
+    const staging = stagingRef.current;
+    const live =
+      staging && staging.puppetId === id
+        ? { ...puppet, home: { x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot } }
+        : puppet;
+    const cx = (puppet.back ? 0.5 : pose.root.x) * W;
+    const cy = (puppet.back ? 0.5 : pose.root.y) * H;
+    const bw = puppet.back ? W : live.spec.w * live.home.scale * W;
+    const bh = puppet.back ? H : live.spec.h * live.home.scale * H;
+
+    if (outline) {
+      outline.style.display = '';
+      outline.style.left = `${cx - bw / 2}px`;
+      outline.style.top = `${cy - bh / 2}px`;
+      outline.style.width = `${bw}px`;
+      outline.style.height = `${bh}px`;
+    }
+
+    if (bar) {
+      bar.style.display = '';
+      const barH = bar.offsetHeight || 56;
+      const barW = bar.offsetWidth || 300;
+      const above = cy - bh / 2 - barH - 8;
+      const below = cy + bh / 2 + 8;
+      // Above the puppet, below it when there is no room, docked to the
+      // bottom edge when there is room for neither.
+      const top = above >= 48 ? above : below + barH <= H ? below : H - barH - 8;
+      bar.style.top = `${Math.max(48, Math.min(H - barH - 8, top))}px`;
+      bar.style.left = `${Math.max(8, Math.min(W - barW - 8, cx - barW / 2))}px`;
+    }
+
+    // Feature handles ride the puppet, so they track a drag frame by frame.
+    if (!visual || puppet.back) return;
+    const drag = handleDragRef.current;
+    const place = (key: string, lx: number, ly: number) => {
+      const world =
+        drag && drag.key === key
+          ? { x: drag.x, y: drag.y }
+          : localToWorld(pose.root, live, lx, ly);
+      positions.set(key, { x: world.x * W, y: world.y * H });
+      const el = handleElsRef.current.get(key);
+      if (el) el.style.transform = `translate(${world.x * W}px, ${world.y * H}px)`;
+    };
+    if (visual.mouth) place('mouth', visual.mouth.mx, visual.mouth.my);
+    if (visual.eyes) place('eyes', visual.eyes.ex, visual.eyes.ey);
+    visual.pins.forEach((pin, i) => {
+      if (!pin) return;
+      const state = pose.pins[i];
+      const key = `pin:${i}`;
+      if (drag && drag.key === key) {
+        place(key, pin.px, pin.py);
+      } else if (state) {
+        positions.set(key, { x: state.x * W, y: state.y * H });
+        const el = handleElsRef.current.get(key);
+        if (el) el.style.transform = `translate(${state.x * W}px, ${state.y * H}px)`;
+      }
+    });
+  }, []);
+
+  const registerHandle = useCallback((key: string, el: HTMLDivElement | null) => {
+    if (el) handleElsRef.current.set(key, el);
+    else handleElsRef.current.delete(key);
+  }, []);
+
   /** Write the playhead straight to the DOM. No React commit, no re-render
    *  of the stage, at sixty frames a second. */
   const paintClock = useCallback((clock: number) => {
@@ -429,6 +592,21 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const dur = projectRef.current.audio?.durationS ?? 0;
     if (dur <= 0) return;
     setRendered(null);
+
+    // A puppet with a hand assigned brings the camera up for the take.
+    const hands = bodyMapRef.current;
+    if (recording && (hands.right || hands.left) && !poseDriverRef.current) {
+      const video = pipVideoRef.current;
+      if (video) {
+        try {
+          poseDriverRef.current = await PoseDriver.create(video);
+          setBodyActive(true);
+        } catch (err) {
+          fail(err);
+          return;
+        }
+      }
+    }
     let from = playheadRef.current;
     if (from >= dur - 0.05) from = 0;
     playheadRef.current = from;
@@ -582,6 +760,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             trailStrength(wiresRef.current, voiceRef.current, onsets, clock),
           );
         }
+        layoutOverlays();
         if (now >= dur) stop();
         return;
       }
@@ -651,6 +830,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             ctx.stroke();
           });
         }
+        layoutOverlays();
         if (modeRef.current === 'doodling') drawStrokes(ctx, W, H, strokeRef.current);
         if (modeRef.current === 'snipping' && snipStrokeRef.current) {
           const s = snipStrokeRef.current;
@@ -667,13 +847,21 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [stop, currentClock, onsets, paintClock]);
+  }, [stop, currentClock, onsets, paintClock, layoutOverlays]);
 
   // Pointer handling.
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
-    const pointers = new Map<number, { x: number; y: number }>();
+    // Travel is tracked in client pixels: the normalised measure the tap
+    // threshold used to share gave nearly twice the slop vertically as
+    // horizontally on a 9:16 stage.
+    const pointers = new Map<
+      number,
+      { x: number; y: number; cx: number; cy: number; movedPx: number }
+    >();
+    /** Set when a press lands on bare stage, so the release can deselect. */
+    let downOnNothing = false;
 
     // Soft bounds well past the frame: puppets enter and exit through the
     // wings, and a drag that wanders offstage still comes back.
@@ -735,6 +923,37 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       return null;
     };
 
+    /** Handles are pointer-events: none so a pinch's first finger can
+     *  never land on one instead of on the stage. The gesture layer
+     *  hit-tests them itself against the frame pixels the frame loop
+     *  wrote. */
+    const handleAt = (e: PointerEvent): HandleKey | null => {
+      if (!selectedIdRef.current) return null;
+      const r = frame.getBoundingClientRect();
+      const px = e.clientX - r.left;
+      const py = e.clientY - r.top;
+      let best: HandleKey | null = null;
+      let bestD = HANDLE_HIT_PX;
+      for (const [key, pos] of handlePxRef.current) {
+        const d = Math.hypot(px - pos.x, py - pos.y);
+        if (d < bestD) {
+          bestD = d;
+          best = key as HandleKey;
+        }
+      }
+      return best;
+    };
+
+    /** The puppet a placing tool acts on. With something selected the tool
+     *  belongs to it, so a tap that misses the outline by a few pixels
+     *  still lands rather than silently doing nothing. */
+    const toolTarget = (x: number, y: number): ShowPuppet | null => {
+      const id = selectedIdRef.current;
+      const cast = castOf(projectRef.current);
+      if (id) return cast.find((p) => p.id === id) ?? null;
+      return hitTest(x, y)?.puppet ?? null;
+    };
+
     const clearLongPress = () => {
       if (longPressRef.current) {
         clearTimeout(longPressRef.current);
@@ -743,27 +962,105 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     };
 
     const placeFeature = (kind: 'MOUTH' | 'EYES', x: number, y: number) => {
-      const hit = hitTest(x, y);
-      if (!hit) return;
-      const local = toLocal(hit.puppet, x, y);
-      const lx = Math.min(1, Math.max(0, local.x));
-      const ly = Math.min(1, Math.max(0, local.y));
+      const puppet = toolTarget(x, y);
+      if (!puppet) return;
+      const local = toLocal(puppet, x, y);
+      const lx = clamp01(local.x);
+      const ly = clamp01(local.y);
       commit((p) =>
         appendEvent(
           p,
           kind === 'MOUTH'
-            ? { kind, id: newId(), at: 0, puppetId: hit.puppet.id, mx: lx, my: ly, size: 0.24 }
-            : { kind, id: newId(), at: 0, puppetId: hit.puppet.id, ex: lx, ey: ly, size: 0.3 },
+            ? { kind, id: newId(), at: 0, puppetId: puppet.id, mx: lx, my: ly, size: 0.24 }
+            : { kind, id: newId(), at: 0, puppetId: puppet.id, ex: lx, ey: ly, size: 0.3 },
         ),
       );
+      setSelectedId(puppet.id);
       vibrate(15);
       setModeBoth('idle');
     };
 
+    const HANDLE_NAMES: Record<'mouth' | 'eyes' | 'pin', string> = {
+      mouth: 'mouth',
+      eyes: 'eyes',
+      pin: 'bend',
+    };
+
+    /** A released handle either re-places its feature or, dragged clear of
+     *  the puppet, takes it off. Removal is a tombstone: the slot stays, so
+     *  the passes driving other pins keep driving the pins they named. */
+    const commitHandle = (drag: HandleDrag) => {
+      const puppet = drag.puppet;
+      const kind = drag.key.startsWith('pin:') ? 'pin' : (drag.key as 'mouth' | 'eyes');
+      const slot = kind === 'pin' ? Number(drag.key.slice(4)) : -1;
+      if (drag.outside) {
+        const target: RemoveTarget =
+          kind === 'mouth' ? { mouth: true } : kind === 'eyes' ? { eyes: true } : { pin: slot };
+        commit((p) =>
+          appendEvent(p, {
+            kind: 'REMOVE',
+            id: newId(),
+            at: 0,
+            puppetId: puppet.id,
+            target,
+          }),
+        );
+        toastRef.current.undoable(`took the ${HANDLE_NAMES[kind]} off`, undoRef.current);
+        vibrate(20);
+        return;
+      }
+      const local = toLocal(puppet, drag.x, drag.y);
+      const lx = clamp01(local.x);
+      const ly = clamp01(local.y);
+      commit((p) => {
+        if (kind === 'mouth') {
+          const prev = mouthOf(p, puppet.id);
+          return appendEvent(p, {
+            kind: 'MOUTH',
+            id: newId(),
+            at: 0,
+            puppetId: puppet.id,
+            mx: lx,
+            my: ly,
+            size: prev?.size ?? 0.24,
+          });
+        }
+        if (kind === 'eyes') {
+          const prev = eyesOf(p, puppet.id);
+          return appendEvent(p, {
+            kind: 'EYES',
+            id: newId(),
+            at: 0,
+            puppetId: puppet.id,
+            ex: lx,
+            ey: ly,
+            size: prev?.size ?? 0.3,
+          });
+        }
+        return appendEvent(p, {
+          kind: 'PIN',
+          id: newId(),
+          at: 0,
+          puppetId: puppet.id,
+          px: lx,
+          py: ly,
+          index: slot,
+        });
+      });
+      vibrate(10);
+    };
+
     const down = (e: PointerEvent) => {
+      // The gesture layer owns the canvas and nothing else. Every overlay
+      // inside the frame — the halo, the banner, the title strip, the
+      // cancel pills — sits on top of it, and a press on one used to run
+      // this handler too: the release deselected the puppet, React pulled
+      // the halo out from under the finger, and the button never saw its
+      // own click.
+      if (e.target !== frame && e.target !== canvasRef.current) return;
       frame.setPointerCapture(e.pointerId);
       const { x, y } = norm(e);
-      pointers.set(e.pointerId, { x, y });
+      pointers.set(e.pointerId, { x, y, cx: e.clientX, cy: e.clientY, movedPx: 0 });
       const m = modeRef.current;
 
       if (m === 'doodling') {
@@ -785,43 +1082,29 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         return;
       }
       if (m === 'pinning') {
-        const hit = hitTest(x, y);
-        if (hit) {
-          const visual = visualsRef.current.get(hit.puppet.id);
+        const puppet = toolTarget(x, y);
+        if (puppet) {
           const pinnable =
-            hit.puppet.spec.type === 'cutout' && (visual?.pieces.children.length ?? 0) === 0;
+            puppet.spec.type === 'cutout' &&
+            !snipsOf(projectRef.current, puppet.id).some((snip) => snip !== null);
           if (pinnable) {
-            const local = toLocal(hit.puppet, x, y);
+            const local = toLocal(puppet, x, y);
             commit((p) =>
               appendEvent(p, {
                 kind: 'PIN',
                 id: newId(),
                 at: 0,
-                puppetId: hit.puppet.id,
-                px: Math.min(1, Math.max(0, local.x)),
-                py: Math.min(1, Math.max(0, local.y)),
+                puppetId: puppet.id,
+                px: clamp01(local.x),
+                py: clamp01(local.y),
               }),
             );
+            setSelectedId(puppet.id);
             vibrate(15);
           } else {
             vibrate(40);
           }
           setModeBoth('idle');
-        }
-        return;
-      }
-      if (m === 'bodyAssign') {
-        const hit = hitTest(x, y);
-        if (hit) {
-          const map = bodyMapRef.current;
-          if (!map.right) {
-            map.right = { puppetId: hit.puppet.id, channel: hit.channel };
-            setBodyHint('tap another for your LEFT hand, or start');
-          } else if (!map.left) {
-            map.left = { puppetId: hit.puppet.id, channel: hit.channel };
-            setBodyHint('both hands assigned; start when ready');
-          }
-          vibrate(15);
         }
         return;
       }
@@ -852,30 +1135,53 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           clearLongPress();
           return;
         }
-        const hit = hitTest(x, y);
-        if (hit) {
-          stagingRef.current = {
-            puppetId: hit.puppet.id,
-            x: hit.puppet.home.x,
-            y: hit.puppet.home.y,
-            scale: hit.puppet.home.scale,
-            rot: hit.puppet.home.rot,
-            pinch: null,
-          };
-          dirtyRef.current = true;
-          clearLongPress();
-          // A hesitation used to delete the puppet (audit F5). Now holding
-          // selects it and says where its tools are. It must not open the
-          // panel itself: the panel would appear under the held finger and
-          // the release would activate whatever button landed there.
-          longPressRef.current = setTimeout(() => {
-            stagingRef.current = null;
-            setSelectedId(hit.puppet.id);
-            bannerRef.current.hint('picked it up. open the tools to layer, wire or drop it.');
-            vibrate(10);
+        // The halo goes non-interactive while a finger is down, so a
+        // pinch's second finger can never fire one of its buttons.
+        pointerDownRef.current = true;
+        setPointerDown(true);
+
+        // A feature under the finger wins over the puppet carrying it.
+        const key = handleAt(e);
+        if (key && !handleDragRef.current) {
+          const puppet = castOf(projectRef.current).find((p) => p.id === selectedIdRef.current);
+          if (puppet) {
+            handleDragRef.current = { key, puppet, x, y, outside: false };
+            clearLongPress();
             dirtyRef.current = true;
-          }, LONG_PRESS_MS);
+            return;
+          }
         }
+
+        const hit = hitTest(x, y);
+        if (!hit) {
+          // A press on bare stage puts the tools away on release.
+          downOnNothing = pointers.size === 1;
+          return;
+        }
+        downOnNothing = false;
+        stagingRef.current = {
+          puppetId: hit.puppet.id,
+          x: hit.puppet.home.x,
+          y: hit.puppet.home.y,
+          scale: hit.puppet.home.scale,
+          rot: hit.puppet.home.rot,
+          // Grab offset, so the puppet travels with the finger instead of
+          // jumping its centre under it on the first move.
+          dx: hit.puppet.home.x - x,
+          dy: hit.puppet.home.y - y,
+          pinch: null,
+        };
+        dirtyRef.current = true;
+        clearLongPress();
+        // A hesitation used to delete the puppet (audit F5). Now it is a
+        // tap with a buzz: it selects, and the finger keeps the puppet, so
+        // the same press can go on to drag it. It opens no panel, which
+        // would appear under the held finger and be fired by the release.
+        longPressRef.current = setTimeout(() => {
+          setSelectedId(hit.puppet.id);
+          vibrate(10);
+          dirtyRef.current = true;
+        }, LONG_PRESS_MS);
       }
     };
 
@@ -883,9 +1189,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const pt = pointers.get(e.pointerId);
       if (!pt) return;
       const { x, y } = norm(e);
-      const movedFar = Math.hypot(x - pt.x, y - pt.y) > 0.015;
       pt.x = x;
       pt.y = y;
+      pt.movedPx = Math.max(pt.movedPx, Math.hypot(e.clientX - pt.cx, e.clientY - pt.cy));
+      const movedFar = pt.movedPx > DRAG_PX;
       const m = modeRef.current;
 
       if (m === 'doodling') {
@@ -913,6 +1220,27 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         grab.y = y;
         return;
       }
+      if (m === 'idle' && handleDragRef.current) {
+        const drag = handleDragRef.current;
+        drag.x = x;
+        drag.y = y;
+        const local = toLocal(drag.puppet, x, y);
+        const outside =
+          local.x < -REMOVE_BAND ||
+          local.x > 1 + REMOVE_BAND ||
+          local.y < -REMOVE_BAND ||
+          local.y > 1 + REMOVE_BAND;
+        if (outside !== drag.outside) {
+          drag.outside = outside;
+          setRemovingKey(outside ? drag.key : null);
+          const what = drag.key.startsWith('pin:') ? 'bend' : drag.key;
+          if (outside) bannerRef.current.hint(`let go to take the ${what} off`);
+          else bannerRef.current.clear();
+          vibrate(10);
+        }
+        dirtyRef.current = true;
+        return;
+      }
       if (m === 'idle' && stagingRef.current) {
         if (movedFar) clearLongPress();
         const staging = stagingRef.current;
@@ -925,17 +1253,23 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             Math.max(0.2, staging.pinch.baseScale * (dist / staging.pinch.baseDist)),
           );
           staging.rot = staging.pinch.baseRot + (angle - staging.pinch.baseAngle);
-        } else if (pointers.size === 1) {
-          staging.x = x;
-          staging.y = y;
+        } else if (pointers.size === 1 && movedFar) {
+          staging.x = x + staging.dx;
+          staging.y = y + staging.dy;
         }
         dirtyRef.current = true;
       }
     };
 
     const up = (e: PointerEvent) => {
+      const pt = pointers.get(e.pointerId);
+      const tapped = !!pt && pt.movedPx < DRAG_PX;
       pointers.delete(e.pointerId);
       clearLongPress();
+      if (pointers.size === 0) {
+        pointerDownRef.current = false;
+        setPointerDown(false);
+      }
       const m = modeRef.current;
 
       if (m === 'snipping' && snipStrokeRef.current && pointers.size === 0) {
@@ -944,22 +1278,23 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         const midX = (s.x0 + s.x1) / 2;
         const midY = (s.y0 + s.y1) / 2;
         const lineLen = Math.hypot(s.x1 - s.x0, s.y1 - s.y0);
-        const hit = hitTest(midX, midY);
-        if (hit && lineLen > 0.03) {
-          const a = toLocal(hit.puppet, s.x0, s.y0);
-          const b = toLocal(hit.puppet, s.x1, s.y1);
+        const puppet = toolTarget(midX, midY);
+        if (puppet && lineLen > 0.03) {
+          const a = toLocal(puppet, s.x0, s.y0);
+          const b = toLocal(puppet, s.x1, s.y1);
           commit((p) =>
             appendEvent(p, {
               kind: 'SNIP',
               id: newId(),
               at: 0,
-              puppetId: hit.puppet.id,
+              puppetId: puppet.id,
               x0: a.x,
               y0: a.y,
               x1: b.x,
               y1: b.y,
             }),
           );
+          setSelectedId(puppet.id);
           vibrate(20);
         }
         setModeBoth('idle');
@@ -970,12 +1305,30 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         commitGrabRef.current();
         return;
       }
+      if (m === 'idle' && handleDragRef.current && pointers.size === 0) {
+        const drag = handleDragRef.current;
+        handleDragRef.current = null;
+        setRemovingKey(null);
+        if (drag.outside) bannerRef.current.clear();
+        dirtyRef.current = true;
+        // A tap on a handle is not a re-placement; it would append an
+        // event identical to the one before it for undo to step through.
+        if (!tapped) commitHandle(drag);
+        return;
+      }
+
       if (m === 'idle' && stagingRef.current && pointers.size === 0) {
         const staging = stagingRef.current;
         stagingRef.current = null;
         const existing = castOf(projectRef.current).find((p) => p.id === staging.puppetId);
-        // A tap that moved nothing used to append a CAST identical to the
-        // one before it, so undo had a no-op to step through first.
+        if (tapped) {
+          // Tap selects. It used to move the puppet to the fingertip and
+          // record it, which made choosing a puppet a destructive act.
+          if (existing) setSelectedId(existing.id);
+          dirtyRef.current = true;
+          return;
+        }
+        // A drag that landed back where it started records nothing.
         const moved =
           !!existing &&
           (Math.abs(existing.home.x - staging.x) > 1e-4 ||
@@ -993,9 +1346,18 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             y: staging.y,
             scale: staging.scale,
             rot: staging.rot,
+            ...(existing.back ? { back: true as const } : {}),
+            ...(existing.flip ? { flip: true as const } : {}),
           };
           commit((p) => appendEvent(p, recast));
         }
+        dirtyRef.current = true;
+        return;
+      }
+
+      if (m === 'idle' && tapped && downOnNothing && pointers.size === 0) {
+        downOnNothing = false;
+        setSelectedId(null);
         dirtyRef.current = true;
       }
     };
@@ -1054,6 +1416,28 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const backdropInputRef = useRef<HTMLInputElement>(null);
   const soundFileInputRef = useRef<HTMLInputElement>(null);
 
+  /** Where a new cast lands. Everything used to arrive at dead centre, so
+   *  a second photo hid the first and looked like nothing had happened. */
+  const freeSpot = (): { x: number; y: number } => {
+    const taken = castOf(projectRef.current).filter((p) => !p.back);
+    const spots: [number, number][] = [
+      [0.5, 0.55],
+      [0.28, 0.5],
+      [0.72, 0.5],
+      [0.38, 0.7],
+      [0.62, 0.7],
+      [0.5, 0.34],
+      [0.22, 0.66],
+      [0.78, 0.66],
+    ];
+    for (const [x, y] of spots) {
+      if (!taken.some((p) => Math.hypot(p.home.x - x, p.home.y - y) < 0.12)) return { x, y };
+    }
+    // Every obvious spot is full. Fan out from the centre, deterministically.
+    const n = taken.length;
+    return { x: 0.5 + 0.3 * Math.sin(n * 2.4), y: 0.52 + 0.18 * Math.cos(n * 2.4) };
+  };
+
   const castPhoto = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
@@ -1067,19 +1451,22 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
       const w = 0.38;
       const h = w * stageRatio * (cutout.height / cutout.width);
+      const id = newId();
+      const spot = freeSpot();
       commit((p) =>
         appendEvent(p, {
           kind: 'CAST',
           id: newId(),
           at: 0,
-          puppetId: newId(),
+          puppetId: id,
           puppet: { type: 'cutout', assetId, w, h },
-          x: 0.5,
-          y: 0.55,
+          x: spot.x,
+          y: spot.y,
           scale: 1,
           rot: 0,
         }),
       );
+      setSelectedId(id);
       await reloadImages();
       if (cutout.fallback === 'no-person') toast.show('no person found, kept the whole photo');
       else if (cutout.fallback === 'no-model') toast.show('cutting out is unavailable, kept the whole photo');
@@ -1095,12 +1482,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     if (!file) return;
     try {
       const assetId = await saveAsset(file, 'img');
+      const id = newId();
+      setSelectedId(id);
       commit((p) =>
         appendEvent(p, {
           kind: 'CAST',
           id: newId(),
           at: 0,
-          puppetId: newId(),
+          puppetId: id,
           puppet: { type: 'cutout', assetId, w: 1, h: 1 },
           x: 0.5,
           y: 0.5,
@@ -1172,12 +1561,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       }
       return out;
     });
+    const id = newId();
+    setSelectedId(id);
     commit((p) =>
       appendEvent(p, {
         kind: 'CAST',
         id: newId(),
         at: 0,
-        puppetId: newId(),
+        puppetId: id,
         puppet: { type: 'doodle', strokes: normalized, w, h },
         x: minX + w / 2,
         y: minY + h / 2,
@@ -1187,7 +1578,9 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     );
   };
 
-  /** Rail actions: rail order is draw order, back to front. */
+  /** A CAST that carries everything forward but the patch. A CAST no
+   *  longer fronts a puppet the latest REORDER names, so this is safe to
+   *  use for a nudge, a resize or a flip. */
   const recastWith = (p: ShowPuppet, patch: Partial<CastEvent>) => {
     commit((proj) =>
       appendEvent(proj, {
@@ -1201,35 +1594,80 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         scale: p.home.scale,
         rot: p.home.rot,
         ...(p.back ? { back: true as const } : {}),
+        ...(p.flip ? { flip: true as const } : {}),
         ...patch,
       }),
     );
   };
 
-  const bringForward = (p: ShowPuppet) => recastWith(p, {});
+  const setSpec = (p: ShowPuppet, patch: Partial<PuppetSpec>) =>
+    recastWith(p, { puppet: { ...p.spec, ...patch } as PuppetSpec });
 
-  /** Tap-to-cycle wire matrix: off, gentle, wild, off. */
-  const cycleWire = (pid: string, source: WireSource, target: WireTarget) => {
-    const cur = wireAmount(wiresRef.current, pid, source, target);
-    const next = cur === 0 ? 0.5 : cur === 0.5 ? 1 : 0;
+  const setWire = (pid: string, source: WireSource, target: WireTarget, amount: number) => {
     commit((p) =>
-      appendEvent(p, { kind: 'WIRE', id: newId(), at: 0, puppetId: pid, source, target, amount: next }),
+      appendEvent(p, { kind: 'WIRE', id: newId(), at: 0, puppetId: pid, source, target, amount }),
     );
   };
 
-  const wireLevel = (pid: string, source: WireSource, target: WireTarget) => {
-    const a = wireAmount(effectiveWires(projectSnap), pid, source, target);
-    return a === 0 ? '' : a === 0.5 ? ' ·' : ' ··';
+  const wireLevel = (pid: string, source: WireSource, target: WireTarget) =>
+    wireAmount(effectiveWires(projectSnap), pid, source, target);
+
+  /** One REORDER, one undo. Layering used to re-cast every other puppet,
+   *  so sending one to the back of a cast of six cost six events, and the
+   *  next drag put it straight back (audit F21). */
+  const layerPuppet = (p: ShowPuppet, dir: 'front' | 'back') => {
+    const fronts = castOf(projectRef.current)
+      .filter((o) => !o.back)
+      .map((o) => o.id);
+    const rest = fronts.filter((id) => id !== p.id);
+    const order = dir === 'front' ? [...rest, p.id] : [p.id, ...rest];
+    commit((proj) =>
+      appendEvent(proj, { kind: 'REORDER', id: newId(), at: 0, puppetId: '', order }),
+    );
   };
 
-  const sendToBack = (p: ShowPuppet) => {
-    // Re-cast everyone else in their current order; the target stays put and
-    // ends up drawn first among the non-backdrops.
-    const others = castOf(projectRef.current).filter((o) => !o.back && o.id !== p.id);
-    for (const o of others) recastWith(o, {});
+  const duplicatePuppet = (p: ShowPuppet) => {
+    const id = newId();
+    commit((proj) =>
+      appendEvent(proj, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: id,
+        puppet: p.spec,
+        x: Math.min(0.92, p.home.x + 0.12),
+        y: p.home.y,
+        scale: p.home.scale,
+        rot: p.home.rot,
+        ...(p.back ? { back: true as const } : {}),
+        ...(p.flip ? { flip: true as const } : {}),
+      }),
+    );
+    setSelectedId(id);
   };
 
-  const centerOnStage = (p: ShowPuppet) => recastWith(p, { x: 0.5, y: 0.55 });
+  /** Which hand drives a puppet in a body pass. This used to be its own
+   *  mode with its own tap-two-puppets ritual; it belongs to the puppet. */
+  const handOf = (id: string): 'left' | 'right' | 'none' => {
+    void handsVersion;
+    const map = bodyMapRef.current;
+    if (map.right?.puppetId === id) return 'right';
+    if (map.left?.puppetId === id) return 'left';
+    return 'none';
+  };
+
+  const assignHand = (p: ShowPuppet, hand: 'left' | 'right' | 'none') => {
+    const map = bodyMapRef.current;
+    if (map.right?.puppetId === p.id) map.right = null;
+    if (map.left?.puppetId === p.id) map.left = null;
+    if (hand !== 'none') map[hand] = { puppetId: p.id, channel: null };
+    setHandsVersion((v) => v + 1);
+    bannerRef.current.hint(
+      hand === 'none'
+        ? 'the camera no longer drives it.'
+        : `your ${hand} hand drives it. record to perform with the camera.`,
+    );
+  };
 
   const dropPuppet = (p: ShowPuppet) => {
     const index = castOf(projectRef.current).findIndex((x) => x.id === p.id);
@@ -1238,21 +1676,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     toast.undoable(`dropped ${puppetLabel(p, Math.max(0, index))}`, undoRef.current);
   };
 
-
-  const startBodyPass = async () => {
-    if (!bodyMapRef.current.right && !bodyMapRef.current.left) return;
-    const video = pipVideoRef.current;
-    if (!video) return;
-    try {
-      poseDriverRef.current = await PoseDriver.create(video);
-    } catch (err) {
-      fail(err);
-      setModeBoth('idle');
-      return;
-    }
-    setBodyActive(true);
-    await start(true);
-  };
 
   /** Foley board: play it now, land it in the recipe at the playhead. */
   const foley = (sfx: SfxName) => {
@@ -1265,7 +1688,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   };
 
   const startRetake = (mode: 'replace' | 'extend') => {
-    setKitOpen(false);
     setSheet({ kind: 'retake', mode });
   };
 
@@ -1279,15 +1701,17 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const text = raw.trim();
     setSheet(null);
     if (!text) return;
+    const id = newId();
+    setSelectedId(id);
     commit((p) =>
       appendEvent(p, {
         kind: 'CAST',
         id: newId(),
         at: 0,
-        puppetId: newId(),
+        puppetId: id,
         puppet: { type: 'text', text: text.slice(0, 40), w: 0.56, h: 0.1 },
         x: 0.5,
-        y: 0.2,
+        y: freeSpot().y,
         scale: 1,
         rot: 0,
       }),
@@ -1340,7 +1764,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const doRender = async () => {
     if (rendering) return;
     stop();
-    setKitOpen(false);
     const abort = new AbortController();
     renderAbortRef.current = abort;
     let wakeLock: WakeLockSentinel | null = null;
@@ -1378,19 +1801,75 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
 
   const selected = selectedId ? castOf(projectSnap).find((p) => p.id === selectedId) : undefined;
 
+  /** A mode the whole stage enters: it belongs to no puppet, so nothing
+   *  stays selected under it. */
   const enterMode = (m: Mode) => {
-    setKitOpen(false);
+    setSheet(null);
     setSelectedId(null);
     if (m === 'doodling') strokeRef.current = [];
-    if (m === 'bodyAssign') {
-      bodyMapRef.current = { right: null, left: null };
-      setBodyHint('tap a puppet (or a piece or pin) for your RIGHT hand');
-    }
     setModeBoth(m);
     dirtyRef.current = true;
   };
 
-  const placing = mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning';
+  /** A tool the selected puppet is holding. The selection has to survive:
+   *  the tool acts on it, and the halo it came from belongs to it. */
+  const enterTool = (m: Mode) => {
+    setSheet(null);
+    setModeBoth(m);
+    dirtyRef.current = true;
+  };
+
+  const placing =
+    mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning';
+
+  // Every live feature of the selected puppet is something to take hold
+  // of. The frame loop puts them where the puppet is, frame by frame.
+  const handles: HandleSpec[] = [];
+  if (selected && !selected.back && mode === 'idle') {
+    if (mouthOf(projectSnap, selected.id)) handles.push({ key: 'mouth', kind: 'mouth' });
+    if (eyesOf(projectSnap, selected.id)) handles.push({ key: 'eyes', kind: 'eyes' });
+    pinsOf(projectSnap, selected.id).forEach((pin, i) => {
+      if (pin) handles.push({ key: `pin:${i}`, kind: 'pin', index: i });
+    });
+  }
+  const canPin =
+    !!selected &&
+    selected.spec.type === 'cutout' &&
+    !snipsOf(projectSnap, selected.id).some((snip) => snip !== null);
+
+  const onHalo = (action: HaloAction) => {
+    if (!selected) return;
+    switch (action) {
+      case 'mouth':
+        return enterTool('mouthing');
+      case 'eyes':
+        return enterTool('eyeing');
+      case 'snip':
+        return enterTool('snipping');
+      case 'pin':
+        return enterTool('pinning');
+      case 'flip':
+        return recastWith(selected, { flip: !selected.flip });
+      case 'more':
+        return setSheet({ kind: 'more' });
+      case 'replace':
+        return backdropInputRef.current?.click();
+      case 'drop':
+        return dropPuppet(selected);
+    }
+  };
+
+  const castPick = (kind: CastKind) => {
+    setSheet(null);
+    if (kind === 'photo') return photoInputRef.current?.click();
+    if (kind === 'selfie') return snapInputRef.current?.click();
+    if (kind === 'backdrop') return backdropInputRef.current?.click();
+    if (kind === 'doodle') return enterMode('doodling');
+    if (kind === 'word') {
+      setTextDraft('');
+      setSheet({ kind: 'text' });
+    }
+  };
 
   return (
     <div className="showstage">
@@ -1403,9 +1882,26 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
               commit((p) => ({ ...p, title, updatedAt: new Date().toISOString() }))
             }
             onBack={onBack}
-            onMenu={() => setKitOpen((k) => !k)}
+            onMenu={() => setSheet({ kind: 'show' })}
           />
           <BannerView />
+          {selected && mode === 'idle' && !busy && (
+            <Halo
+              name={puppetLabel(selected, castOf(projectSnap).indexOf(selected))}
+              backdrop={selected.back}
+              canPin={canPin}
+              inert={pointerDown}
+              onAction={onHalo}
+              barRef={haloBarRef}
+              outlineRef={selOutlineRef}
+            />
+          )}
+          <Handles
+            handles={handles}
+            register={registerHandle}
+            removingKey={removingKey}
+            layerRef={handleLayerRef}
+          />
           {mode === 'needsAudio' && (
             <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
               <p>
@@ -1444,8 +1940,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             <div className="stage-cta" onPointerDown={(e) => e.stopPropagation()}>
               <p>now cast a puppet.</p>
               <div className="cta-row">
-                <button className="primary" onClick={() => photoInputRef.current?.click()}>
-                  a photo
+                <button className="primary" onClick={() => setSheet({ kind: 'cast' })}>
+                  cast someone
                 </button>
                 <button onClick={() => enterMode('doodling')}>draw one</button>
               </div>
@@ -1496,20 +1992,6 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
               </button>
             </div>
           )}
-          {mode === 'bodyAssign' && (
-            <div className="stagepills">
-              <button className="pill" onClick={() => setModeBoth('idle')}>
-                cancel
-              </button>
-              <button
-                className="pill primary"
-                disabled={!projectSnap.audio}
-                onClick={() => void startBodyPass()}
-              >
-                ⏺ start
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -1553,162 +2035,85 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             canPlay={durationS > 0 && !placing && mode !== 'doodling' && !counting}
             canUndo={projectSnap.events.length > 0}
             canRedo={redoCount > 0}
-            toolsOpen={kitOpen}
+            toolsOpen={sheet?.kind === 'cast'}
             onRecord={() => void start(true)}
             onPlay={() => void start(false)}
             onStop={stop}
             onUndo={undo}
             onRedo={redo}
-            onTools={() => setKitOpen((k) => !k)}
+            onTools={() => setSheet(sheet?.kind === 'cast' ? null : { kind: 'cast' })}
           />
         </>
       )}
 
-      {kitOpen && !busy && mode === 'idle' && (
-        <div className="kit">
-          <div className="kitrow kithead">
-            <span className="status">
-              {puppets.length} in the cast · {passCount} pass{passCount === 1 ? '' : 'es'}
-            </span>
-            {rendered ? (
-              <button className="primary" onClick={() => void shareOrDownload(rendered)}>
-                share
-              </button>
-            ) : (
-              <button
-                className="primary"
-                disabled={passCount === 0 || !!rendering}
-                onClick={() => void doRender()}
-              >
-                {rendering
-                  ? `${rendering.phase} ${Math.round(rendering.fraction * 100)}%`
-                  : 'render'}
-              </button>
-            )}
-          </div>
+      {sheet?.kind === 'cast' && (
+        <CastSheet
+          cast={castOf(projectSnap)}
+          images={imagesRef.current}
+          seed={projectSnap.seed}
+          busy={casting}
+          modelProgress={null}
+          selectedId={selectedId}
+          onPick={castPick}
+          onSelect={(id) => {
+            setSelectedId(id);
+            setSheet(null);
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
 
-          <div className="kitrow rail">
-            {castOf(projectSnap).map((p, i) => (
-              <CastChip
-                key={p.id}
-                puppet={p}
-                index={i}
-                images={imagesRef.current}
-                seed={projectSnap.seed}
-                selected={selectedId === p.id}
-                onClick={() => setSelectedId((sel) => (sel === p.id ? null : p.id))}
-              />
-            ))}
-            <IconButton
-              icon="photo"
-              label="add a photo"
-              className="chip add"
-              onClick={() => photoInputRef.current?.click()}
-            />
-            <IconButton
-              icon="selfie"
-              label="take a selfie"
-              className="chip add"
-              onClick={() => snapInputRef.current?.click()}
-            />
-            <IconButton
-              icon="doodle"
-              label="draw a puppet"
-              className="chip add"
-              onClick={() => enterMode('doodling')}
-            />
-            <IconButton
-              icon="backdrop"
-              label="add a backdrop"
-              className="chip add"
-              onClick={() => backdropInputRef.current?.click()}
-            />
-            <IconButton
-              icon="text"
-              label="add a word"
-              className="chip add"
-              onClick={() => {
-                setTextDraft('');
-                setKitOpen(false);
-                setSheet({ kind: 'text' });
-              }}
-            />
-          </div>
+      {sheet?.kind === 'more' && selected && (
+        <MoreSheet
+          puppet={selected}
+          name={puppetLabel(selected, castOf(projectSnap).indexOf(selected))}
+          wireAmount={(source, target) => wireLevel(selected.id, source, target)}
+          hand={handOf(selected.id)}
+          onRename={(name) => setSpec(selected, { name })}
+          onWire={(source, target, amount) => setWire(selected.id, source, target, amount)}
+          onScale={(scale) => recastWith(selected, { scale })}
+          onSpring={(spring: SpringPreset) => setSpec(selected, { spring })}
+          onHand={(hand) => assignHand(selected, hand)}
+          onDuplicate={() => {
+            setSheet(null);
+            duplicatePuppet(selected);
+          }}
+          onLayer={(dir) => layerPuppet(selected, dir)}
+          onCenter={() => recastWith(selected, { x: 0.5, y: 0.55 })}
+          onDrop={() => {
+            setSheet(null);
+            dropPuppet(selected);
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
 
-          {selected && (
-            <>
-              <div className="kitrow">
-                <span className="status">rail order is layer order</span>
-                {!selected.back && (
-                  <>
-                    <button onClick={() => bringForward(selected)}>front</button>
-                    <button onClick={() => sendToBack(selected)}>back</button>
-                  </>
-                )}
-                <button onClick={() => centerOnStage(selected)}>center</button>
-                <button onClick={() => dropPuppet(selected)}>drop</button>
-              </div>
-              {!selected.back && (
-                <div className="kitrow">
-                  <span className="status">wires</span>
-                  <button onClick={() => cycleWire(selected.id, 'voice', 'bounce')}>
-                    🗣 bounce{wireLevel(selected.id, 'voice', 'bounce')}
-                  </button>
-                  <button onClick={() => cycleWire(selected.id, 'voice', 'shake')}>
-                    🗣 shake{wireLevel(selected.id, 'voice', 'shake')}
-                  </button>
-                  <button onClick={() => cycleWire(selected.id, 'voice', 'lean')}>
-                    🗣 lean{wireLevel(selected.id, 'voice', 'lean')}
-                  </button>
-                  <button onClick={() => cycleWire(selected.id, 'beat', 'bounce')}>
-                    🥁 bounce{wireLevel(selected.id, 'beat', 'bounce')}
-                  </button>
-                  <button onClick={() => cycleWire(selected.id, 'beat', 'shake')}>
-                    🥁 shake{wireLevel(selected.id, 'beat', 'shake')}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-
-          <div className="kitrow">
-            <button disabled={puppets.length === 0} onClick={() => enterMode('snipping')}>
-              ✂ snip
-            </button>
-            <button disabled={puppets.length === 0} onClick={() => enterMode('mouthing')}>
-              mouth
-            </button>
-            <button disabled={puppets.length === 0} onClick={() => enterMode('eyeing')}>
-              eyes
-            </button>
-            <button disabled={puppets.length === 0} onClick={() => enterMode('pinning')}>
-              📌 pin
-            </button>
-            <button disabled={puppets.length === 0} onClick={() => enterMode('bodyAssign')}>
-              🧍 body
-            </button>
-            <button onClick={() => cycleWire('', 'on', 'trails')}>
-              trails{wireLevel('', 'on', 'trails')}
-            </button>
-            <button onClick={() => cycleWire('', 'on', 'foley')}>
-              💥 foley{wireLevel('', 'on', 'foley')}
-            </button>
-            <button className={corpse ? 'on' : ''} onClick={() => setCorpse((c) => !c)}>
-              🕯 corpse{corpse ? ' ·' : ''}
-            </button>
-            <button onClick={() => startRetake('replace')}>retake sound</button>
-            <button onClick={() => startRetake('extend')}>extend sound</button>
-            <button
-              disabled={projectSnap.events.length === 0}
-              onClick={() => void exportBit()}
-            >
-              bit file
-            </button>
-            <button disabled={redoCount === 0} onClick={redo}>
-              redo
-            </button>
-          </div>
-        </div>
+      {sheet?.kind === 'show' && (
+        <ShowMenu
+          passCount={passCount}
+          castCount={puppets.length}
+          canRender={passCount > 0 && !rendering}
+          rendered={!!rendered}
+          trails={wireLevel('', 'on', 'trails')}
+          foley={wireLevel('', 'on', 'foley')}
+          corpse={corpse}
+          onRender={() => {
+            setSheet(null);
+            void doRender();
+          }}
+          onShareRender={() => {
+            setSheet(null);
+            if (rendered) void shareOrDownload(rendered);
+          }}
+          onBitFile={() => {
+            setSheet(null);
+            void exportBit();
+          }}
+          onSound={(mode) => startRetake(mode)}
+          onStageWire={(target, amount) => setWire('', 'on', target, amount)}
+          onCorpse={setCorpse}
+          onClose={() => setSheet(null)}
+        />
       )}
 
       {sheet?.kind === 'text' && (

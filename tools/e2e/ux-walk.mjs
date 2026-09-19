@@ -32,7 +32,6 @@ const SHOTS = process.env.UX_SHOTS_DIR || join(process.cwd(), 'dist-ux-shots');
 
 /** id -> the milestone that closes it. Delete an entry when it passes. */
 const GAPS = {
-  'overlay-covers-at-most-a-third': 'M4, when the halo replaces the kit',
 };
 
 /** A 2s 440Hz mono WAV, written by hand so the import path is exercised
@@ -145,6 +144,31 @@ try {
     }
     await page.touchscreen.touchEnd();
   };
+  const tapStage = async (fx, fy) => {
+    const b = await stageBox();
+    await page.touchscreen.tap(b.x + fx * b.w, b.y + fy * b.h);
+  };
+  /** Where the first non-backdrop puppet actually is, in stage fractions.
+   *  Its home is not its position once a pass has moved it. */
+  const puppetAt = () =>
+    page.evaluate(() => {
+      const p = window.__bits.project();
+      if (!p) return null;
+      const live = new Set();
+      const backs = new Set();
+      for (const e of p.events) {
+        if (e.kind === 'CAST') {
+          live.add(e.puppetId);
+          if (e.back) backs.add(e.puppetId);
+        }
+        if (e.kind === 'DROP') live.delete(e.puppetId);
+      }
+      const poses = window.__bits.poses();
+      for (const id of live) {
+        if (!backs.has(id) && poses[id]) return poses[id];
+      }
+      return null;
+    });
   const tapText = async (sel, ...texts) => {
     for (const h of await page.$$(sel)) {
       const t = (await h.evaluate((e) => (e.textContent || '').trim())) || '';
@@ -166,16 +190,19 @@ try {
       { timeout: ms },
       m,
     );
+  // The worst-case overlay is the cast sheet, the tallest thing that ever
+  // sits over the stage.
   const openTools = async () => {
-    if (!(await page.$('.kit'))) {
-      await tapLabel('tools');
+    if (!(await page.$('.sheet'))) {
+      await tapLabel('cast someone');
       await sleep(300);
     }
   };
   const closeTools = async () => {
-    if (await page.$('.kit')) {
-      await tapLabel('tools');
-      await sleep(200);
+    const close = await page.$('.sheet [aria-label="close"]');
+    if (close) {
+      await close.tap();
+      await sleep(250);
     }
   };
   const goToList = async () => {
@@ -186,8 +213,8 @@ try {
   };
   const castDoodle = async () => {
     await openTools();
-    await tapLabel('draw a puppet');
-    await sleep(200);
+    await tapText('.cast-tile', 'draw one');
+    await sleep(250);
     await dragStage([
       [0.32, 0.3],
       [0.5, 0.2],
@@ -383,6 +410,85 @@ try {
       await shot('after-pass');
       const passes = await page.evaluate(() => window.__bits.passSampleCounts());
       check('a-drag-while-recording-becomes-a-pass', passes.length >= 1, `${passes.length} pass(es)`);
+    });
+
+    // ---- the halo: a puppet's tools live on the puppet ---------------
+    await phase('a-tap-selects-rather-than-moves', async () => {
+      const home = await puppetAt();
+      if (!home) throw new Error('nothing on stage');
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      await tapStage(home.x, home.y);
+      await sleep(350);
+      const after = await page.evaluate(() => window.__bits.eventKinds().length);
+      const halo = await page.$('.halo');
+      await shot('halo');
+      check('a-tap-selects-rather-than-moves', after === before, `${after - before} events appended`);
+      check('a-selected-puppet-wears-its-tools', !!halo, halo ? 'halo shown' : 'no halo');
+      const covered = await page.evaluate(() => {
+        const stage = document.querySelector('.stagebox')?.getBoundingClientRect();
+        const bar = document.querySelector('.halo')?.getBoundingClientRect();
+        if (!stage || !bar) return 1;
+        return bar.height / stage.height;
+      });
+      check('the-halo-barely-covers-the-stage', covered <= 0.12, `${Math.round(covered * 100)}%`);
+    });
+
+    await phase('a-mouth-is-three-taps', async () => {
+      const home = await puppetAt();
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      // tap 1 selected it above; tap 2 picks the tool, tap 3 places it.
+      await tapLabel('mouth');
+      await sleep(250);
+      await tapStage(home.x, home.y + 0.02);
+      await sleep(400);
+      const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      check('a-mouth-is-three-taps', kinds.join(',') === 'MOUTH', kinds.join(',') || 'nothing');
+      const handles = await page.$$('.handle');
+      check('a-feature-becomes-a-handle', handles.length === 1, `${handles.length} handle(s)`);
+    });
+
+    await phase('a-feature-drags-off-to-come-back-off', async () => {
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      const h = await page.$eval('.handle', (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      });
+      const b = await stageBox();
+      await page.touchscreen.touchStart(h.x, h.y);
+      // Out past the puppet's own box, where letting go takes it off.
+      for (let i = 1; i <= 6; i++) {
+        await page.touchscreen.touchMove(h.x, b.y + (0.86 + 0.01 * i) * b.h);
+        await sleep(40);
+      }
+      await shot('handle-removing');
+      await page.touchscreen.touchEnd();
+      await sleep(400);
+      const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      const undo = await page.$('.toast-action');
+      check('a-feature-drags-off-to-come-back-off', kinds.join(',') === 'REMOVE', kinds.join(',') || 'nothing');
+      check('taking-a-feature-off-is-undoable', !!undo, undo ? 'undo offered' : 'no undo');
+      if (undo) await undo.tap();
+      await sleep(400);
+    });
+
+    await phase('layering-is-one-event', async () => {
+      const home = await puppetAt();
+      await tapStage(home.x, home.y);
+      await sleep(300);
+      await tapLabel('more');
+      await sleep(350);
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      await tapLabel('to the back');
+      await sleep(350);
+      const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      check('layering-is-one-event', kinds.join(',') === 'REORDER', kinds.join(',') || 'nothing');
+      await closeTools();
+      await sleep(200);
+    });
+
+    await phase('the-mode-menu-is-gone', async () => {
+      const kit = await page.$('.kit');
+      check('the-mode-menu-is-gone', !kit, kit ? 'the kit is still here' : 'no kit');
     });
 
     await phase('playback-does-not-rerender-every-frame', async () => {

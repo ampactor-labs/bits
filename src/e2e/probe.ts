@@ -7,11 +7,21 @@
 
 import type { Project } from '../engine/recipe';
 
+export interface StageProbe {
+  selectedId: string | null;
+  /** Live root position per puppet id, in normalised stage coords. */
+  poses: Record<string, { x: number; y: number }>;
+}
+
 export interface Probe {
   /** Off in production. The harness sets it before driving the app. */
   enabled: boolean;
   /** Registered by the stage while it is mounted. */
   project: (() => Project) | null;
+  /** What is on screen right now: the selection, and where each puppet
+   *  actually is. A puppet's home is not where it is drawn once a pass has
+   *  moved it, so a harness that taps a home taps empty stage. */
+  stage: (() => StageProbe) | null;
   /** React commits of the stage; playback must not move this. */
   commits: number;
   /** Test-only behaviour overrides, read where they are honoured. */
@@ -26,6 +36,7 @@ export interface Probe {
 export const probe: Probe = {
   enabled: false,
   project: null,
+  stage: null,
   commits: 0,
   overrides: {},
 };

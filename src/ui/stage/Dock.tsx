@@ -56,7 +56,7 @@ export function Dock({
       <IconButton icon="play" label="play" disabled={busy || !canPlay} onClick={onPlay} />
       <IconButton
         icon="plus"
-        label="tools"
+        label="cast someone"
         className={toolsOpen ? 'on' : ''}
         disabled={busy}
         onClick={onTools}

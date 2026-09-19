@@ -47,7 +47,8 @@ export type IconName =
   | 'trails'
   | 'foley'
   | 'body'
-  | 'blind';
+  | 'blind'
+  | 'sticker';
 
 /** Path data only; every icon shares the stroke setup below. */
 const STROKE: Record<IconName, string> = {
@@ -75,8 +76,8 @@ const STROKE: Record<IconName, string> = {
   mouth: 'M5 11c3 5 11 5 14 0M5 11c3-3 11-3 14 0',
   eyes: 'M8 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM16 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM8 12h.01M16 12h.01',
   scissors: 'M7 5l10 12M17 5L7 17M6 18a2.5 2.5 0 1 0 0 1M18 18a2.5 2.5 0 1 1 0 1',
-  pin: 'M12 3v8M12 11a4 4 0 0 0-4 4h8a4 4 0 0 0-4-4ZM12 15v6',
-  flip: 'M12 4v16M8 8L4 12l4 4M16 8l4 4-4 4',
+  pin: 'M8.5 3h7M10 3.5v4.5l-2 3h8l-2-3V3.5M12 14v7',
+  flip: 'M12 4v16M3 12h5M6 9l2.5 3L6 15M21 12h-5M18 9l-2.5 3 2.5 3',
   layerUp: 'M12 4l7 5-7 5-7-5zM5 15l7 5 7-5',
   layerDown: 'M12 20l7-5-7-5-7 5zM5 9l7-5 7 5',
   center: 'M12 4v4M12 16v4M4 12h4M16 12h4M12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
@@ -93,6 +94,7 @@ const STROKE: Record<IconName, string> = {
   foley: 'M12 4v6M12 14v6M6 7l3 3M15 14l3 3M4 12h5M15 12h5M6 17l3-3M15 10l3-3',
   body: 'M12 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 7v8M12 15l-3 6M12 15l3 6M6 10l6 1 6-1',
   blind: 'M3 4h18v3H3zM6 7v13M10 7v13M14 7v13M18 7v13',
+  sticker: 'M4 4h11l5 5v11H4zM15 4v5h5M8 13a4 4 0 0 0 8 0',
 };
 
 /** Icons drawn as filled shapes rather than strokes. */

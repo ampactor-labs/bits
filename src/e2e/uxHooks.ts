@@ -14,6 +14,10 @@ export interface BitsUxHooks {
   passSampleCounts: () => number[];
   commits: () => number;
   resetCommits: () => void;
+  /** The selected puppet, or null. */
+  selectedId: () => string | null;
+  /** Where each puppet actually is, so a tap can land on one. */
+  poses: () => Record<string, { x: number; y: number }>;
   setOverride: <K extends keyof typeof probe.overrides>(
     key: K,
     value: (typeof probe.overrides)[K],
@@ -41,6 +45,8 @@ const hooks: BitsUxHooks = {
   resetCommits: () => {
     probe.commits = 0;
   },
+  selectedId: () => probe.stage?.().selectedId ?? null,
+  poses: () => probe.stage?.().poses ?? {},
   setOverride: (key, value) => {
     probe.overrides[key] = value;
   },

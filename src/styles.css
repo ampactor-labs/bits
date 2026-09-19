@@ -488,57 +488,162 @@ body {
   text-align: left;
 }
 
-.kit {
+/* The halo: the selected puppet's own tools. A bar in a fixed order, not
+ * a ring — six 44px buttons need about 300px, which will not fit around a
+ * puppet on a 375px phone, and a ring would put the same button in a
+ * different place for every puppet. The frame loop positions it. */
+.halo {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 45%);
+}
+
+/* Non-interactive while a finger is on the stage: otherwise a pinch's
+ * second finger lands on a button and fires it on release. */
+.halo-inert {
+  pointer-events: none;
+}
+
+.halo button {
+  min-width: var(--hit);
+  min-height: var(--hit);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+}
+
+.halo button:active:not(:disabled) {
+  background: var(--raised-hi);
+}
+
+.sel-outline {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  border: 1.5px solid var(--accent-2);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+}
+
+/* Feature handles. pointer-events: none — the gesture layer on the stage
+ * frame owns every pointer and hit-tests these itself, so the first finger
+ * of a pinch can never be swallowed by a mouth. */
+.handles {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.handle {
   position: absolute;
   left: 0;
-  right: 0;
-  bottom: calc(var(--dock-h) + env(safe-area-inset-bottom));
-  z-index: 5;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  backdrop-filter: blur(6px);
-  border-radius: 16px;
-  padding: 12px;
+  top: 0;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-2);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 40%);
+}
+
+.handle-pin {
+  border-radius: 4px;
+}
+
+/* Dragged clear of the puppet: let go and it comes off. */
+.handle-removing {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .handle {
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+}
+
+/* Casting: six ways in, each saying what it does. */
+.cast-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.cast-tile {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  /* Selecting a puppet used to add two rows and push the header, the
-   * render button and the cast rail off the top of the screen with no way
-   * to scroll to them (audit F1). The halo replaces this panel in M4; the
-   * cap keeps it usable until then. */
-  max-height: calc(100% - 84px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.kit .kithead {
-  position: sticky;
-  top: -12px;
-  z-index: 1;
-  margin: -12px -12px 0;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 84px;
   padding: 12px;
-  background: var(--panel);
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--r-1);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  text-align: left;
 }
 
-.kitrow {
+.cast-tile-label {
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.cast-tile-sub {
+  font-size: var(--fs-hint);
+  color: var(--muted);
+}
+
+.cast-busy {
   display: flex;
   align-items: center;
+  gap: 12px;
+  font-size: var(--fs-hint);
+  color: var(--muted);
+}
+
+.cast-rail {
+  display: flex;
   gap: 8px;
-  flex-wrap: wrap;
-}
-
-.kitrow.kithead {
-  flex-wrap: nowrap;
-}
-
-.kitrow.kithead .status {
-  flex: 1;
-}
-
-.kitrow.rail {
-  flex-wrap: nowrap;
   overflow-x: auto;
   padding-bottom: 2px;
+}
+
+/* A labelled row inside a sheet: what it is on the left, the control on
+ * the right, wrapping rather than squeezing on a narrow phone. */
+.sheet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sheet-row-label {
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.sheet-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sheet-icons button {
+  flex: 1 1 88px;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 72px;
+  font-size: var(--fs-hint);
 }
 
 .chip {
@@ -559,12 +664,6 @@ body {
 
 .chip.on {
   outline: 2px solid var(--accent-2);
-}
-
-.chip.add {
-  background: transparent;
-  border: 1.5px dashed var(--line);
-  color: var(--muted);
 }
 
 .stagepills {
@@ -608,10 +707,6 @@ body {
   padding: 0 10px;
   font-size: var(--fs-hint);
   white-space: nowrap;
-}
-
-.kit button.on {
-  outline: 2px solid var(--accent-2);
 }
 
 .pip {
