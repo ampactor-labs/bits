@@ -194,6 +194,37 @@ try {
     }
     await page.touchscreen.touchEnd();
   };
+  /** Two fingers on the stage at once, each dragging its own path.
+   *  page.touchscreen carries one point; this needs the raw protocol. */
+  const twoFingerDrag = async (pathA, pathB, stepMs = 120) => {
+    const b = await stageBox();
+    const cdp = await page.createCDPSession();
+    const pt = ([fx, fy], id) => ({ x: b.x + fx * b.w, y: b.y + fy * b.h, id });
+    // One point at a time: a touchStart carrying a point that is already
+    // down is how Chromium is told a second finger has landed.
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [pt(pathA[0], 1)],
+    });
+    await sleep(60);
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [pt(pathA[0], 1), pt(pathB[0], 2)],
+    });
+    const steps = Math.max(pathA.length, pathB.length);
+    for (let i = 1; i < steps; i++) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+          pt(pathA[Math.min(i, pathA.length - 1)], 1),
+          pt(pathB[Math.min(i, pathB.length - 1)], 2),
+        ],
+      });
+      await sleep(stepMs);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await cdp.detach();
+  };
   const tapStage = async (fx, fy) => {
     const b = await stageBox();
     await page.touchscreen.tap(b.x + fx * b.w, b.y + fy * b.h);
@@ -785,6 +816,144 @@ try {
       await sleep(200);
       await tapLabel('close the lanes');
       await sleep(250);
+    });
+
+    // Two people, four hands. A second finger used to steal the first
+    // one's puppet and cut its pass short where it was touched.
+    await phase('two-fingers-record-two-passes', async () => {
+      // The two furthest apart: one finger per channel is the rule, so two
+      // fingers landing on the same overlapping puppet is one grab, and
+      // would test nothing.
+      const homes = await page.evaluate(() => {
+        const poses = window.__bits.poses();
+        const p = window.__bits.project();
+        const live = new Set();
+        const backs = new Set();
+        for (const e of p.events) {
+          if (e.kind === 'CAST') {
+            live.add(e.puppetId);
+            if (e.back) backs.add(e.puppetId);
+          }
+          if (e.kind === 'DROP') live.delete(e.puppetId);
+        }
+        const all = [...live]
+          .filter((id) => !backs.has(id) && poses[id])
+          .map((id) => ({ id, ...poses[id] }));
+        let best = null;
+        for (const u of all) {
+          for (const v of all) {
+            if (u === v) continue;
+            const d = Math.hypot(u.x - v.x, u.y - v.y);
+            if (!best || d > best.d) best = { d, pair: [u, v] };
+          }
+        }
+        return best && best.d > 0.15 ? best.pair : [];
+      });
+      if (homes.length < 2) throw new Error('no two puppets far enough apart');
+      const before = await page.evaluate(() => window.__bits.passSampleCounts().length);
+      await tapLabel('record a pass');
+      await waitMode('recording', 20000);
+      const [a, b] = homes;
+      await twoFingerDrag(
+        [
+          [a.x, a.y],
+          [a.x - 0.12, a.y - 0.08],
+          [a.x - 0.18, a.y + 0.05],
+        ],
+        [
+          [b.x, b.y],
+          [b.x + 0.1, b.y + 0.08],
+          [b.x + 0.16, b.y - 0.06],
+        ],
+      );
+      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await sleep(600);
+      const added = await page.evaluate((n) => {
+        const passes = window.__bits.project().events.filter((e) => e.kind === 'PASS');
+        return passes.slice(n).map((p) => p.puppetId);
+      }, before);
+      check(
+        'two-fingers-record-two-passes',
+        added.length === 2 && new Set(added).size === 2,
+        `${added.length} pass(es) on ${new Set(added).size} puppet(s)`,
+      );
+    });
+
+    // Blind: perform against an empty stage, then meet the whole show.
+    await phase('a-blind-take-reveals-the-whole-show', async () => {
+      await tapLabel('this bit');
+      await sleep(350);
+      await tapText('.sheet-row .segment', 'on');
+      await sleep(250);
+      await (await page.$('.sheet [aria-label="close"]')).tap();
+      await sleep(300);
+      await tapLabel('record a pass');
+      await waitMode('recording', 20000);
+      await dragStage(
+        [
+          [0.5, 0.4],
+          [0.55, 0.5],
+        ],
+        120,
+      );
+      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await sleep(250);
+      await shot('curtain');
+      const curtain = await page.$('.curtain');
+      check('a-blind-take-reveals-the-whole-show', !!curtain, curtain ? 'curtain shown' : 'no curtain');
+      // It plays itself: you meet the show rather than being told to.
+      await sleep(1600);
+      const playing = await page.$('.dock-stop');
+      check('the-reveal-plays-itself', !!playing, playing ? 'playing' : 'stopped');
+      if (playing) await tapLabel('stop');
+      await sleep(300);
+      await tapLabel('this bit');
+      await sleep(300);
+      await tapText('.sheet-row .segment', 'off');
+      await sleep(200);
+      await (await page.$('.sheet [aria-label="close"]')).tap();
+      await sleep(250);
+    });
+
+    // Perform: the stage and nothing else.
+    await phase('perform-leaves-only-the-stage', async () => {
+      await tapLabel('this bit');
+      await sleep(350);
+      await tapLabel('perform');
+      await sleep(450);
+      await shot('perform');
+      const bare = await page.evaluate(() => {
+        const gone = (sel) => {
+          const el = document.querySelector(sel);
+          return !el || getComputedStyle(el).display === 'none';
+        };
+        return {
+          chrome: gone('.dock') && gone('.timeline') && gone('.titlebar'),
+          record: !!document.querySelector('.perform-controls [aria-label="record a pass"]'),
+          stage: (document.querySelector('.stagebox')?.getBoundingClientRect().height ?? 0) /
+            innerHeight,
+          aspect: (() => {
+            const r = document.querySelector('.stagebox')?.getBoundingClientRect();
+            return r ? r.width / r.height : 0;
+          })(),
+        };
+      });
+      check(
+        'perform-leaves-only-the-stage',
+        bare.chrome && bare.record,
+        `chrome gone=${bare.chrome}, record=${bare.record}`,
+      );
+      // Bigger, but still 9:16: performing in one shape and rendering in
+      // another would change what the puppets look like in the film.
+      check(
+        'performing-gives-the-stage-the-screen',
+        bare.stage > 0.78 && Math.abs(bare.aspect - 9 / 16) < 0.02,
+        `${Math.round(bare.stage * 100)}% of the window at ${bare.aspect.toFixed(3)}`,
+      );
+      await tapText('.perform-controls button', 'done performing');
+      await sleep(400);
+      const back = await page.$('.dock');
+      check('perform-can-be-left', !!back, back ? 'dock back' : 'stuck');
     });
 
     await phase('the-mode-menu-is-gone', async () => {

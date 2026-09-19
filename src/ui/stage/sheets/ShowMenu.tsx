@@ -18,6 +18,8 @@ export interface ShowMenuProps {
   onRender: () => void;
   onShareRender: () => void;
   onBitFile: () => void;
+  onPerform: () => void;
+  canPerform: boolean;
   onSound: () => void;
   onStageWire: (target: 'trails' | 'foley', amount: number) => void;
   onCorpse: (on: boolean) => void;
@@ -47,6 +49,13 @@ export function ShowMenu(props: ShowMenuProps) {
           onClick={props.rendered ? props.onShareRender : props.onRender}
         />
         <IconButton icon="bitfile" label="send the bit" showLabel onClick={props.onBitFile} />
+        <IconButton
+          icon="body"
+          label="perform"
+          showLabel
+          disabled={!props.canPerform}
+          onClick={props.onPerform}
+        />
         <IconButton icon="sound" label="the sound" showLabel onClick={props.onSound} />
       </div>
 
@@ -83,7 +92,8 @@ export function ShowMenu(props: ShowMenuProps) {
         />
       </div>
       <span className="status">
-        blind: perform without seeing the other passes, and meet the whole show on playback.
+        perform: the stage and nothing else, for two people and four hands. blind: perform
+        without seeing the other passes, and meet the whole show when the curtain goes up.
       </span>
     </Sheet>
   );

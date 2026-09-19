@@ -252,6 +252,12 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const corpseRef = useRef(corpse);
   corpseRef.current = corpse;
   const [lanesOpen, setLanesOpen] = useState(false);
+  /** Perform: the stage and nothing else. Two people, four hands, no
+   *  chrome to fat-finger. */
+  const [performing, setPerforming] = useState(false);
+  /** After a blind take, the reveal: everything that was hidden, played
+   *  back at once. */
+  const [curtain, setCurtain] = useState(false);
   const [selectedPassId, setSelectedPassId] = useState<string | null>(null);
   /** Solo is a preview, not a recipe change: the sim is built from a
    *  project with the other puppets' passes stripped, exactly as corpse
@@ -290,7 +296,10 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const wiresRef = useRef<WireMap>(new Map());
   const simRef = useRef<ShowSim | null>(null);
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
-  const grabRef = useRef<Grab | null>(null);
+  /** One grab per finger, so two people can perform at once. It used to
+   *  be a single grab: the second finger stole the first one's puppet and
+   *  the first one's pass ended where it was touched. */
+  const grabsRef = useRef<Map<number, Grab>>(new Map());
   const bodyGrabsRef = useRef<Grab[]>([]);
   const bodyMapRef = useRef<BodyMap>({ right: null, left: null });
   const poseDriverRef = useRef<PoseDriver | null>(null);
@@ -341,6 +350,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const commitGrabRef = useRef<() => void>(() => {});
   /** stopBit is defined below the frame loop, which enforces the cap. */
   const stopBitRef = useRef<() => void>(() => {});
+  const startRef = useRef<(recording: boolean) => void>(() => {});
+  const commitOneGrabRef = useRef<(grab: Grab) => void>(() => {});
   const buildSimRef = useRef<(recording: boolean, from: number) => ShowSim>(
     () => createShowSim(createProject('')),
   );
@@ -649,14 +660,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const buildSim = useCallback(
     (recording: boolean, from: number): ShowSim => {
       const sim = createShowSim(simProjectFor(recording), 0, (id, channel, tt) => {
-        const finger = grabRef.current;
-        if (
-          finger &&
-          finger.puppetId === id &&
-          sameChannel(finger.channel, channel) &&
-          tt >= finger.samples[0]!
-        ) {
-          return { x: finger.x, y: finger.y };
+        for (const finger of grabsRef.current.values()) {
+          if (
+            finger.puppetId === id &&
+            sameChannel(finger.channel, channel) &&
+            tt >= finger.samples[0]!
+          ) {
+            return { x: finger.x, y: finger.y };
+          }
         }
         for (const g of bodyGrabsRef.current) {
           if (g.puppetId === id && sameChannel(g.channel, channel) && tt >= g.samples[0]!) {
@@ -675,10 +686,12 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     buildSimRef.current = buildSim;
   }, [buildSim]);
 
+  /** Close every open grab: the take is over, or the loop is going round
+   *  again and each lap's holds become their own passes. */
   const commitGrab = useCallback(() => {
-    const grab = grabRef.current;
-    grabRef.current = null;
-    if (grab) commitOneGrab(grab);
+    const fingers = [...grabsRef.current.values()];
+    grabsRef.current.clear();
+    for (const g of fingers) commitOneGrab(g);
     const body = bodyGrabsRef.current;
     bodyGrabsRef.current = [];
     for (const g of body) commitOneGrab(g);
@@ -686,16 +699,20 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
 
   useEffect(() => {
     commitGrabRef.current = commitGrab;
-  }, [commitGrab]);
+    commitOneGrabRef.current = commitOneGrab;
+  }, [commitGrab, commitOneGrab]);
 
   const stop = useCallback(() => {
     // Hand the playhead back to React so the scrubber and the clock agree
     // with what the loop last painted.
     setT(playheadRef.current);
+    // A blind take was performed against an empty stage. The point of it
+    // is meeting the whole show afterwards, so it is met, not waited for.
+    if (modeRef.current === 'recording' && corpseRef.current) setCurtain(true);
     if (modeRef.current === 'recording') commitGrabRef.current();
     jamRef.current?.stop();
     simRef.current = null;
-    grabRef.current = null;
+    grabsRef.current.clear();
     bodyGrabsRef.current = [];
     poseDriverRef.current?.dispose();
     poseDriverRef.current = null;
@@ -778,6 +795,20 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     wrapLoopRef.current = wrapLoop;
   }, [wrapLoop]);
 
+  startRef.current = (recording: boolean) => void start(recording);
+
+  // The reveal: hold for a beat on a drawn curtain, then play the lot.
+  useEffect(() => {
+    if (!curtain) return;
+    const id = setTimeout(() => {
+      setCurtain(false);
+      playheadRef.current =
+        loopRef.current?.from ?? projectRef.current.audio?.trim?.from ?? 0;
+      startRef.current(false);
+    }, 1100);
+    return () => clearTimeout(id);
+  }, [curtain]);
+
   // Frame loop: clock, simulation, drawing, seek previews, hold sampling.
   useEffect(() => {
     const loop = () => {
@@ -827,10 +858,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         playheadRef.current = clock;
         paintClock(clock);
 
-        const grab = grabRef.current;
-        if (m === 'recording' && grab) {
-          const lastT = grab.samples[grab.samples.length - 3]!;
-          if (clock - lastT >= HOLD_SAMPLE_S) grab.samples.push(clock, grab.x, grab.y);
+        if (m === 'recording') {
+          // A finger that stops moving still holds: without this the pass
+          // would end where the movement did.
+          for (const grab of grabsRef.current.values()) {
+            const lastT = grab.samples[grab.samples.length - 3]!;
+            if (clock - lastT >= HOLD_SAMPLE_S) grab.samples.push(clock, grab.x, grab.y);
+          }
         }
 
         // Performed sounds replay live; impact foley fires off squash spikes.
@@ -1285,15 +1319,20 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       }
       if (m === 'recording') {
         const hit = hitTest(x, y);
-        if (hit) {
+        // One finger per channel: two hands on the same puppet would
+        // record two passes fighting over it.
+        const taken = [...grabsRef.current.values()].some(
+          (g) => hit && g.puppetId === hit.puppet.id && sameChannel(g.channel, hit.channel),
+        );
+        if (hit && !taken) {
           const clock = Math.max(0, currentClock());
-          grabRef.current = {
+          grabsRef.current.set(e.pointerId, {
             puppetId: hit.puppet.id,
             channel: hit.channel,
             samples: [clock, x, y],
             x,
             y,
-          };
+          });
         }
         return;
       }
@@ -1387,8 +1426,9 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         }
         return;
       }
-      if (m === 'recording' && grabRef.current) {
-        const grab = grabRef.current;
+      if (m === 'recording') {
+        const grab = grabsRef.current.get(e.pointerId);
+        if (!grab) return;
         const clock = Math.max(0, currentClock());
         const lastT = grab.samples[grab.samples.length - 3]!;
         if (clock - lastT >= 1 / 60) grab.samples.push(clock, x, y);
@@ -1477,8 +1517,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         dirtyRef.current = true;
         return;
       }
-      if (m === 'recording' && grabRef.current) {
-        commitGrabRef.current();
+      if (m === 'recording') {
+        // Only this finger's pass closes. The other hand keeps performing.
+        const grab = grabsRef.current.get(e.pointerId);
+        if (grab) {
+          grabsRef.current.delete(e.pointerId);
+          commitOneGrabRef.current(grab);
+        }
         return;
       }
       if (m === 'idle' && handleDragRef.current && pointers.size === 0) {
@@ -2161,10 +2206,11 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   };
 
   return (
-    <div className="showstage">
+    <div className={`showstage${performing ? ' performing' : ''}`}>
       <div className="stagearea">
         <div ref={frameRef} className={`stagebox mode-${mode}`}>
           <canvas ref={canvasRef} />
+          {!performing && (
           <TitleBar
             title={projectSnap.title}
             onRename={(title) =>
@@ -2173,8 +2219,9 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             onBack={onBack}
             onMenu={() => setSheet({ kind: 'show' })}
           />
+          )}
           <BannerView />
-          {selected && mode === 'idle' && !busy && (
+          {selected && mode === 'idle' && !busy && !performing && (
             <Halo
               name={puppetLabel(selected, castOf(projectSnap).indexOf(selected))}
               backdrop={selected.back}
@@ -2260,6 +2307,34 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
                 {Math.round(rendering.fraction * 100)}%
               </p>
               <button onClick={() => renderAbortRef.current?.abort()}>cancel</button>
+            </div>
+          )}
+          {curtain && (
+            <div className="curtain">
+              <span className="curtain-left" aria-hidden="true" />
+              <span className="curtain-right" aria-hidden="true" />
+              <p className="curtain-text">now everyone at once</p>
+            </div>
+          )}
+          {performing && (
+            <div className="perform-controls" onPointerDown={(e) => e.stopPropagation()}>
+              {busy ? (
+                <button className="dock-rec dock-stop on-accent" aria-label="stop" onClick={stop}>
+                  <span className="dock-glyph" aria-hidden="true" />
+                </button>
+              ) : (
+                <button
+                  className="dock-rec on-accent"
+                  aria-label="record a pass"
+                  disabled={puppets.length === 0 || durationS <= 0}
+                  onClick={() => void start(true)}
+                >
+                  <span className="dock-glyph" aria-hidden="true" />
+                </button>
+              )}
+              <button className="pill" onClick={() => setPerforming(false)}>
+                done performing
+              </button>
             </div>
           )}
           {mode === 'recording' && <span className="recdot">●</span>}
@@ -2441,6 +2516,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           onBitFile={() => {
             setSheet(null);
             void exportBit();
+          }}
+          canPerform={puppets.length > 0 && durationS > 0}
+          onPerform={() => {
+            setSheet(null);
+            setSelectedId(null);
+            setLanesOpen(false);
+            setPerforming(true);
           }}
           onSound={() => setSheet({ kind: 'sound' })}
           onStageWire={(target, amount) => setWire('', 'on', target, amount)}
