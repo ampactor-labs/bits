@@ -11,7 +11,17 @@ import {
   type Project,
   type RecipeEvent,
 } from './recipe';
-import { castOf, effectivePasses, mouthOf, pinsOf, snipsOf, talkOpenFor } from './show';
+import {
+  castOf,
+  effectivePasses,
+  mouthOf,
+  pinsOf,
+  snipsOf,
+  talkOpenFor,
+  voiceOf,
+} from './show';
+import { referencedAssets } from '../media/bundle';
+import { mixPcmInto } from '../media/audio';
 import { localToWorld, worldToLocal } from './show';
 import { restingPuppet, stepPuppet } from './puppet';
 import { splitPieces } from './pieces';
@@ -398,5 +408,73 @@ describe('event ids and groups', () => {
       ]),
     );
     expect(() => parseProject(bad)).toThrow(/not contiguous/);
+  });
+});
+
+describe('voices', () => {
+  const withVoice = (extra: RecipeEvent[] = []) =>
+    project([
+      cast('cat'),
+      { kind: 'MOUTH', id: 'm1', at: 0, puppetId: 'cat', mx: 0.5, my: 0.6, size: 0.2 },
+      { kind: 'VOICE', id: 'v1', at: 2, puppetId: 'cat', assetId: 'take.webm', durationS: 3 },
+      ...extra,
+    ]);
+
+  it('gives a puppet its own take, latest wins', () => {
+    const p = withVoice([
+      { kind: 'VOICE', id: 'v2', at: 5, puppetId: 'cat', assetId: 'other.webm', durationS: 1 },
+    ]);
+    expect(voiceOf(p, 'cat')?.id).toBe('v2');
+    expect(voiceOf(p, 'dog')).toBeNull();
+  });
+
+  it('hands the puppet back to the bit when the take is removed', () => {
+    const p = withVoice([
+      { kind: 'REMOVE', id: 'r1', at: 0, puppetId: 'cat', target: { voice: true } },
+    ]);
+    expect(voiceOf(p, 'cat')).toBeNull();
+  });
+
+  it('carries a take in the bit file', () => {
+    expect([...referencedAssets(withVoice())]).toContain('take.webm');
+  });
+
+  it('parses a take and rejects a malformed one', () => {
+    expect(() => parseProject(serializeProject(withVoice()))).not.toThrow();
+    const bad = serializeProject(
+      project([
+        cast('cat'),
+        { kind: 'VOICE', id: 'v1', at: 0, puppetId: 'cat', assetId: 'a', durationS: 0 },
+      ]),
+    );
+    expect(() => parseProject(bad)).toThrow(/durationS/);
+    const loud = serializeProject(
+      project([
+        cast('cat'),
+        { kind: 'VOICE', id: 'v1', at: 0, puppetId: 'cat', assetId: 'a', durationS: 1, gain: 4 },
+      ]),
+    );
+    expect(() => parseProject(loud)).toThrow(/gain/);
+  });
+});
+
+describe('mixPcmInto', () => {
+  it('lands a take at its offset and leaves the rest alone', () => {
+    const dst = new Float32Array(10);
+    const src = new Float32Array([1, 1, 1]);
+    // Destination starts at 0s at 10Hz; the take starts at 0.4s.
+    mixPcmInto(dst, 0, 10, src, 10, 0.4);
+    expect(dst[0]).toBe(0);
+    expect(dst[3]).toBe(0);
+    expect(dst[4]).toBeCloseTo(1, 5);
+    expect(dst[5]).toBeCloseTo(1, 5);
+    expect(dst[8]).toBe(0);
+  });
+
+  it('adds rather than replaces, and never clips past one', () => {
+    const dst = new Float32Array([0.8, 0.8]);
+    mixPcmInto(dst, 0, 10, new Float32Array([0.8, 0.8, 0.8]), 10, 0);
+    expect(dst[0]).toBe(1);
+    expect(dst[1]).toBe(1);
   });
 });

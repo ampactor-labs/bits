@@ -21,6 +21,7 @@ import type {
   PuppetSpec,
   SnipEvent,
   SpringPreset,
+  VoiceEvent,
 } from './recipe';
 
 export interface ShowPuppet {
@@ -131,6 +132,17 @@ export function pinsOf(project: Project, puppetId: string): (PinEvent | null)[] 
     }
   }
   return slots;
+}
+
+/** A puppet's own take, if it has one. Latest VOICE wins; a REMOVE with a
+ *  voice target hands the puppet back to the bit. */
+export function voiceOf(project: Project, puppetId: string): VoiceEvent | null {
+  let out: VoiceEvent | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'VOICE' && e.puppetId === puppetId) out = e;
+    else if (e.kind === 'REMOVE' && e.puppetId === puppetId && 'voice' in e.target) out = null;
+  }
+  return out;
 }
 
 /** Latest mouth wins; null when the puppet has none or it was removed. */

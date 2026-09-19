@@ -168,6 +168,7 @@ export interface WireEvent extends EventBase {
 export type RemoveTarget =
   | { mouth: true }
   | { eyes: true }
+  | { voice: true }
   | { pin: number }
   | { snip: number }
   | { pass: string }
@@ -199,6 +200,19 @@ export interface TrimEvent extends EventBase {
   to: number;
 }
 
+/** A take of its own for one puppet, starting at `at` in show time. The
+ *  bit stays the bed: a puppet without a voice still flaps to it, and a
+ *  puppet with one flaps to its own, so two people can record their halves
+ *  separately and the right mouth moves for each. */
+export interface VoiceEvent extends EventBase {
+  kind: 'VOICE';
+  puppetId: string;
+  assetId: string;
+  durationS: number;
+  /** 0..1, default 1. */
+  gain?: number;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
@@ -218,6 +232,7 @@ export type RecipeEvent =
   | TrimEvent
   | WireEvent
   | SoundEvent
+  | VoiceEvent
   | DropEvent;
 
 export interface Project {
@@ -438,9 +453,9 @@ export function parseProject(text: string): Project {
           throw new Error('recipe: REMOVE needs exactly one target');
         }
         const pid = ev.puppetId as string;
-        if ('mouth' in target || 'eyes' in target) {
-          if (target.mouth !== true && target.eyes !== true) {
-            throw new Error('recipe: REMOVE mouth/eyes must be true');
+        if ('mouth' in target || 'eyes' in target || 'voice' in target) {
+          if (target.mouth !== true && target.eyes !== true && target.voice !== true) {
+            throw new Error('recipe: REMOVE mouth/eyes/voice must be true');
           }
         } else if ('pin' in target) {
           const n = target.pin;
@@ -471,6 +486,21 @@ export function parseProject(text: string): Project {
         }
         refersBack(ev.passId, 'PASS', 'TRIM passId');
         break;
+      case 'VOICE': {
+        if (typeof ev.assetId !== 'string' || !ev.assetId) {
+          throw new Error('recipe: VOICE needs an assetId');
+        }
+        if (!(isNum(ev.durationS) && (ev.durationS as number) > 0)) {
+          throw new Error('recipe: VOICE needs a positive durationS');
+        }
+        if (
+          ev.gain !== undefined &&
+          !(isNum(ev.gain) && (ev.gain as number) >= 0 && (ev.gain as number) <= 1)
+        ) {
+          throw new Error('recipe: VOICE gain must be in 0..1');
+        }
+        break;
+      }
       case 'SOUND': {
         const ok =
           ev.sfx === 'boing' ||

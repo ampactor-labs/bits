@@ -26,9 +26,18 @@ import { splitPieces } from '../engine/pieces';
 import { IMPACT_SQUASH, impactSfx, mixSfxInto, type SfxName } from '../engine/sfx';
 import { wireAmount } from '../engine/wires';
 import type { Project } from '../engine/recipe';
-import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
+import {
+  castOf,
+  createShowSim,
+  eyesOf,
+  mouthOf,
+  pinsOf,
+  snipsOf,
+  talkOpenFor,
+  voiceOf,
+} from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
-import { AudioSourceHandle, mixdownMono } from './audio';
+import { AudioSourceHandle, decodeMono, mixPcmInto, mixdownMono } from './audio';
 import { STAGE_BG, drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
 export interface RenderProgress {
@@ -71,17 +80,42 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
   return visuals;
 }
 
-/** Per-puppet voice moment at t: the shared track gated by the talk-span rule. */
+/** A puppet's own take, decoded: its envelope and where in show time it
+ *  starts. */
+export interface OwnVoice {
+  track: VoiceTrack;
+  at: number;
+  durationS: number;
+}
+
+/** Per-puppet voice moment at t.
+ *
+ *  A puppet with a take of its own flaps to that take, gated by the take's
+ *  own span: the voice is the talker rule for it, so it does not also need
+ *  a pass to be covering the moment. Everyone else flaps to the bit, gated
+ *  by their passes as before. */
 export function voiceMap(
   project: Project,
   visuals: Map<string, PuppetVisual>,
   track: VoiceTrack,
   t: number,
+  voices?: Map<string, OwnVoice>,
 ): Map<string, VoiceMoment> {
   const out = new Map<string, VoiceMoment>();
   const base = voiceAt(track, t);
   for (const [id, v] of visuals) {
     if (!v.mouth) continue;
+    const own = voices?.get(id);
+    if (own) {
+      const local = t - own.at;
+      if (local < 0 || local > own.durationS) {
+        out.set(id, { open: 0, shape: SHAPE_CLOSED });
+      } else {
+        const m = voiceAt(own.track, local);
+        out.set(id, { open: m.open, shape: m.open === 0 ? SHAPE_CLOSED : m.shape });
+      }
+      continue;
+    }
     const open = talkOpenFor(project, id, base.open, t);
     out.set(id, { open, shape: open === 0 ? SHAPE_CLOSED : base.shape });
   }
@@ -129,6 +163,33 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const voice = mix ? computeVoiceTrack(mix.samples, mix.sampleRate) : EMPTY_VOICE;
   const onsets = mix ? detectOnsets(mix.samples, mix.sampleRate) : [];
   const wires = effectiveWires(project);
+
+  // Per-puppet takes: their envelopes drive their own mouths, and their
+  // PCM is mixed into the output so the film says what was recorded.
+  const voices = new Map<string, OwnVoice>();
+  const voicePcm: { samples: Float32Array; sampleRate: number; at: number; gain: number }[] = [];
+  for (const p of cast) {
+    const own = voiceOf(project, p.id);
+    if (!own) continue;
+    try {
+      const blob = await options.getAssetBlob(own.assetId);
+      const env = await mixdownMono(blob);
+      const full = await decodeMono(blob);
+      if (env) {
+        voices.set(p.id, {
+          track: computeVoiceTrack(env.samples, env.sampleRate),
+          at: own.at,
+          durationS: own.durationS,
+        });
+      }
+      if (full) {
+        voicePcm.push({ ...full, at: own.at, gain: own.gain ?? 1 });
+      }
+    } catch {
+      // A missing take leaves that puppet on the bed, which is what it
+      // had before anyone recorded for it.
+    }
+  }
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -186,7 +247,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
         poses,
         images,
         visuals,
-        voiceMap(project, visuals, voice, t),
+        voiceMap(project, visuals, voice, t, voices),
         t,
         project.seed,
         mods,
@@ -202,7 +263,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 
     if (audio && audioSource) {
       sounds.sort((a, b) => a.at - b.at);
-      await passThroughAudio(audio, audioSource, fromS, toS, sounds, progress);
+      await passThroughAudio(audio, audioSource, fromS, toS, sounds, voicePcm, progress);
       audioSource.close();
     }
 
@@ -229,6 +290,7 @@ async function passThroughAudio(
   fromS: number,
   toS: number,
   sounds: { at: number; sfx: SfxName }[],
+  voices: { samples: Float32Array; sampleRate: number; at: number; gain: number }[],
   progress: (p: RenderProgress) => void,
 ) {
   const sink = audio.makeSink();
@@ -242,6 +304,21 @@ async function passThroughAudio(
       if (s.at + 1 < busStartS) continue;
       for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
         mixSfxInto(buffer.getChannelData(ch), busStartS, buffer.sampleRate, s.at, s.sfx);
+      }
+    }
+    for (const v of voices) {
+      if (v.at > busEnd) continue;
+      if (v.at + v.samples.length / v.sampleRate < busStartS) continue;
+      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        mixPcmInto(
+          buffer.getChannelData(ch),
+          busStartS,
+          buffer.sampleRate,
+          v.samples,
+          v.sampleRate,
+          v.at,
+          v.gain,
+        );
       }
     }
     await audioSource.add(buffer);

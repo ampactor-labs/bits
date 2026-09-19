@@ -129,6 +129,71 @@ export async function mixdownMono(
   }
 }
 
+/** The whole thing as mono PCM at its own rate. mixdownMono decimates to
+ *  16kHz, which is right for an envelope and wrong for anything anyone is
+ *  meant to hear. */
+export async function decodeMono(
+  blob: Blob,
+): Promise<{ samples: Float32Array; sampleRate: number } | null> {
+  const audio = await AudioSourceHandle.open(blob);
+  if (!audio) return null;
+  try {
+    const sink = audio.makeSink();
+    const chunks: Float32Array[] = [];
+    let total = 0;
+    let rate = 48000;
+    for await (const { buffer } of sink.buffers()) {
+      rate = buffer.sampleRate;
+      const ch = buffer.getChannelData(0);
+      const out = new Float32Array(ch.length);
+      out.set(ch);
+      chunks.push(out);
+      total += out.length;
+    }
+    const samples = new Float32Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      samples.set(c, offset);
+      offset += c.length;
+    }
+    return { samples, sampleRate: rate };
+  } finally {
+    audio.dispose();
+  }
+}
+
+/** Add one track into a slice of another, both in show seconds. Resampling
+ *  is linear, which is plenty for speech and keeps the render honest about
+ *  where a word lands. */
+export function mixPcmInto(
+  dst: Float32Array,
+  dstStartS: number,
+  dstRate: number,
+  src: Float32Array,
+  srcRate: number,
+  atS: number,
+  gain = 1,
+): void {
+  for (let i = 0; i < dst.length; i++) {
+    const srcT = dstStartS + i / dstRate - atS;
+    if (srcT < 0) continue;
+    const pos = srcT * srcRate;
+    const i0 = Math.floor(pos);
+    if (i0 + 1 >= src.length) break;
+    const f = pos - i0;
+    const v = src[i0]! * (1 - f) + src[i0 + 1]! * f;
+    dst[i] = Math.max(-1, Math.min(1, dst[i]! + v * gain));
+  }
+}
+
+/** One puppet's take on the jam's clock. */
+export interface VoiceLane {
+  sink: AudioBufferSink;
+  /** Where the take's own zero sits in show time. */
+  at: number;
+  gain: number;
+}
+
 /** Live audio for the jam: schedules decoded buffers on a WebAudio clock from a
  *  given source time. The deck stops it during slow/skip holds and restarts it
  *  on release; this class stays dumb on purpose. */
@@ -138,8 +203,15 @@ export class JamAudio {
   private token = 0;
   private scheduled = new Set<AudioBufferSourceNode>();
   private clock: { from: number; anchor: number } | null = null;
+  /** Per-puppet takes, laid over the bed at their own offsets. */
+  private voices: VoiceLane[] = [];
 
   constructor(private readonly sink: AudioBufferSink) {}
+
+  /** Replaces the whole set. Takes effect on the next play. */
+  setVoices(voices: VoiceLane[]): void {
+    this.voices = voices;
+  }
 
   /** Current playback position on the AudioContext clock; null when stopped.
    *  The preview loop uses this so mouths flap on the audio's time, not the
@@ -195,16 +267,48 @@ export class JamAudio {
     this.stop();
     const token = ++this.token;
     const ctx = await this.ensureCtx();
-    const gain = this.gain!;
     const anchor = ctx.currentTime + 0.05;
     if (token === this.token) this.clock = { from: fromSrcT, anchor };
 
-    for await (const { buffer, timestamp } of this.sink.buffers(fromSrcT)) {
+    // Voices schedule alongside the bed rather than after it: awaiting the
+    // bed's whole decode first would leave every take silent until it
+    // finished.
+    for (const v of this.voices) {
+      void this.schedule(v.sink, fromSrcT, anchor, token, v.at, v.gain).catch(() => {
+        // A take that will not decode leaves its puppet on the bed.
+      });
+    }
+    await this.schedule(this.sink, fromSrcT, anchor, token, 0, 1);
+  }
+
+  /** Lay one track onto the context clock. `offsetS` is where the track's
+   *  own zero sits in show time. */
+  private async schedule(
+    sink: AudioBufferSink,
+    fromSrcT: number,
+    anchor: number,
+    token: number,
+    offsetS: number,
+    gainValue: number,
+  ): Promise<void> {
+    const ctx = this.ctx!;
+    let out: AudioNode = this.gain!;
+    if (gainValue !== 1) {
+      const node = ctx.createGain();
+      node.gain.value = gainValue;
+      node.connect(this.gain!);
+      out = node;
+    }
+    // A take starting after the playhead begins at its own zero; one
+    // already under way starts partway in.
+    const startInTrack = Math.max(0, fromSrcT - offsetS);
+    if (offsetS + startInTrack > fromSrcT + 600) return;
+    for await (const { buffer, timestamp } of sink.buffers(startInTrack)) {
       if (token !== this.token) return;
       const node = ctx.createBufferSource();
       node.buffer = buffer;
-      node.connect(gain);
-      const when = anchor + (timestamp - fromSrcT);
+      node.connect(out);
+      const when = anchor + (offsetS + timestamp - fromSrcT);
       if (when >= ctx.currentTime) {
         node.start(when);
       } else {

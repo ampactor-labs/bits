@@ -7,6 +7,8 @@ import { Meter } from '../../kit/Controls';
 
 export interface RecordPanelProps {
   mode: 'replace' | 'extend';
+  /** Whose take this is, when it belongs to one puppet rather than the bit. */
+  voiceFor: string | null;
   capS: number;
   /** The frame loop writes these; nothing here re-renders per frame. */
   meterRef: RefObject<HTMLDivElement | null>;
@@ -21,6 +23,7 @@ export const clock = (s: number) =>
 
 export function RecordPanel({
   mode,
+  voiceFor,
   capS,
   meterRef,
   meterFillRef,
@@ -30,7 +33,10 @@ export function RecordPanel({
 }: RecordPanelProps) {
   return (
     <div className="stage-cta record-panel" onPointerDown={(e) => e.stopPropagation()}>
-      <p className="live">{mode === 'extend' ? 'keep going' : 'do the bit'}</p>
+      <p className="live">
+        {voiceFor ? `say ${voiceFor}'s lines` : mode === 'extend' ? 'keep going' : 'do the bit'}
+      </p>
+      {voiceFor && <span className="status">the bit is playing. headphones help.</span>}
       <Meter level={0} label="how loud you are" nodeRef={meterRef} fillRef={meterFillRef} />
       <span className="rec-clock">
         <span ref={elapsedRef}>0:00</span>

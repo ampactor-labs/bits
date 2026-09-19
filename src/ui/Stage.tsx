@@ -35,6 +35,7 @@ import {
   pinsOf,
   sameChannel,
   snipsOf,
+  voiceOf,
   worldToLocal,
   type Channel,
   type PuppetPose,
@@ -42,7 +43,13 @@ import {
   type ShowSim,
 } from '../engine/show';
 import { restingPuppet } from '../engine/puppet';
-import { AudioSourceHandle, JamAudio, concatAudio, mixdownMono } from '../media/audio';
+import {
+  AudioSourceHandle,
+  JamAudio,
+  concatAudio,
+  mixdownMono,
+  type VoiceLane,
+} from '../media/audio';
 import { getAsset, saveAsset } from '../media/assets';
 import { exportBundle } from '../media/bundle';
 import { makeCutout } from '../media/cutout';
@@ -90,6 +97,7 @@ import {
   voiceMap,
   renderShow,
   visualsOf,
+  type OwnVoice,
   type RenderProgress,
 } from '../media/render';
 import { shareOrDownload } from '../media/shareFile';
@@ -248,6 +256,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const [rendered, setRendered] = useState<File | null>(null);
   const [poster, setPoster] = useState<string | null>(null);
   const [onsets, setOnsets] = useState<number[]>([]);
+  /** puppetId -> its own envelope, for the mouths. */
+  const voicesRef = useRef<Map<string, OwnVoice>>(new Map());
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   const [redoCount, setRedoCount] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -281,6 +291,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
    *  bundle lacked it, OPFS eviction): offer a re-record, never a dead end. */
   const [soundLost, setSoundLost] = useState(false);
   const retakeModeRef = useRef<'replace' | 'extend'>('replace');
+  /** Set while the mic is recording one puppet's own take rather than the
+   *  bit itself. */
+  const voiceTargetRef = useRef<{ puppetId: string; at: number } | null>(null);
+  /** Decoded takes: envelopes for the mouths, sinks for the speakers. Kept
+   *  by asset id, because re-deriving them on every commit would decode
+   *  the same audio dozens of times a session. */
+  const ownVoicesRef = useRef<Map<string, OwnVoice>>(new Map());
+  const voiceHandlesRef = useRef<Map<string, AudioSourceHandle>>(new Map());
   const [retakeMode, setRetakeMode] = useState<'replace' | 'extend'>('replace');
   /** The mic take's level and clock are painted through refs, like the
    *  playhead: a meter that cost a React commit a frame would undo the
@@ -451,6 +469,47 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     }
   }, []);
 
+  /** Decode every take the recipe names, once each, and hand the jam the
+   *  lanes it needs. Cheap when nothing changed: the cache is keyed on the
+   *  asset, and a take never changes once recorded. */
+  const reloadVoices = useCallback(async () => {
+    const project = projectRef.current;
+    const want = new Map<string, { assetId: string; at: number; durationS: number; gain: number }>();
+    for (const p of castOf(project)) {
+      const v = voiceOf(project, p.id);
+      if (v) want.set(p.id, { assetId: v.assetId, at: v.at, durationS: v.durationS, gain: v.gain ?? 1 });
+    }
+    const owns = new Map<string, OwnVoice>();
+    const lanes: VoiceLane[] = [];
+    for (const [puppetId, v] of want) {
+      try {
+        let handle = voiceHandlesRef.current.get(v.assetId);
+        if (!handle) {
+          const blob = await getAsset(v.assetId);
+          const opened = await AudioSourceHandle.open(blob);
+          if (!opened) continue;
+          handle = opened;
+          voiceHandlesRef.current.set(v.assetId, opened);
+          const mix = await mixdownMono(blob);
+          if (mix) {
+            ownVoicesRef.current.set(v.assetId, {
+              track: computeVoiceTrack(mix.samples, mix.sampleRate),
+              at: v.at,
+              durationS: v.durationS,
+            });
+          }
+        }
+        const cached = ownVoicesRef.current.get(v.assetId);
+        if (cached) owns.set(puppetId, { ...cached, at: v.at, durationS: v.durationS });
+        lanes.push({ sink: handle.makeSink(), at: v.at, gain: v.gain });
+      } catch {
+        // A take that will not open leaves its puppet on the bed.
+      }
+    }
+    voicesRef.current = owns;
+    jamRef.current?.setVoices(lanes);
+  }, []);
+
   // Mount: restore the show.
   useEffect(() => {
     let cancelled = false;
@@ -483,20 +542,24 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         }
       }
       await reloadImages();
+      await reloadVoices();
       if (!cancelled) setModeBoth(jamRef.current ? 'idle' : 'needsAudio');
     })().catch((err: unknown) => {
       if (!cancelled) fail(err);
     });
+    const openVoices = voiceHandlesRef.current;
     return () => {
       cancelled = true;
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       if (longPressRef.current) clearTimeout(longPressRef.current);
       jamRef.current?.dispose();
+      for (const handle of openVoices.values()) handle.dispose();
+      openVoices.clear();
       jamRef.current = null;
       for (const img of imagesRef.current.values()) img.close();
       imagesRef.current = new Map();
     };
-  }, [showId, reloadImages, analyzeAudio, fail]);
+  }, [showId, reloadImages, reloadVoices, analyzeAudio, fail]);
 
   /** Where a puppet's features sit right now, in frame pixels. */
   const layoutOverlays = useCallback(() => {
@@ -942,7 +1005,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             poses,
             imagesRef.current,
             visualsRef.current,
-            voiceMap(project, visualsRef.current, voiceRef.current, clock),
+            voiceMap(project, visualsRef.current, voiceRef.current, clock, voicesRef.current),
             clock,
             project.seed,
             mods,
@@ -1007,7 +1070,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           poses,
           imagesRef.current,
           visualsRef.current,
-          voiceMap(project, visualsRef.current, voiceRef.current, playheadRef.current),
+          voiceMap(
+            project,
+            visualsRef.current,
+            voiceRef.current,
+            playheadRef.current,
+            voicesRef.current,
+          ),
           playheadRef.current,
           project.seed,
           idleMods,
@@ -1602,6 +1671,14 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   }, [commit, currentClock]);
 
   // The bit: mic recording.
+  /** A take for one puppet, recorded against the bit so the two halves
+   *  land on each other. Starts where the playhead is. */
+  const recordVoice = (puppet: ShowPuppet) => {
+    voiceTargetRef.current = { puppetId: puppet.id, at: Math.max(0, playheadRef.current) };
+    setSheet(null);
+    void recordBit();
+  };
+
   const recordBit = async () => {
     const mic = new MicRecorder();
     try {
@@ -1615,6 +1692,9 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     micRef.current = mic;
     setRetakeMode(retakeModeRef.current);
     setModeBoth('micLive');
+    // A take for a puppet is performed against the bit, so the bit plays
+    // while it is recorded.
+    if (voiceTargetRef.current) void jamRef.current?.play(voiceTargetRef.current.at);
   };
 
   /** Throw the take away and go back to whatever was there before. */
@@ -1622,6 +1702,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     micRef.current?.cancel();
     micRef.current = null;
     retakeModeRef.current = 'replace';
+    voiceTargetRef.current = null;
+    jamRef.current?.stop();
     setModeBoth(projectRef.current.audio ? 'idle' : 'needsAudio');
   };
 
@@ -1631,6 +1713,37 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     const quiet = mic.peakLevel < 0.06;
     let blob = await mic.stop();
     micRef.current = null;
+
+    // A take belongs to one puppet; the bit itself is untouched.
+    const voiceTarget = voiceTargetRef.current;
+    if (voiceTarget) {
+      voiceTargetRef.current = null;
+      jamRef.current?.stop();
+      const handle = await AudioSourceHandle.open(blob);
+      const durationS = handle ? await handle.duration() : 0;
+      handle?.dispose();
+      if (durationS <= 0) {
+        bannerRef.current.error('could not read that take; try again');
+        setModeBoth('idle');
+        return;
+      }
+      const assetId = await saveAsset(blob, 'webm');
+      commit((p) =>
+        appendEvent(p, {
+          kind: 'VOICE',
+          id: newId(),
+          at: voiceTarget.at,
+          puppetId: voiceTarget.puppetId,
+          assetId,
+          durationS,
+        }),
+      );
+      await reloadVoices();
+      setSelectedId(voiceTarget.puppetId);
+      setModeBoth('idle');
+      if (quiet) toast.show('that take was very quiet. check the mic and try again?');
+      return;
+    }
     if (retakeModeRef.current === 'extend' && audioBlobRef.current) {
       blob = (await concatAudio(audioBlobRef.current, blob)) ?? blob;
     }
@@ -1654,6 +1767,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       sound: { source: 'mic' as const },
     }));
     setSoundLost(false);
+    await reloadVoices();
     playheadRef.current = 0;
     setT(0);
     setModeBoth('idle');
@@ -2028,6 +2142,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     setRedoCount(redoRef.current.length);
     applyProject((p) => ({ ...p, events: p.events.slice(0, -n) }), false);
     void reloadImages();
+    void reloadVoices();
   };
 
   undoRef.current = undo;
@@ -2045,6 +2160,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     setRedoCount(stack.length);
     applyProject((p) => ({ ...p, events: [...p.events, ...batch] }), false);
     void reloadImages();
+    void reloadVoices();
   };
 
   const doRender = async () => {
@@ -2156,6 +2272,15 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     setModeBoth(m);
     dirtyRef.current = true;
   };
+
+  /** The panel says whose lines are being recorded. */
+  const voiceForName = (() => {
+    const target = voiceTargetRef.current;
+    if (!target) return null;
+    const cast = castOf(projectSnap);
+    const i = cast.findIndex((p) => p.id === target.puppetId);
+    return i < 0 ? null : puppetLabel(cast[i]!, i);
+  })();
 
   const placing =
     mode === 'snipping' || mode === 'mouthing' || mode === 'eyeing' || mode === 'pinning';
@@ -2294,6 +2419,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           {mode === 'micLive' && (
             <RecordPanel
               mode={retakeMode}
+              voiceFor={voiceForName}
               capS={probe.overrides.maxRecordSeconds ?? MAX_RECORD_S}
               meterRef={meterRef}
               meterFillRef={meterFillRef}
@@ -2472,6 +2598,21 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           name={puppetLabel(selected, castOf(projectSnap).indexOf(selected))}
           wireAmount={(source, target) => wireLevel(selected.id, source, target)}
           hand={handOf(selected.id)}
+          voiceS={voiceOf(projectSnap, selected.id)?.durationS ?? null}
+          onVoice={() => recordVoice(selected)}
+          onDropVoice={() => {
+            commit((p) =>
+              appendEvent(p, {
+                kind: 'REMOVE',
+                id: newId(),
+                at: 0,
+                puppetId: selected.id,
+                target: { voice: true },
+              }),
+            );
+            void reloadVoices();
+            toast.undoable('back to the bit', undoRef.current);
+          }}
           onRename={(name) => setSpec(selected, { name })}
           onWire={(source, target, amount) => setWire(selected.id, source, target, amount)}
           onScale={(scale) => recastWith(selected, { scale })}

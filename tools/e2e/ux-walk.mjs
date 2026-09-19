@@ -254,15 +254,30 @@ try {
     for (const h of await page.$$(sel)) {
       const t = (await h.evaluate((e) => (e.textContent || '').trim())) || '';
       if (texts.some((want) => t === want || t.startsWith(want))) {
+        await assertReachable(h, t.slice(0, 24));
         await h.tap();
         return true;
       }
     }
     throw new Error(`no ${sel} reading ${texts.map((t) => `"${t}"`).join(' or ')}`);
   };
+  /** A tap that another element would swallow is a bug in the test or in
+   *  the app, never something to shrug at: it used to look identical to a
+   *  control that simply did nothing. */
+  const assertReachable = async (h, what) => {
+    const blocked = await h.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return 'has no box';
+      const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      if (!top || el === top || el.contains(top)) return null;
+      return `covered by ${top.className || top.tagName}`;
+    });
+    if (blocked) throw new Error(`"${what}" ${blocked}`);
+  };
   const tapLabel = async (label) => {
     const h = await page.$(`[aria-label="${label}"]`);
     if (!h) throw new Error(`no control labelled "${label}"`);
+    await assertReachable(h, label);
     await h.tap();
   };
   const waitMode = (m, ms = 20000) =>
@@ -954,6 +969,57 @@ try {
       await sleep(400);
       const back = await page.$('.dock');
       check('perform-can-be-left', !!back, back ? 'dock back' : 'stuck');
+    });
+
+    // Two people record their halves separately and the right mouth moves
+    // for each: a puppet with a take of its own flaps to that take.
+    await phase('a-puppet-can-have-its-own-voice', async () => {
+      const home = await puppetAt();
+      await tapStage(home.x, home.y);
+      await sleep(300);
+      await tapLabel('more');
+      await sleep(400);
+      const before = await page.evaluate(() => window.__bits.eventKinds().length);
+      await tapLabel('record its voice');
+      await waitMode('micLive', 20000);
+      const saidWho = await page.evaluate(
+        () => document.querySelector('.record-panel .live')?.textContent ?? '',
+      );
+      await sleep(1400);
+      await tapText('.stage-cta button', 'done');
+      await waitMode('idle', 25000);
+      await sleep(600);
+      const kinds = await page.evaluate((n) => window.__bits.eventKinds().slice(n), before);
+      check(
+        'a-puppet-can-have-its-own-voice',
+        kinds.join(',') === 'VOICE',
+        kinds.join(',') || 'nothing',
+      );
+      check(
+        'a-voice-take-says-whose-it-is',
+        /lines/.test(saidWho),
+        saidWho.slice(0, 40) || 'nothing said',
+      );
+
+      // And it can be handed back to the bit.
+      await tapStage(home.x, home.y);
+      await sleep(300);
+      await tapLabel('more');
+      await sleep(400);
+      const beforeDrop = await page.evaluate(() => window.__bits.eventKinds().length);
+      await tapLabel('back to the bit');
+      await sleep(400);
+      const dropped = await page.evaluate((n) => window.__bits.eventKinds().slice(n), beforeDrop);
+      const undo = await page.$('.toast-action');
+      check(
+        'a-voice-can-be-handed-back-to-the-bit',
+        dropped.join(',') === 'REMOVE' && !!undo,
+        `${dropped.join(',')}, undo=${!!undo}`,
+      );
+      if (undo) await undo.tap();
+      await sleep(400);
+      await closeTools();
+      await sleep(250);
     });
 
     await phase('the-mode-menu-is-gone', async () => {

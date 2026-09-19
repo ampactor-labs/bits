@@ -27,6 +27,9 @@ export function referencedAssets(project: Project): Set<string> {
   if (project.audio) ids.add(project.audio.assetId);
   for (const e of project.events) {
     if (e.kind === 'CAST' && e.puppet.type === 'cutout') ids.add(e.puppet.assetId);
+    // A puppet's own take travels with the bit, or the file arrives mute
+    // for whoever recorded it.
+    if (e.kind === 'VOICE') ids.add(e.assetId);
   }
   return ids;
 }
@@ -34,11 +37,15 @@ export function referencedAssets(project: Project): Set<string> {
 /** Rewrite every asset reference through the mapping. Unmapped ids stay:
  *  their assets were absent from the bundle and stay absent on device. */
 export function remapAssetIds(project: Project, map: Map<string, string>): Project {
-  const events = project.events.map((e) =>
-    e.kind === 'CAST' && e.puppet.type === 'cutout' && map.has(e.puppet.assetId)
-      ? { ...e, puppet: { ...e.puppet, assetId: map.get(e.puppet.assetId)! } }
-      : e,
-  );
+  const events = project.events.map((e) => {
+    if (e.kind === 'CAST' && e.puppet.type === 'cutout' && map.has(e.puppet.assetId)) {
+      return { ...e, puppet: { ...e.puppet, assetId: map.get(e.puppet.assetId)! } };
+    }
+    if (e.kind === 'VOICE' && map.has(e.assetId)) {
+      return { ...e, assetId: map.get(e.assetId)! };
+    }
+    return e;
+  });
   const out: Project = { ...project, events };
   if (project.audio && map.has(project.audio.assetId)) {
     out.audio = { ...project.audio, assetId: map.get(project.audio.assetId)! };

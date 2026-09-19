@@ -43,6 +43,10 @@ export interface MoreSheetProps {
   name: string;
   wireAmount: (source: WireSource, target: WireTarget) => number;
   hand: 'left' | 'right' | 'none';
+  /** Its own take, if it has one, in seconds. */
+  voiceS: number | null;
+  onVoice: () => void;
+  onDropVoice: () => void;
   onRename: (name: string) => void;
   onWire: (source: WireSource, target: WireTarget, amount: number) => void;
   onScale: (scale: number) => void;
@@ -115,6 +119,26 @@ export function MoreSheet(props: MoreSheetProps) {
       </div>
 
       <button onClick={() => setShowWires(true)}>wires</button>
+
+      {/* A puppet with a take of its own flaps to that take, so two people
+          can record their halves separately and the right mouth moves. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">
+          {props.voiceS === null
+            ? 'its own voice'
+            : `its own voice · ${props.voiceS.toFixed(1)}s`}
+        </span>
+        <span className="sheet-icons">
+          <IconButton
+            icon="mic"
+            label={props.voiceS === null ? 'record its voice' : 'record it again'}
+            onClick={props.onVoice}
+          />
+          {props.voiceS !== null && (
+            <IconButton icon="trash" label="back to the bit" onClick={props.onDropVoice} />
+          )}
+        </span>
+      </div>
 
       <div className="sheet-row">
         <span className="sheet-row-label">your hand</span>
