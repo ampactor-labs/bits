@@ -843,3 +843,90 @@ input[type='range'] {
   justify-content: center;
   gap: 6px;
 }
+
+/* The mic take, while it happens. */
+.record-panel .meter {
+  width: min(280px, 70%);
+}
+
+.rec-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+/* What a trim throws away, on the timeline and in the sound sheet. */
+.track-cut,
+.trim-cut {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  pointer-events: none;
+}
+
+.trim-track {
+  position: relative;
+  /* The sheet body is a flex column, which would otherwise squash this
+     to nothing and leave two handles floating on a hairline. */
+  flex: 0 0 96px;
+  height: 96px;
+  margin: 6px 0;
+  border-radius: var(--r-1);
+  background: var(--raised);
+  overflow: visible;
+  touch-action: none;
+  --wave-color: #9a9186;
+}
+
+.trim-track .wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.trim-handle {
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  width: var(--hit);
+  margin-left: calc(var(--hit) / -2);
+  background: transparent;
+  touch-action: none;
+}
+
+/* The grabbable area is 44px wide; the line people see is 4px of it. */
+.trim-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 2px);
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent-2);
+}
+
+.trim-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: calc(50% - 9px);
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.trim-handle:focus-visible {
+  outline: none;
+}
+
+.trim-handle:focus-visible::after {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 5px var(--text);
+}

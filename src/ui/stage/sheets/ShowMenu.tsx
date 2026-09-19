@@ -18,7 +18,7 @@ export interface ShowMenuProps {
   onRender: () => void;
   onShareRender: () => void;
   onBitFile: () => void;
-  onSound: (mode: 'replace' | 'extend') => void;
+  onSound: () => void;
   onStageWire: (target: 'trails' | 'foley', amount: number) => void;
   onCorpse: (on: boolean) => void;
   onClose: () => void;
@@ -47,18 +47,7 @@ export function ShowMenu(props: ShowMenuProps) {
           onClick={props.rendered ? props.onShareRender : props.onRender}
         />
         <IconButton icon="bitfile" label="send the bit" showLabel onClick={props.onBitFile} />
-        <IconButton
-          icon="mic"
-          label="new sound"
-          showLabel
-          onClick={() => props.onSound('replace')}
-        />
-        <IconButton
-          icon="sound"
-          label="more sound"
-          showLabel
-          onClick={() => props.onSound('extend')}
-        />
+        <IconButton icon="sound" label="the sound" showLabel onClick={props.onSound} />
       </div>
 
       <div className="sheet-row">

@@ -5,6 +5,8 @@
 // gave no clue it was a three-state control (audit F31). Segmented names
 // the states.
 
+import type { RefObject } from 'react';
+
 export interface SegmentedProps<T extends string> {
   label: string;
   value: T;
@@ -67,16 +69,21 @@ export function ProgressRing({ value, label, size = 28 }: ProgressRingProps) {
 }
 
 export interface MeterProps {
+  /** A live meter is painted straight to the DOM sixty times a second;
+   *  passing these lets the caller do that without a React commit. */
+  nodeRef?: RefObject<HTMLDivElement | null>;
+  fillRef?: RefObject<HTMLDivElement | null>;
   /** 0 to 1. */
   level: number;
   label: string;
 }
 
 /** Mic level. A silent mic looks identical to a working one without it. */
-export function Meter({ level, label }: MeterProps) {
+export function Meter({ level, label, nodeRef, fillRef }: MeterProps) {
   const pct = Math.round(Math.min(1, Math.max(0, level)) * 100);
   return (
     <div
+      ref={nodeRef}
       className="meter"
       role="meter"
       aria-label={label}
@@ -84,7 +91,7 @@ export function Meter({ level, label }: MeterProps) {
       aria-valuemax={100}
       aria-valuenow={pct}
     >
-      <div className="meter-fill" style={{ width: `${pct}%` }} />
+      <div ref={fillRef} className="meter-fill" style={{ width: `${pct}%` }} />
     </div>
   );
 }

@@ -379,7 +379,21 @@ try {
     check('sound-can-come-from-a-file', offersFile, offersFile ? 'offered' : 'mic only');
     await tapText('.stage-cta button', '⏺ record the bit', 'record the bit');
     await waitMode('micLive');
-    await sleep(2600);
+    await sleep(1400);
+    await shot('recording');
+    // A take used to be the word "recording…": a muted mic looked exactly
+    // like a live one, and the length cap arrived out of nowhere.
+    const take = await page.evaluate(() => ({
+      meter: !!document.querySelector('.record-panel [role=meter]'),
+      clock: document.querySelector('.rec-clock span')?.textContent ?? '',
+      cap: document.querySelector('.rec-clock .times-total')?.textContent ?? '',
+    }));
+    check(
+      'a-take-shows-a-level-and-a-clock',
+      take.meter && take.clock !== '0:00' && take.cap !== '',
+      `meter=${take.meter} clock=${take.clock} of ${take.cap}`,
+    );
+    await sleep(1200);
     await tapText('.stage-cta button', '■ done', 'done');
     await waitMode('idle', 25000);
     await sleep(500);
@@ -644,6 +658,70 @@ try {
       );
     });
   }
+
+  // A forgotten mic used to record until the phone filled up, and there
+  // was no way to abandon a take once it had started.
+  await phase('a-take-stops-at-the-cap-and-can-be-thrown-away', async () => {
+    await goToList();
+    await tapText('.transport button', '+ new bit');
+    await sleep(600);
+    await page.evaluate(() => window.__bits.setOverride('maxRecordSeconds', 3));
+    await tapText('.stage-cta button', '⏺ record the bit', 'record the bit');
+    await waitMode('micLive');
+    await tapText('.stage-cta button', 'throw it away');
+    await sleep(600);
+    const afterCancel = await page.evaluate(() => ({
+      audio: window.__bits.project()?.audio ?? null,
+      live: !!document.querySelector('.record-panel'),
+    }));
+    check(
+      'a-take-can-be-thrown-away',
+      !afterCancel.audio && !afterCancel.live,
+      `audio=${JSON.stringify(afterCancel.audio)} live=${afterCancel.live}`,
+    );
+
+    await tapText('.stage-cta button', '⏺ record the bit', 'record the bit');
+    await waitMode('micLive');
+    await waitMode('idle', 20000);
+    const dur = await page.evaluate(() => window.__bits.project()?.audio?.durationS ?? 0);
+    check('a-take-stops-at-the-cap', dur > 1 && dur < 6, `${dur.toFixed(2)}s against a 3s cap`);
+  });
+
+  // Sound used to be an invisible asset with two buttons in the mode menu.
+  await phase('the-sound-can-be-trimmed', async () => {
+    const before = await page.evaluate(() => window.__bits.project()?.audio?.durationS ?? 0);
+    if (before <= 0) throw new Error('no sound to trim');
+    await tapLabel('this bit');
+    await sleep(350);
+    await tapLabel('the sound');
+    await sleep(400);
+    const handle = await page.$('[aria-label="where the sound ends"]');
+    if (!handle) throw new Error('no trim handle');
+    const box = await handle.boundingBox();
+    const track = await page.$eval('.trim-track', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, w: r.width };
+    });
+    await page.touchscreen.touchStart(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 1; i <= 5; i++) {
+      await page.touchscreen.touchMove(track.x + track.w * (1 - 0.06 * i), box.y + box.height / 2);
+      await sleep(40);
+    }
+    await page.touchscreen.touchEnd();
+    await sleep(350);
+    await shot('trim');
+    const trim = await page.evaluate(() => window.__bits.project()?.audio?.trim ?? null);
+    check(
+      'the-sound-can-be-trimmed',
+      !!trim && trim.to < before - 0.2 && trim.from >= 0,
+      trim ? `${trim.from.toFixed(2)}-${trim.to.toFixed(2)} of ${before.toFixed(2)}` : 'no trim',
+    );
+    // Trimming is metadata: it must not touch what was performed.
+    const kinds = await page.evaluate(() => window.__bits.eventKinds());
+    check('trimming-appends-no-event', !kinds.includes('TRIM'), kinds.join(',') || 'no events');
+    await closeTools();
+    await sleep(200);
+  });
 
   // The headline change of M1, proven rather than asserted: a person who
   // will not talk out loud can still start a bit.

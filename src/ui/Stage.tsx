@@ -76,6 +76,8 @@ import { CastSheet, type CastKind } from './stage/sheets/CastSheet';
 import { DOODLE_COLORS, DoodleBar, type DoodleInk } from './stage/DoodleBar';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { ShowMenu } from './stage/sheets/ShowMenu';
+import { SoundSheet, type SoundTrim } from './stage/sheets/SoundSheet';
+import { RecordPanel, clock as clockText } from './stage/RecordPanel';
 import { TitleBar } from './stage/TitleBar';
 import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
@@ -141,6 +143,9 @@ const HOLD_SAMPLE_S = 0.25;
  *  fraction of the stage: the old normalised threshold gave nearly twice
  *  the slop vertically as horizontally on a 9:16 stage. */
 const DRAG_PX = 6;
+/** A bit is a bit, not a podcast. Long enough for a scene, short enough
+ *  that a forgotten mic does not fill the phone. */
+const MAX_RECORD_S = 100;
 /** How near a finger has to land to take hold of a feature. */
 const HANDLE_HIT_PX = 22;
 
@@ -225,6 +230,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     | { kind: 'text' }
     | { kind: 'retake'; mode: 'replace' | 'extend' }
     | { kind: 'cast' }
+    | { kind: 'sound' }
     | { kind: 'more' }
     | { kind: 'show' }
   >(null);
@@ -245,6 +251,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
    *  bundle lacked it, OPFS eviction): offer a re-record, never a dead end. */
   const [soundLost, setSoundLost] = useState(false);
   const retakeModeRef = useRef<'replace' | 'extend'>('replace');
+  const [retakeMode, setRetakeMode] = useState<'replace' | 'extend'>('replace');
+  /** The mic take's level and clock are painted through refs, like the
+   *  playhead: a meter that cost a React commit a frame would undo the
+   *  one optimisation the stage has. */
+  const meterRef = useRef<HTMLDivElement>(null);
+  const meterFillRef = useRef<HTMLDivElement>(null);
+  const elapsedRef = useRef<HTMLSpanElement>(null);
   const prevSquashRef = useRef<Map<string, number>>(new Map());
   const liveImpactCountRef = useRef(0);
 
@@ -306,6 +319,8 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(true);
   const commitGrabRef = useRef<() => void>(() => {});
+  /** stopBit is defined below the frame loop, which enforces the cap. */
+  const stopBitRef = useRef<() => void>(() => {});
 
   const setModeBoth = (m: Mode) => {
     modeRef.current = m;
@@ -612,8 +627,13 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   }, []);
 
   const start = async (recording: boolean) => {
-    const dur = projectRef.current.audio?.durationS ?? 0;
+    const audio = projectRef.current.audio;
+    const dur = audio?.durationS ?? 0;
     if (dur <= 0) return;
+    // A trimmed bit plays only what it kept. Show time never moves, so a
+    // pass at five seconds is still at five seconds.
+    const fromLimit = audio?.trim?.from ?? 0;
+    const toLimit = audio?.trim?.to ?? dur;
     setRendered(null);
 
     // A puppet with a hand assigned brings the camera up for the take.
@@ -631,7 +651,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       }
     }
     let from = playheadRef.current;
-    if (from >= dur - 0.05) from = 0;
+    if (from >= toLimit - 0.05 || from < fromLimit) from = fromLimit;
     playheadRef.current = from;
     prevSquashRef.current = new Map();
     liveImpactCountRef.current = 0;
@@ -698,9 +718,25 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
       const project = projectRef.current;
       const dur = project.audio?.durationS ?? 0;
 
+      if (m === 'micLive') {
+        const mic = micRef.current;
+        if (mic) {
+          const level = mic.level();
+          const fill = meterFillRef.current;
+          if (fill) fill.style.width = `${Math.round(level * 100)}%`;
+          meterRef.current?.setAttribute('aria-valuenow', String(Math.round(level * 100)));
+          const secs = mic.elapsedS;
+          const text = elapsedRef.current;
+          if (text) text.textContent = clockText(secs);
+          if (secs >= (probe.overrides.maxRecordSeconds ?? MAX_RECORD_S)) stopBitRef.current();
+        }
+        return;
+      }
+
       if (m === 'playing' || m === 'recording') {
+        const stopAt = project.audio?.trim?.to ?? dur;
         const now = currentClock();
-        const clock = Math.max(clockFromRef.current, Math.min(dur, now));
+        const clock = Math.max(clockFromRef.current, Math.min(stopAt, now));
         playheadRef.current = clock;
         paintClock(clock);
 
@@ -787,7 +823,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
           );
         }
         layoutOverlays();
-        if (now >= dur) stop();
+        if (now >= stopAt) stop();
         return;
       }
 
@@ -1423,14 +1459,31 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
   // The bit: mic recording.
   const recordBit = async () => {
     const mic = new MicRecorder();
+    try {
+      await mic.start();
+    } catch {
+      // Denied, or no mic at all. Saying so beats a screen that does
+      // nothing, and the file route is still open.
+      bannerRef.current.error('no microphone. you can use a file instead.');
+      return;
+    }
     micRef.current = mic;
-    await mic.start();
+    setRetakeMode(retakeModeRef.current);
     setModeBoth('micLive');
+  };
+
+  /** Throw the take away and go back to whatever was there before. */
+  const cancelBit = () => {
+    micRef.current?.cancel();
+    micRef.current = null;
+    retakeModeRef.current = 'replace';
+    setModeBoth(projectRef.current.audio ? 'idle' : 'needsAudio');
   };
 
   const stopBit = async () => {
     const mic = micRef.current;
     if (!mic) return;
+    const quiet = mic.peakLevel < 0.06;
     let blob = await mic.stop();
     micRef.current = null;
     if (retakeModeRef.current === 'extend' && audioBlobRef.current) {
@@ -1449,12 +1502,21 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     jamRef.current?.dispose();
     jamRef.current = new JamAudio(handle.makeSink());
     await analyzeAudio(blob);
-    commit((p) => ({ ...p, audio: { assetId, durationS: durationRecorded } }));
+    // The trim belonged to the old sound; a new one arrives whole.
+    commit((p) => ({
+      ...p,
+      audio: { assetId, durationS: durationRecorded },
+      sound: { source: 'mic' as const },
+    }));
     setSoundLost(false);
     playheadRef.current = 0;
     setT(0);
     setModeBoth('idle');
+    // A take the mic never heard is a bit that will never play. Better to
+    // hear it now than after casting a puppet to it.
+    if (quiet) toast.show('that take was very quiet. check the mic and try again?');
   };
+  stopBitRef.current = () => void stopBit();
 
   // Casting.
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -1868,10 +1930,26 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
     }
   };
 
+  /** Trimming is metadata, not an event: it changes what plays and what
+   *  renders, never what was performed. */
+  const setTrim = (trim: SoundTrim | null) => {
+    commit((p) => {
+      if (!p.audio) return p;
+      const audio = { assetId: p.audio.assetId, durationS: p.audio.durationS };
+      return { ...p, audio: trim ? { ...audio, trim } : audio };
+    });
+    const from = trim?.from ?? 0;
+    if (playheadRef.current < from) seek(from);
+    const to = trim?.to ?? (projectRef.current.audio?.durationS ?? 0);
+    if (playheadRef.current > to) seek(to);
+  };
+
   const seek = (v: number) => {
-    playheadRef.current = v;
-    setT(v);
-    paintClock(v);
+    const audio = projectRef.current.audio;
+    const clamped = Math.min(audio?.trim?.to ?? v, Math.max(audio?.trim?.from ?? 0, v));
+    playheadRef.current = clamped;
+    setT(clamped);
+    paintClock(clamped);
   };
 
   const passCount = projectSnap.events.filter((e) => e.kind === 'PASS').length;
@@ -2031,12 +2109,15 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             </div>
           )}
           {mode === 'micLive' && (
-            <div className="stage-cta">
-              <p className="live">recording… do the bit</p>
-              <button className="primary" onClick={() => void stopBit()}>
-                ■ done
-              </button>
-            </div>
+            <RecordPanel
+              mode={retakeMode}
+              capS={probe.overrides.maxRecordSeconds ?? MAX_RECORD_S}
+              meterRef={meterRef}
+              meterFillRef={meterFillRef}
+              elapsedRef={elapsedRef}
+              onDone={() => void stopBit()}
+              onCancel={cancelBit}
+            />
           )}
           {rendering && (
             <div className="render-overlay" onPointerDown={(e) => e.stopPropagation()}>
@@ -2113,6 +2194,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
               seekRef={seekRef}
               timeTextRef={timeTextRef}
               initialT={t}
+              trim={projectSnap.audio?.trim ?? null}
             />
           )}
           <Dock
@@ -2174,6 +2256,18 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
         />
       )}
 
+      {sheet?.kind === 'sound' && durationS > 0 && (
+        <SoundSheet
+          durationS={durationS}
+          peaks={peaks}
+          trim={projectSnap.audio?.trim ?? null}
+          source={projectSnap.sound?.name ?? (projectSnap.sound?.source === 'file' ? 'a file' : 'the mic')}
+          onTrim={setTrim}
+          onRetake={(m) => startRetake(m)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+
       {sheet?.kind === 'show' && (
         <ShowMenu
           passCount={passCount}
@@ -2195,7 +2289,7 @@ export function Stage({ showId, onBack }: { showId: string; onBack: () => void }
             setSheet(null);
             void exportBit();
           }}
-          onSound={(mode) => startRetake(mode)}
+          onSound={() => setSheet({ kind: 'sound' })}
           onStageWire={(target, amount) => setWire('', 'on', target, amount)}
           onCorpse={setCorpse}
           onClose={() => setSheet(null)}

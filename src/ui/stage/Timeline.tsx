@@ -21,6 +21,9 @@ export interface TimelineProps {
   seekRef: RefObject<HTMLInputElement | null>;
   timeTextRef: RefObject<HTMLSpanElement | null>;
   initialT: number;
+  /** What the sound kept. Outside it is drawn as thrown away, so a
+   *  trimmed bit does not look like a broken one. */
+  trim: { from: number; to: number } | null;
 }
 
 const fmt = (s: number) =>
@@ -39,6 +42,7 @@ export function Timeline({
   seekRef,
   timeTextRef,
   initialT,
+  trim,
 }: TimelineProps) {
   const waveRef = useRef<HTMLCanvasElement>(null);
 
@@ -83,6 +87,18 @@ export function Timeline({
               <span key={i} className="beat" style={{ left: `${(o / durationS) * 100}%` }} />
             ))}
           <div ref={fillRef} className="fill" style={{ width: `${pct}%` }} />
+          {trim && durationS > 0 && (
+            <>
+              <div
+                className="track-cut"
+                style={{ left: 0, width: `${(trim.from / durationS) * 100}%` }}
+              />
+              <div
+                className="track-cut"
+                style={{ left: `${(trim.to / durationS) * 100}%`, right: 0 }}
+              />
+            </>
+          )}
         </div>
         {/* Unclipped: the handle is a circle wider than the bar, and at
             either end half of it would otherwise be cut off. */}
@@ -104,7 +120,7 @@ export function Timeline({
       <span className="times">
         <span ref={timeTextRef}>{fmt(initialT)}</span>
         <span className="times-sep"> / </span>
-        <span className="times-total">{fmt(durationS)}</span>
+        <span className="times-total">{fmt(trim ? trim.to - trim.from : durationS)}</span>
       </span>
     </div>
   );
