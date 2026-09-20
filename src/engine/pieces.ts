@@ -89,11 +89,15 @@ export function pointInPoly(poly: Poly, x: number, y: number): boolean {
   return inside;
 }
 
-export function splitPieces(snips: SnipLine[]): PuppetPieces {
+/** A null slot is a snip that was removed. It is skipped exactly the way a
+ *  degenerate line is, and its index stays occupied, so every piece keeps
+ *  the `snipIndex` its passes name. */
+export function splitPieces(snips: (SnipLine | null)[]): PuppetPieces {
   let rootPoly = UNIT_BOX;
   const children: PieceDef[] = [];
   for (let i = 0; i < snips.length; i++) {
-    const line = snips[i]!;
+    const line = snips[i];
+    if (!line) continue;
     const centerSide = side(line, 0.5, 0.5);
     // A line through the exact center cannot pick a root side; skip it.
     if (Math.abs(centerSide) < 1e-9) continue;

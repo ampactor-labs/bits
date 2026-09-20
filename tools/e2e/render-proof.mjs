@@ -99,6 +99,38 @@ try {
     bundle.survivesOriginalDelete,
   );
 
+  // Flip is a frame transform, so it must actually change the pixels and
+  // the change must be a mirror. This runs without an encoder.
+  const flip = await page.evaluate(() => window.__bitsE2E.runFlip());
+  check(
+    'flip mirrors the puppet',
+    // Not 1.0: rasterising a mirrored stroke re-samples its anti-aliasing.
+    flip.mirrorMatch > 0.95,
+    `${(flip.mirrorMatch * 100).toFixed(1)}% of sampled pixels mirror`,
+  );
+  check(
+    'flip actually changed something',
+    flip.changed > 0.01,
+    `${(flip.changed * 100).toFixed(1)}% of pixels differ`,
+  );
+  check(
+    'flip puts the ink the same distance the other side of centre',
+    Math.abs(1 - flip.centroidFlipped - flip.centroidPlain) < 0.01 &&
+      Math.abs(flip.centroidFlipped - flip.centroidPlain) > 0.05,
+    `centroid ${flip.centroidPlain.toFixed(3)} -> ${flip.centroidFlipped.toFixed(3)}`,
+  );
+
+  // A bit saved by the shipped v0 app must keep opening and keep rendering.
+  const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
+  check('a v0 bit still opens', v0.parsedVersion === 1 && v0.castCount === 1, `version ${v0.parsedVersion}`);
+  check('migration fills updatedAt from createdAt', v0.updatedAt === '2026-07-31T12:00:00.000Z', v0.updatedAt);
+  check(
+    'a v0 bit still renders to its audio spine',
+    Math.abs(v0.renderedDurationS - 2) < 0.2 && v0.renderedWidth === 360 && v0.renderedHeight === 640,
+    `${v0.renderedDurationS.toFixed(3)}s ${v0.renderedWidth}x${v0.renderedHeight}`,
+  );
+  check('a v0 bit renders real bytes', v0.renderedBytes > 20000, `${v0.renderedBytes} bytes`);
+
   check('no page errors', pageErrors.length === 0, pageErrors.join('; '));
 } catch (err) {
   check('e2e run completed', false, String(err));

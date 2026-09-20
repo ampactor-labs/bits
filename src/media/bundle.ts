@@ -2,9 +2,10 @@
 // single JSON. Send it to someone, they open it, the whole show is theirs to
 // re-perform. The recipe-in-export stance, made portable.
 //
-// Import copies assets under fresh ids: every show owns its assets
-// exclusively, so deleting any show can never break another. Double-imports
-// and re-imports of your own bit stay independent copies.
+// Import copies assets under fresh ids, so an imported bit never shares
+// anything with the bit it came from and double-imports stay independent.
+// Duplicating a bit on this phone is the one case that does share, and
+// collection checks who else is using an asset before dropping it.
 
 import { parseProject, serializeProject, type Project } from '../engine/recipe';
 import { getAsset, saveAsset } from './assets';
@@ -26,6 +27,9 @@ export function referencedAssets(project: Project): Set<string> {
   if (project.audio) ids.add(project.audio.assetId);
   for (const e of project.events) {
     if (e.kind === 'CAST' && e.puppet.type === 'cutout') ids.add(e.puppet.assetId);
+    // A puppet's own take travels with the bit, or the file arrives mute
+    // for whoever recorded it.
+    if (e.kind === 'VOICE') ids.add(e.assetId);
   }
   return ids;
 }
@@ -33,11 +37,15 @@ export function referencedAssets(project: Project): Set<string> {
 /** Rewrite every asset reference through the mapping. Unmapped ids stay:
  *  their assets were absent from the bundle and stay absent on device. */
 export function remapAssetIds(project: Project, map: Map<string, string>): Project {
-  const events = project.events.map((e) =>
-    e.kind === 'CAST' && e.puppet.type === 'cutout' && map.has(e.puppet.assetId)
-      ? { ...e, puppet: { ...e.puppet, assetId: map.get(e.puppet.assetId)! } }
-      : e,
-  );
+  const events = project.events.map((e) => {
+    if (e.kind === 'CAST' && e.puppet.type === 'cutout' && map.has(e.puppet.assetId)) {
+      return { ...e, puppet: { ...e.puppet, assetId: map.get(e.puppet.assetId)! } };
+    }
+    if (e.kind === 'VOICE' && map.has(e.assetId)) {
+      return { ...e, assetId: map.get(e.assetId)! };
+    }
+    return e;
+  });
   const out: Project = { ...project, events };
   if (project.audio && map.has(project.audio.assetId)) {
     out.audio = { ...project.audio, assetId: map.get(project.audio.assetId)! };

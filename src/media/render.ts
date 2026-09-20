@@ -26,10 +26,19 @@ import { splitPieces } from '../engine/pieces';
 import { IMPACT_SQUASH, impactSfx, mixSfxInto, type SfxName } from '../engine/sfx';
 import { wireAmount } from '../engine/wires';
 import type { Project } from '../engine/recipe';
-import { castOf, createShowSim, eyesOf, mouthOf, pinsOf, snipsOf, talkOpenFor } from '../engine/show';
+import {
+  castOf,
+  createShowSim,
+  eyesOf,
+  mouthOf,
+  pinsOf,
+  snipsOf,
+  talkOpenFor,
+  voiceOf,
+} from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
-import { AudioSourceHandle, mixdownMono } from './audio';
-import { drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
+import { AudioSourceHandle, decodeMono, mixPcmInto, mixdownMono } from './audio';
+import { STAGE_BG, drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
 
 export interface RenderProgress {
   phase: 'video' | 'audio' | 'finalize';
@@ -45,6 +54,15 @@ export interface RenderShowOptions {
   height?: number;
   fps?: number;
   onProgress?: (p: RenderProgress) => void;
+  /** Abort a long render. The output is cancelled and AbortError thrown. */
+  signal?: AbortSignal;
+}
+
+export class RenderCancelled extends Error {
+  constructor() {
+    super('render cancelled');
+    this.name = 'RenderCancelled';
+  }
 }
 
 const even = (n: number) => 2 * Math.round(n / 2);
@@ -62,29 +80,122 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
   return visuals;
 }
 
-/** Per-puppet voice moment at t: the shared track gated by the talk-span rule. */
+/** A puppet's own take, decoded: its envelope and where in show time it
+ *  starts. */
+export interface OwnVoice {
+  track: VoiceTrack;
+  at: number;
+  durationS: number;
+}
+
+/** Per-puppet voice moment at t.
+ *
+ *  A puppet with a take of its own flaps to that take, gated by the take's
+ *  own span: the voice is the talker rule for it, so it does not also need
+ *  a pass to be covering the moment. Everyone else flaps to the bit, gated
+ *  by their passes as before. */
 export function voiceMap(
   project: Project,
   visuals: Map<string, PuppetVisual>,
   track: VoiceTrack,
   t: number,
+  voices?: Map<string, OwnVoice>,
 ): Map<string, VoiceMoment> {
   const out = new Map<string, VoiceMoment>();
   const base = voiceAt(track, t);
   for (const [id, v] of visuals) {
     if (!v.mouth) continue;
+    const own = voices?.get(id);
+    if (own) {
+      const local = t - own.at;
+      if (local < 0 || local > own.durationS) {
+        out.set(id, { open: 0, shape: SHAPE_CLOSED });
+      } else {
+        const m = voiceAt(own.track, local);
+        out.set(id, { open: m.open, shape: m.open === 0 ? SHAPE_CLOSED : m.shape });
+      }
+      continue;
+    }
     const open = talkOpenFor(project, id, base.open, t);
     out.set(id, { open, shape: open === 0 ? SHAPE_CLOSED : base.shape });
   }
   return out;
 }
 
+/** One puppet's take, decoded and placed in show time. */
+export interface VoicePcm {
+  samples: Float32Array;
+  sampleRate: number;
+  at: number;
+  gain: number;
+}
+
+/** Every take the recipe names, decoded twice: once coarse for the
+ *  envelope that drives its mouth, once at full rate for the mix. A take
+ *  that will not open leaves its puppet on the bed, which is what it had
+ *  before anyone recorded for it. */
+export async function collectVoices(
+  project: Project,
+  getAssetBlob: (assetId: string) => Promise<Blob>,
+): Promise<{ voices: Map<string, OwnVoice>; pcm: VoicePcm[] }> {
+  const voices = new Map<string, OwnVoice>();
+  const pcm: VoicePcm[] = [];
+  for (const p of castOf(project)) {
+    const own = voiceOf(project, p.id);
+    if (!own) continue;
+    try {
+      const blob = await getAssetBlob(own.assetId);
+      const env = await mixdownMono(blob);
+      const full = await decodeMono(blob);
+      if (env) {
+        voices.set(p.id, {
+          track: computeVoiceTrack(env.samples, env.sampleRate),
+          at: own.at,
+          durationS: own.durationS,
+        });
+      }
+      if (full) pcm.push({ ...full, at: own.at, gain: own.gain ?? 1 });
+    } catch {
+      // A missing take leaves that puppet on the bed.
+    }
+  }
+  return { voices, pcm };
+}
+
+/** Lay every take onto one slice of the output bus, in place. Exported so
+ *  the browser harness can run the step the render runs: this container's
+ *  Chromium has no H.264 encoder, so the render proof cannot reach it, and
+ *  a mix nobody can hear is a mix nobody has checked. */
+export function mixVoicesInto(buffer: AudioBuffer, busStartS: number, voices: VoicePcm[]): void {
+  const busEnd = busStartS + buffer.duration;
+  for (const v of voices) {
+    if (v.at > busEnd) continue;
+    if (v.at + v.samples.length / v.sampleRate < busStartS) continue;
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      mixPcmInto(
+        buffer.getChannelData(ch),
+        busStartS,
+        buffer.sampleRate,
+        v.samples,
+        v.sampleRate,
+        v.at,
+        v.gain,
+      );
+    }
+  }
+}
+
 export async function renderShow(options: RenderShowOptions): Promise<File> {
   const { project } = options;
   const fps = options.fps ?? 30;
-  const outW = even(options.width ?? 720);
-  const outH = even(options.height ?? 1280);
+  // The film is the shape of the stage it was performed on.
+  const wide = project.aspect === '16:9';
+  const outW = even(options.width ?? (wide ? 1280 : 720));
+  const outH = even(options.height ?? (wide ? 720 : 1280));
   const progress = options.onProgress ?? (() => {});
+  const stopIfCancelled = () => {
+    if (options.signal?.aborted) throw new RenderCancelled();
+  };
 
   const audio = options.audioBlob ? await AudioSourceHandle.open(options.audioBlob) : null;
   let durationS = 0;
@@ -101,6 +212,13 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     throw new Error('this device cannot encode H264 video');
   }
 
+  // A trim bounds what renders. Show time stays asset time, so the sim and
+  // the sound both keep speaking the same clock and no pass is rewritten.
+  const trim = project.audio?.trim;
+  const fromS = trim ? Math.max(0, Math.min(trim.from, durationS)) : 0;
+  const toS = trim ? Math.max(fromS, Math.min(trim.to, durationS)) : durationS;
+  const spanS = Math.max(1 / fps, toS - fromS);
+
   const cast = castOf(project);
   const visuals = visualsOf(project);
   const images = await loadStageImages(cast, options.getAssetBlob);
@@ -110,6 +228,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const voice = mix ? computeVoiceTrack(mix.samples, mix.sampleRate) : EMPTY_VOICE;
   const onsets = mix ? detectOnsets(mix.samples, mix.sampleRate) : [];
   const wires = effectiveWires(project);
+
+  // Per-puppet takes: their envelopes drive their own mouths, and their
+  // PCM is mixed into the output so the film says what was recorded.
+  const { voices, pcm: voicePcm } = await collectVoices(project, options.getAssetBlob);
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -136,9 +258,15 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     const prevSquash = new Map<string, number>();
     let impactCount = 0;
 
-    const frameCount = Math.max(1, Math.ceil(durationS * fps));
+    // drawStage only wipes the whole canvas when trails are off or the
+    // clock is near zero, so a trimmed render would otherwise start from an
+    // untouched (transparent) canvas.
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, outW, outH);
+
+    const frameCount = Math.max(1, Math.ceil(spanS * fps));
     for (let i = 0; i < frameCount; i++) {
-      const t = (i + 0.5) / fps;
+      const t = fromS + (i + 0.5) / fps;
       const poses = sim.advanceTo(t);
       if (foleyOn) {
         for (const [pid, pose] of poses) {
@@ -161,20 +289,23 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
         poses,
         images,
         visuals,
-        voiceMap(project, visuals, voice, t),
+        voiceMap(project, visuals, voice, t, voices),
         t,
         project.seed,
         mods,
         trailStrength(wires, voice, onsets, t),
       );
       await videoSource.add(i / fps, 1 / fps);
-      if (i % 10 === 0) progress({ phase: 'video', fraction: i / frameCount });
+      if (i % 10 === 0) {
+        progress({ phase: 'video', fraction: i / frameCount });
+        stopIfCancelled();
+      }
     }
     videoSource.close();
 
     if (audio && audioSource) {
       sounds.sort((a, b) => a.at - b.at);
-      await passThroughAudio(audio, audioSource, durationS, sounds, progress);
+      await passThroughAudio(audio, audioSource, fromS, toS, sounds, voicePcm, progress);
       audioSource.close();
     }
 
@@ -183,6 +314,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     if (!target.buffer) throw new Error('render produced no bytes');
     const name = options.fileName ?? `${project.title || 'show'}.mp4`;
     return new File([target.buffer], name, { type: 'video/mp4' });
+  } catch (err) {
+    // Leave no half-written output behind when the person backs out.
+    await output.cancel().catch(() => {});
+    throw err;
   } finally {
     audio?.dispose();
     for (const img of images.values()) img.close();
@@ -194,8 +329,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 async function passThroughAudio(
   audio: AudioSourceHandle,
   audioSource: AudioBufferSource,
-  durationS: number,
+  fromS: number,
+  toS: number,
   sounds: { at: number; sfx: SfxName }[],
+  voices: VoicePcm[],
   progress: (p: RenderProgress) => void,
 ) {
   const sink = audio.makeSink();
@@ -211,13 +348,16 @@ async function passThroughAudio(
         mixSfxInto(buffer.getChannelData(ch), busStartS, buffer.sampleRate, s.at, s.sfx);
       }
     }
+    mixVoicesInto(buffer, busStartS, voices);
     await audioSource.add(buffer);
   };
 
-  let covered = 0;
-  for await (const { buffer, timestamp } of sink.buffers(0, durationS)) {
-    const from = Math.max(0, timestamp);
-    const to = Math.min(durationS, timestamp + buffer.duration);
+  // Bus times stay in asset seconds, so performed sounds and foley need no
+  // offset applied to their `at`.
+  let covered = fromS;
+  for await (const { buffer, timestamp } of sink.buffers(fromS, toS)) {
+    const from = Math.max(fromS, timestamp);
+    const to = Math.min(toS, timestamp + buffer.duration);
     if (to <= from) continue;
     geometry.channels = buffer.numberOfChannels;
     geometry.sampleRate = buffer.sampleRate;
@@ -226,10 +366,11 @@ async function passThroughAudio(
     }
     await mixAndAdd(sliceAudioBuffer(buffer, from - timestamp, to - timestamp), from);
     covered = to;
-    progress({ phase: 'audio', fraction: covered / durationS });
+    const span = Math.max(1e-6, toS - fromS);
+    progress({ phase: 'audio', fraction: (covered - fromS) / span });
   }
-  if (durationS - covered > 0.001) {
-    await addSilence(audioSource, durationS - covered, geometry, covered, mixAndAdd);
+  if (toS - covered > 0.001) {
+    await addSilence(audioSource, toS - covered, geometry, covered, mixAndAdd);
   }
 }
 

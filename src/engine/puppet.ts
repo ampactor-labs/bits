@@ -20,8 +20,17 @@ export interface PuppetTarget {
 
 export const PUPPET_DT = 1 / 120;
 
-const SPRING_K = 180;
-const SPRING_DAMP = 22;
+/** How floppy a puppet feels. 'felt' is the original pair, so an unset
+ *  spring and 'felt' simulate identically and every v0 recipe replays
+ *  frame for frame. */
+export type SpringPreset = 'paper' | 'felt' | 'rubber';
+
+const SPRINGS: Record<SpringPreset, { k: number; damp: number }> = {
+  paper: { k: 320, damp: 30 },
+  felt: { k: 180, damp: 22 },
+  rubber: { k: 110, damp: 12 },
+};
+
 const FREE_DRAG = 3.2;
 const LEAN_PER_VX = 0.55;
 const LEAN_MAX = 0.5;
@@ -36,12 +45,18 @@ export function restingPuppet(x: number, y: number): PuppetState {
 
 /** One fixed step. Grabbed: spring toward the target. Free: coast and settle.
  *  Coordinates are normalized stage units (0..1-ish); velocities are units/s. */
-export function stepPuppet(s: PuppetState, target: PuppetTarget | null, dt = PUPPET_DT): PuppetState {
+export function stepPuppet(
+  s: PuppetState,
+  target: PuppetTarget | null,
+  dt = PUPPET_DT,
+  spring: SpringPreset = 'felt',
+): PuppetState {
   let ax: number;
   let ay: number;
   if (target) {
-    ax = SPRING_K * (target.x - s.x) - SPRING_DAMP * s.vx;
-    ay = SPRING_K * (target.y - s.y) - SPRING_DAMP * s.vy;
+    const { k, damp } = SPRINGS[spring];
+    ax = k * (target.x - s.x) - damp * s.vx;
+    ay = k * (target.y - s.y) - damp * s.vy;
   } else {
     ax = -FREE_DRAG * s.vx;
     ay = -FREE_DRAG * s.vy;

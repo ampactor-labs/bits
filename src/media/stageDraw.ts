@@ -28,7 +28,9 @@ export interface PuppetVisual {
   pieces: PuppetPieces;
   mouth: MouthEvent | null;
   eyes: EyesEvent | null;
-  pins: PinEvent[];
+  /** Pin slots; a null slot was removed and keeps its index so the passes
+   *  that name later pins still find them. */
+  pins: (PinEvent | null)[];
 }
 
 const WARP_GRID = makeWarpGrid(10, 14);
@@ -86,9 +88,13 @@ export function drawStage(
     // scissored pieces (a single uncut piece is the trivial case).
     const img = images.get(puppet.id);
     const warp =
-      visual.pins.length > 0 && puppet.spec.type === 'cutout' && img
+      visual.pins.some((pin) => pin !== null) && puppet.spec.type === 'cutout' && img
         ? warpControls(puppet, pose, visual.pins)
         : null;
+
+    // The mirror goes here, after the root frame, so pieces, mouths, eyes
+    // and the warp mesh all follow it. localToWorld already agrees.
+    if (puppet.flip) ctx.scale(-1, 1);
 
     if (warp && img) {
       drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
@@ -129,14 +135,24 @@ export function drawStage(
 function warpControls(
   puppet: ShowPuppet,
   pose: PuppetPose,
-  pins: PinEvent[],
+  pins: (PinEvent | null)[],
 ): { p: Pt[]; q: Pt[] } {
-  const p: Pt[] = pins.map((e) => ({ x: e.px, y: e.py }));
-  const q: Pt[] = pose.pins.map((state, i) => {
+  // Removed slots are skipped in both lists together, so the deformer only
+  // ever sees live control points and their current positions.
+  const p: Pt[] = [];
+  const q: Pt[] = [];
+  pins.forEach((pin, i) => {
+    if (!pin) return;
+    const rest = { x: pin.px, y: pin.py };
+    p.push(rest);
+    const state = pose.pins[i];
+    if (!state) {
+      q.push({ ...rest });
+      return;
+    }
     const local = worldToLocal(pose.root, puppet, state.x, state.y);
-    return Number.isFinite(local.x) && Number.isFinite(local.y) ? local : { ...p[i]! };
+    q.push(Number.isFinite(local.x) && Number.isFinite(local.y) ? local : { ...rest });
   });
-  while (q.length < p.length) q.push({ ...p[q.length]! });
   return { p, q };
 }
 
@@ -330,7 +346,7 @@ function drawPiece(
     ctx.closePath();
     ctx.clip();
   }
-  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
+  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
   ctx.restore();
 }
 
@@ -343,6 +359,7 @@ function drawContent(
   images: StageImages,
   tS: number,
   seed: number,
+  flip = false,
 ): void {
   switch (spec.type) {
     case 'cutout': {
@@ -355,10 +372,13 @@ function drawContent(
       ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
       break;
     case 'doodle':
-      drawDoodle(ctx, spec.strokes, pw, ph, tS, seed);
+      drawDoodle(ctx, spec.strokes, spec.strokeStyle, pw, ph, tS, seed);
       break;
     case 'text': {
-      // Word puppets: bold characters that boil like doodles.
+      // Word puppets: bold characters that boil like doodles. A flipped
+      // word moves to the mirrored position but keeps its letters legible,
+      // so the mirror is undone around the (centred) glyph run.
+      if (flip) ctx.scale(-1, 1);
       const text = spec.text || '?';
       const chars = [...text];
       const fontPx = Math.min(ph * 0.72, (pw * 1.55) / Math.max(1, chars.length));
@@ -384,6 +404,7 @@ function drawContent(
 function drawDoodle(
   ctx: Ctx2D,
   strokes: number[][],
+  styles: { color: string; width: number }[] | undefined,
   pw: number,
   ph: number,
   tS: number,
@@ -391,12 +412,21 @@ function drawDoodle(
 ): void {
   const variant = Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS;
   const amp = BOIL_AMP * Math.max(pw, ph);
+  const base = Math.max(2, pw * 0.045);
   ctx.strokeStyle = DOODLE_COLOR;
-  ctx.lineWidth = Math.max(2, pw * 0.045);
+  ctx.lineWidth = base;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   let pointIndex = 0;
-  for (const stroke of strokes) {
+  for (let si = 0; si < strokes.length; si++) {
+    const stroke = strokes[si]!;
+    // A doodle drawn before colours existed has no styles at all, so it
+    // keeps the one bone line it was drawn with.
+    const style = styles?.[si];
+    if (style) {
+      ctx.strokeStyle = style.color;
+      ctx.lineWidth = Math.max(1.5, base * style.width);
+    }
     ctx.beginPath();
     for (let i = 0; i + 1 < stroke.length; i += 2) {
       const x = (stroke[i]! - 0.5) * pw + boilNoise(seed, variant, pointIndex) * amp;
@@ -465,6 +495,31 @@ function drawMouth(
   }
   ctx.fill();
   ctx.stroke();
+  ctx.restore();
+}
+
+/** A puppet on its own, centred and scaled to fit a square. Chips used to
+ *  be one emoji per type, so a photo and a word were both a smiley and
+ *  three doodles were three pencils (audit F12). */
+export function drawPuppetThumbnail(
+  ctx: Ctx2D,
+  spec: PuppetSpec,
+  image: ImageBitmap | undefined,
+  size: number,
+  seed: number,
+): void {
+  ctx.clearRect(0, 0, size, size);
+  const pad = size * 0.12;
+  const box = size - pad * 2;
+  // Keep the puppet's own proportions inside the square.
+  const ratio = spec.w / Math.max(1e-6, spec.h);
+  const w = ratio >= 1 ? box : box * ratio;
+  const h = ratio >= 1 ? box / ratio : box;
+  ctx.save();
+  ctx.translate(size / 2, size / 2);
+  const images: StageImages = new Map();
+  if (image) images.set('thumb', image);
+  drawContent(ctx, spec, 'thumb', w, h, images, 0, seed);
   ctx.restore();
 }
 

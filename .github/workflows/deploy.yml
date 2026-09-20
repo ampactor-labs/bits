@@ -3,6 +3,9 @@ name: deploy
 on:
   push:
     branches: [main]
+  # Milestone branches are checked before merge, not after: a red PR used to
+  # be discovered only once it had already broken main's deploy.
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,18 +27,33 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm test
       - run: npm run build
+      - run: npm run test:budget
       - run: npm run test:e2e
         env:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+      - run: npm run test:ux
+        env:
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          UX_SHOTS_DIR: ux-shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ux-shots
+          path: ux-shots
+          if-no-files-found: ignore
       - uses: actions/configure-pages@v5
+        if: github.ref == 'refs/heads/main'
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
         with:
           path: dist
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

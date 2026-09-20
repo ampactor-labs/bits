@@ -11,13 +11,23 @@ import {
   QUALITY_MEDIUM,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { createProject, type CastEvent, type Project } from '../engine/recipe';
+import {
+  createProject,
+  parseProject,
+  type CastEvent,
+  type Project,
+  type RecipeEvent,
+} from '../engine/recipe';
+import { castOf as castOfProject } from '../engine/show';
+import { visualsOf } from '../media/render';
+import { drawStage, STAGE_BG } from '../media/stageDraw';
+import { createShowSim } from '../engine/show';
 import { detectOnsets } from '../engine/onsets';
 import { castOf } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from '../media/audio';
 import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
-import { renderShow } from '../media/render';
+import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
 
 interface ShowE2EResult {
@@ -246,13 +256,307 @@ async function runBundle(): Promise<BundleE2EResult> {
   };
 }
 
+/** A bit saved by the shipped v0 app, byte for byte. It must keep opening
+ *  and keep rendering to the same shape forever. */
+const V0_RECIPE = JSON.stringify({
+  version: 0,
+  id: 'v0-fixture',
+  title: 'a bit from before',
+  createdAt: '2026-07-31T12:00:00.000Z',
+  seed: 20260731,
+  events: [
+    {
+      kind: 'CAST',
+      id: 'c1',
+      at: 0,
+      puppetId: 'hero',
+      puppet: { type: 'rect', color: '#f0883e', w: 0.24, h: 0.3 },
+      x: 0.3,
+      y: 0.4,
+      scale: 1,
+      rot: 0.1,
+    },
+    { kind: 'SNIP', id: 's1', at: 0, puppetId: 'hero', x0: 0, y0: 0.3, x1: 1, y1: 0.28 },
+    { kind: 'MOUTH', id: 'm1', at: 0, puppetId: 'hero', mx: 0.5, my: 0.15, size: 0.3 },
+    {
+      kind: 'PASS',
+      id: 'p1',
+      at: 0.2,
+      puppetId: 'hero',
+      samples: [0.2, 0.3, 0.4, 1.0, 0.8, 0.5, 1.8, 0.3, 0.8],
+    },
+  ],
+});
+
+interface V0E2EResult {
+  parsedVersion: number;
+  updatedAt: string;
+  castCount: number;
+  renderedDurationS: number;
+  renderedWidth: number;
+  renderedHeight: number;
+  renderedBytes: number;
+}
+
+/** The compatibility promise, tested rather than asserted. */
+async function runV0(): Promise<V0E2EResult> {
+  const audio = await makeFixtureAudio();
+  const project = parseProject(V0_RECIPE);
+  const rendered = await renderShow({
+    audioBlob: audio,
+    project,
+    getAssetBlob: async () => {
+      throw new Error('no assets in this fixture');
+    },
+    width: 360,
+    height: 640,
+  });
+  const probe = await VideoSourceHandle.open(rendered);
+  const out: V0E2EResult = {
+    parsedVersion: project.version,
+    updatedAt: project.updatedAt ?? '',
+    castCount: castOfProject(project).length,
+    renderedDurationS: probe.durationS,
+    renderedWidth: probe.width,
+    renderedHeight: probe.height,
+    renderedBytes: rendered.size,
+  };
+  probe.dispose();
+  return out;
+}
+
+interface FlipE2EResult {
+  /** Fraction of sampled pixels whose mirrored partner agrees. Never quite
+   *  1: rasterising a mirrored stroke re-samples its anti-aliasing. */
+  mirrorMatch: number;
+  /** Fraction of pixels that differ between flipped and unflipped, so the
+   *  test cannot pass on a symmetric image by accident. */
+  changed: number;
+  /** Ink centroid in x, 0..1 across the canvas, for each version. A mirror
+   *  puts them at equal distances either side of the middle; this is
+   *  immune to anti-aliasing. */
+  centroidPlain: number;
+  centroidFlipped: number;
+}
+
+/** Flip has to be a frame transform, not a draw-time scale. The cheapest
+ *  proof it is applied at all, in the one place that reads pixels. */
+async function runFlip(): Promise<FlipE2EResult> {
+  const W = 96;
+  const H = 96;
+  const draw = (flip: boolean): ImageData => {
+    const base: Project = {
+      ...createProject('flip'),
+      events: [
+        {
+          kind: 'CAST',
+          id: 'c1',
+          at: 0,
+          puppetId: 'a',
+          // Off-centre in local space, so a mirror is visible.
+          puppet: { type: 'doodle', strokes: [[0.05, 0.2, 0.35, 0.2, 0.35, 0.8]], w: 0.8, h: 0.8 },
+          x: 0.5,
+          y: 0.5,
+          scale: 1,
+          rot: 0,
+          ...(flip ? { flip: true } : {}),
+        } as CastEvent,
+      ],
+    };
+    const canvas = new OffscreenCanvas(W, H);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+    const cast = castOfProject(base);
+    const sim = createShowSim(base);
+    drawStage(ctx, W, H, cast, sim.advanceTo(0.5), new Map(), visualsOf(base), new Map(), 0.5, base.seed);
+    return ctx.getImageData(0, 0, W, H);
+  };
+
+  const plain = draw(false);
+  const flipped = draw(true);
+  const lum = (d: ImageData, x: number, y: number) => d.data[(y * W + x) * 4]!;
+
+  let matched = 0;
+  let total = 0;
+  let changed = 0;
+  for (let y = 0; y < H; y += 2) {
+    for (let x = 0; x < W; x++) {
+      total += 1;
+      if (Math.abs(lum(flipped, x, y) - lum(plain, W - 1 - x, y)) <= 8) matched += 1;
+      if (Math.abs(lum(flipped, x, y) - lum(plain, x, y)) > 8) changed += 1;
+    }
+  }
+
+  // Ink centroid: the doodle is bone on a near-black stage, so bright
+  // pixels are the drawing.
+  const centroid = (d: ImageData) => {
+    let sum = 0;
+    let weight = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const v = lum(d, x, y);
+        if (v < 80) continue;
+        sum += x * v;
+        weight += v;
+      }
+    }
+    return weight === 0 ? 0.5 : sum / weight / (W - 1);
+  };
+
+  return {
+    mirrorMatch: matched / total,
+    changed: changed / total,
+    centroidPlain: centroid(plain),
+    centroidFlipped: centroid(flipped),
+  };
+}
+
+export interface VoiceE2EResult {
+  /** The take was found, decoded and placed. */
+  collected: number;
+  at: number;
+  gain: number;
+  /** Decoded length against what was encoded, in seconds. */
+  decodedS: number;
+  /** Energy in the bus slice before, during and after the take's window.
+   *  The bed is silent, so anything non-zero came from the take. */
+  before: number;
+  during: number;
+  after: number;
+  /** Sum of the mix at half gain against the same mix at full. */
+  halfGainRatio: number;
+  /** The same collection also produced the envelope for the mouth. */
+  envelopeFound: boolean;
+}
+
+/** A mono WAV of a tone. Written by hand because this container's
+ *  Chromium has no encoder, and the point is to exercise the decode. */
+function toneWav(seconds: number, rate = 24000, hz = 440): Blob {
+  const n = Math.round(seconds * rate);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buf);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  ascii(0, 'RIFF');
+  view.setUint32(4, 36 + n * 2, true);
+  ascii(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, 'data');
+  view.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    view.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 20000), true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+/** A puppet's own take, through the render's own code, in a browser.
+ *
+ *  The render proof cannot reach this: it needs an H.264 encoder to make a
+ *  film at all, and this container's Chromium has none. So the two steps
+ *  that decide whether anyone hears a take — finding and decoding it, and
+ *  laying it onto the output bus at its offset — are exported from
+ *  render.ts and run here instead. A mix nobody can hear is a mix nobody
+ *  has checked. */
+async function runVoice(): Promise<VoiceE2EResult> {
+  const TAKE_S = 1.5;
+  const AT = 2;
+  const wav = toneWav(TAKE_S);
+  const project: Project = {
+    ...createProject('voice'),
+    events: [
+      {
+        kind: 'CAST',
+        id: 'c1',
+        at: 0,
+        puppetId: 'a',
+        puppet: { type: 'rect', color: '#fff', w: 0.3, h: 0.3 },
+        x: 0.5,
+        y: 0.5,
+        scale: 1,
+        rot: 0,
+      } as CastEvent,
+      {
+        kind: 'MOUTH',
+        id: 'm1',
+        at: 0,
+        puppetId: 'a',
+        mx: 0.5,
+        my: 0.6,
+        size: 0.2,
+      } as RecipeEvent,
+      {
+        kind: 'VOICE',
+        id: 'v1',
+        at: AT,
+        puppetId: 'a',
+        assetId: 'take.wav',
+        durationS: TAKE_S,
+        gain: 0.5,
+      } as RecipeEvent,
+    ],
+  };
+
+  const { voices, pcm } = await collectVoices(project, async () => wav);
+  const take = pcm[0];
+  // The envelope that drives the mouth comes from the same collection.
+  const envelopeFound = voices.has('a');
+
+  // A five-second bus slice of silence, the shape renderShow hands to the
+  // mixer, starting at show time zero.
+  const ctx = new OfflineAudioContext(1, 5 * 48000, 48000);
+  const bus = ctx.createBuffer(1, 5 * 48000, 48000);
+  if (take) mixVoicesInto(bus, 0, [take]);
+  const energy = (fromS: number, toS: number) => {
+    const data = bus.getChannelData(0);
+    let sum = 0;
+    for (let i = Math.round(fromS * 48000); i < Math.round(toS * 48000); i++) {
+      sum += Math.abs(data[i] ?? 0);
+    }
+    return sum;
+  };
+  const during = energy(AT + 0.1, AT + TAKE_S - 0.1);
+
+  // The same take at full gain, to prove `gain` is honoured rather than
+  // carried around.
+  const loud = ctx.createBuffer(1, 5 * 48000, 48000);
+  if (take) mixVoicesInto(loud, 0, [{ ...take, gain: 1 }]);
+  let loudSum = 0;
+  const loudData = loud.getChannelData(0);
+  for (let i = Math.round((AT + 0.1) * 48000); i < Math.round((AT + TAKE_S - 0.1) * 48000); i++) {
+    loudSum += Math.abs(loudData[i] ?? 0);
+  }
+
+  return {
+    collected: pcm.length,
+    at: take?.at ?? -1,
+    gain: take?.gain ?? -1,
+    decodedS: take ? take.samples.length / take.sampleRate : 0,
+    before: energy(0, AT - 0.1),
+    during,
+    after: energy(AT + TAKE_S + 0.1, 5),
+    halfGainRatio: loudSum === 0 ? 0 : during / loudSum,
+    envelopeFound,
+  };
+}
+
 declare global {
   interface Window {
     __bitsE2E: {
       runShow: () => Promise<ShowE2EResult>;
       runBundle: () => Promise<BundleE2EResult>;
+      runV0: () => Promise<V0E2EResult>;
+      runFlip: () => Promise<FlipE2EResult>;
+      runVoice: () => Promise<VoiceE2EResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice };

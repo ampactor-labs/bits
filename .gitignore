@@ -10,3 +10,4 @@ credentials.json
 secrets.json
 .claude/
 .protocol/
+dist-ux-shots

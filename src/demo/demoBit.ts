@@ -12,7 +12,13 @@ import {
   QUALITY_MEDIUM,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { parseProject, serializeProject, type Project, type RecipeEvent } from '../engine/recipe';
+import {
+  RECIPE_VERSION,
+  parseProject,
+  serializeProject,
+  type Project,
+  type RecipeEvent,
+} from '../engine/recipe';
 import { AudioSourceHandle } from '../media/audio';
 import { restoreAsset } from '../media/assets';
 import { saveProjectJson } from '../media/opfs';
@@ -377,11 +383,13 @@ export async function buildDemoShow(): Promise<string> {
   const durationS = probe ? await probe.duration() : DUR;
   probe?.dispose();
 
+  const now = new Date().toISOString();
   const project: Project = {
-    version: 0,
+    version: RECIPE_VERSION,
     id: crypto.randomUUID(),
     title: 'how to bits',
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     seed: 20260730,
     events: events(cat.w, cat.h),
     audio: { assetId: DEMO_AUDIO_ID, durationS },
