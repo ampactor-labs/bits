@@ -7,7 +7,14 @@
 // own tools (the halo) and its features become handles you can take hold
 // of. Two fingers resize and rotate.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import {
   appendEvent,
   createProject,
@@ -22,6 +29,7 @@ import {
   type SpringPreset,
 } from '../engine/recipe';
 import { detectOnsets } from '../engine/onsets';
+import { redoStep, undoStep } from '../engine/history';
 import { IMPACT_SQUASH, impactSfx, renderSfx, type SfxName } from '../engine/sfx';
 import { computeVoiceTrack, EMPTY_VOICE, type VoiceTrack } from '../engine/envelope';
 import {
@@ -2162,18 +2170,11 @@ export function Stage({
   /** Events committed together share a group and form one contiguous run at
    *  the tail, so a compound edit is a single undo step. */
   const undo = () => {
-    const events = projectRef.current.events;
-    if (events.length === 0) return;
-    const last = events[events.length - 1]!;
-    let n = 1;
-    if (last.group) {
-      while (n < events.length && events[events.length - 1 - n]!.group === last.group) n += 1;
-    }
-    const removed = events.slice(events.length - n);
-    // Pushed in reverse so redo pops them back in their original order.
-    for (let i = removed.length - 1; i >= 0; i--) redoRef.current.push(removed[i]!);
-    setRedoCount(redoRef.current.length);
-    applyProject((p) => ({ ...p, events: p.events.slice(0, -n) }), false);
+    const next = undoStep({ events: projectRef.current.events, redo: redoRef.current });
+    if (next.events.length === projectRef.current.events.length) return;
+    redoRef.current = next.redo;
+    setRedoCount(next.redo.length);
+    applyProject((p) => ({ ...p, events: next.events }), false);
     void reloadImages();
     void reloadVoices();
   };
@@ -2181,17 +2182,11 @@ export function Stage({
   undoRef.current = undo;
 
   const redo = () => {
-    const stack = redoRef.current;
-    const first = stack.pop();
-    if (!first) return;
-    const batch: RecipeEvent[] = [first];
-    if (first.group) {
-      while (stack.length > 0 && stack[stack.length - 1]!.group === first.group) {
-        batch.push(stack.pop()!);
-      }
-    }
-    setRedoCount(stack.length);
-    applyProject((p) => ({ ...p, events: [...p.events, ...batch] }), false);
+    const next = redoStep({ events: projectRef.current.events, redo: redoRef.current });
+    if (next.redo.length === redoRef.current.length) return;
+    redoRef.current = next.redo;
+    setRedoCount(next.redo.length);
+    applyProject((p) => ({ ...p, events: next.events }), false);
     void reloadImages();
     void reloadVoices();
   };
@@ -2343,7 +2338,11 @@ export function Stage({
    *  removes the one-frame flash on every selection. */
   useLayoutEffect(() => {
     layoutOverlays();
-  });
+    // Only when the overlays themselves change: which puppet is selected,
+    // which handles exist, whether they are on screen at all, and how big
+    // the stage is. A puppet moved by a sheet goes through commit, which
+    // dirties the canvas, and the frame loop lays out on the next frame.
+  }, [selectedId, mode, performing, lanesOpen, handles.length, aspect, layoutOverlays]);
 
   const canPin =
     !!selected &&
@@ -2394,7 +2393,11 @@ export function Stage({
         <div
           ref={frameRef}
           className={`stagebox mode-${mode}`}
-          style={{ aspectRatio: aspect === '16:9' ? '16 / 9' : '9 / 16' }}
+          style={
+            aspect === '16:9'
+              ? ({ '--aspect-w': 16, '--aspect-h': 9 } as CSSProperties)
+              : undefined
+          }
         >
           {/* The stage is a picture that changes; its state is spoken by
               the banner, the clock and the lanes rather than by the pixels. */}

@@ -167,13 +167,27 @@ body {
   min-height: 0;
   display: grid;
   place-items: center;
+  /* So the stage can size itself against this box rather than guessing.
+     See .stagebox. */
+  container-type: size;
 }
 
+/* The largest box of the bit's shape that fits, whichever way the window
+ * is short.
+ *
+ * `height: 100%` with an `aspect-ratio` and a `max-width` looks like it
+ * says this and does not: when the width clamps, the height stays, and
+ * the aspect silently breaks. It broke twice in perform mode, where the
+ * stage is tall and the window is not — a puppet was a different shape on
+ * the stage than in the film it was being performed for. Taking both
+ * dimensions from the container states the constraint once, in both
+ * directions, and cannot come apart. */
 .stagebox {
   position: relative;
-  height: 100%;
-  max-width: 100%;
-  aspect-ratio: 9 / 16;
+  --aspect-w: 9;
+  --aspect-h: 16;
+  width: min(100cqw, 100cqh * var(--aspect-w) / var(--aspect-h));
+  height: min(100cqh, 100cqw * var(--aspect-h) / var(--aspect-w));
   background: var(--stage);
   overflow: hidden;
   touch-action: none;

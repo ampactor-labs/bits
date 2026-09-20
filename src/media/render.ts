@@ -122,6 +122,69 @@ export function voiceMap(
   return out;
 }
 
+/** One puppet's take, decoded and placed in show time. */
+export interface VoicePcm {
+  samples: Float32Array;
+  sampleRate: number;
+  at: number;
+  gain: number;
+}
+
+/** Every take the recipe names, decoded twice: once coarse for the
+ *  envelope that drives its mouth, once at full rate for the mix. A take
+ *  that will not open leaves its puppet on the bed, which is what it had
+ *  before anyone recorded for it. */
+export async function collectVoices(
+  project: Project,
+  getAssetBlob: (assetId: string) => Promise<Blob>,
+): Promise<{ voices: Map<string, OwnVoice>; pcm: VoicePcm[] }> {
+  const voices = new Map<string, OwnVoice>();
+  const pcm: VoicePcm[] = [];
+  for (const p of castOf(project)) {
+    const own = voiceOf(project, p.id);
+    if (!own) continue;
+    try {
+      const blob = await getAssetBlob(own.assetId);
+      const env = await mixdownMono(blob);
+      const full = await decodeMono(blob);
+      if (env) {
+        voices.set(p.id, {
+          track: computeVoiceTrack(env.samples, env.sampleRate),
+          at: own.at,
+          durationS: own.durationS,
+        });
+      }
+      if (full) pcm.push({ ...full, at: own.at, gain: own.gain ?? 1 });
+    } catch {
+      // A missing take leaves that puppet on the bed.
+    }
+  }
+  return { voices, pcm };
+}
+
+/** Lay every take onto one slice of the output bus, in place. Exported so
+ *  the browser harness can run the step the render runs: this container's
+ *  Chromium has no H.264 encoder, so the render proof cannot reach it, and
+ *  a mix nobody can hear is a mix nobody has checked. */
+export function mixVoicesInto(buffer: AudioBuffer, busStartS: number, voices: VoicePcm[]): void {
+  const busEnd = busStartS + buffer.duration;
+  for (const v of voices) {
+    if (v.at > busEnd) continue;
+    if (v.at + v.samples.length / v.sampleRate < busStartS) continue;
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      mixPcmInto(
+        buffer.getChannelData(ch),
+        busStartS,
+        buffer.sampleRate,
+        v.samples,
+        v.sampleRate,
+        v.at,
+        v.gain,
+      );
+    }
+  }
+}
+
 export async function renderShow(options: RenderShowOptions): Promise<File> {
   const { project } = options;
   const fps = options.fps ?? 30;
@@ -168,30 +231,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
 
   // Per-puppet takes: their envelopes drive their own mouths, and their
   // PCM is mixed into the output so the film says what was recorded.
-  const voices = new Map<string, OwnVoice>();
-  const voicePcm: { samples: Float32Array; sampleRate: number; at: number; gain: number }[] = [];
-  for (const p of cast) {
-    const own = voiceOf(project, p.id);
-    if (!own) continue;
-    try {
-      const blob = await options.getAssetBlob(own.assetId);
-      const env = await mixdownMono(blob);
-      const full = await decodeMono(blob);
-      if (env) {
-        voices.set(p.id, {
-          track: computeVoiceTrack(env.samples, env.sampleRate),
-          at: own.at,
-          durationS: own.durationS,
-        });
-      }
-      if (full) {
-        voicePcm.push({ ...full, at: own.at, gain: own.gain ?? 1 });
-      }
-    } catch {
-      // A missing take leaves that puppet on the bed, which is what it
-      // had before anyone recorded for it.
-    }
-  }
+  const { voices, pcm: voicePcm } = await collectVoices(project, options.getAssetBlob);
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -292,7 +332,7 @@ async function passThroughAudio(
   fromS: number,
   toS: number,
   sounds: { at: number; sfx: SfxName }[],
-  voices: { samples: Float32Array; sampleRate: number; at: number; gain: number }[],
+  voices: VoicePcm[],
   progress: (p: RenderProgress) => void,
 ) {
   const sink = audio.makeSink();
@@ -308,21 +348,7 @@ async function passThroughAudio(
         mixSfxInto(buffer.getChannelData(ch), busStartS, buffer.sampleRate, s.at, s.sfx);
       }
     }
-    for (const v of voices) {
-      if (v.at > busEnd) continue;
-      if (v.at + v.samples.length / v.sampleRate < busStartS) continue;
-      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-        mixPcmInto(
-          buffer.getChannelData(ch),
-          busStartS,
-          buffer.sampleRate,
-          v.samples,
-          v.sampleRate,
-          v.at,
-          v.gain,
-        );
-      }
-    }
+    mixVoicesInto(buffer, busStartS, voices);
     await audioSource.add(buffer);
   };
 

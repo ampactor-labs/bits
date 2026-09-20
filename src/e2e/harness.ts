@@ -11,7 +11,13 @@ import {
   QUALITY_MEDIUM,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import { createProject, parseProject, type CastEvent, type Project } from '../engine/recipe';
+import {
+  createProject,
+  parseProject,
+  type CastEvent,
+  type Project,
+  type RecipeEvent,
+} from '../engine/recipe';
 import { castOf as castOfProject } from '../engine/show';
 import { visualsOf } from '../media/render';
 import { drawStage, STAGE_BG } from '../media/stageDraw';
@@ -21,7 +27,7 @@ import { castOf } from '../engine/show';
 import { AudioSourceHandle, mixdownMono } from '../media/audio';
 import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
-import { renderShow } from '../media/render';
+import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
 
 interface ShowE2EResult {
@@ -406,6 +412,141 @@ async function runFlip(): Promise<FlipE2EResult> {
   };
 }
 
+export interface VoiceE2EResult {
+  /** The take was found, decoded and placed. */
+  collected: number;
+  at: number;
+  gain: number;
+  /** Decoded length against what was encoded, in seconds. */
+  decodedS: number;
+  /** Energy in the bus slice before, during and after the take's window.
+   *  The bed is silent, so anything non-zero came from the take. */
+  before: number;
+  during: number;
+  after: number;
+  /** Sum of the mix at half gain against the same mix at full. */
+  halfGainRatio: number;
+  /** The same collection also produced the envelope for the mouth. */
+  envelopeFound: boolean;
+}
+
+/** A mono WAV of a tone. Written by hand because this container's
+ *  Chromium has no encoder, and the point is to exercise the decode. */
+function toneWav(seconds: number, rate = 24000, hz = 440): Blob {
+  const n = Math.round(seconds * rate);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buf);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  ascii(0, 'RIFF');
+  view.setUint32(4, 36 + n * 2, true);
+  ascii(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, 'data');
+  view.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    view.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 20000), true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+/** A puppet's own take, through the render's own code, in a browser.
+ *
+ *  The render proof cannot reach this: it needs an H.264 encoder to make a
+ *  film at all, and this container's Chromium has none. So the two steps
+ *  that decide whether anyone hears a take — finding and decoding it, and
+ *  laying it onto the output bus at its offset — are exported from
+ *  render.ts and run here instead. A mix nobody can hear is a mix nobody
+ *  has checked. */
+async function runVoice(): Promise<VoiceE2EResult> {
+  const TAKE_S = 1.5;
+  const AT = 2;
+  const wav = toneWav(TAKE_S);
+  const project: Project = {
+    ...createProject('voice'),
+    events: [
+      {
+        kind: 'CAST',
+        id: 'c1',
+        at: 0,
+        puppetId: 'a',
+        puppet: { type: 'rect', color: '#fff', w: 0.3, h: 0.3 },
+        x: 0.5,
+        y: 0.5,
+        scale: 1,
+        rot: 0,
+      } as CastEvent,
+      {
+        kind: 'MOUTH',
+        id: 'm1',
+        at: 0,
+        puppetId: 'a',
+        mx: 0.5,
+        my: 0.6,
+        size: 0.2,
+      } as RecipeEvent,
+      {
+        kind: 'VOICE',
+        id: 'v1',
+        at: AT,
+        puppetId: 'a',
+        assetId: 'take.wav',
+        durationS: TAKE_S,
+        gain: 0.5,
+      } as RecipeEvent,
+    ],
+  };
+
+  const { voices, pcm } = await collectVoices(project, async () => wav);
+  const take = pcm[0];
+  // The envelope that drives the mouth comes from the same collection.
+  const envelopeFound = voices.has('a');
+
+  // A five-second bus slice of silence, the shape renderShow hands to the
+  // mixer, starting at show time zero.
+  const ctx = new OfflineAudioContext(1, 5 * 48000, 48000);
+  const bus = ctx.createBuffer(1, 5 * 48000, 48000);
+  if (take) mixVoicesInto(bus, 0, [take]);
+  const energy = (fromS: number, toS: number) => {
+    const data = bus.getChannelData(0);
+    let sum = 0;
+    for (let i = Math.round(fromS * 48000); i < Math.round(toS * 48000); i++) {
+      sum += Math.abs(data[i] ?? 0);
+    }
+    return sum;
+  };
+  const during = energy(AT + 0.1, AT + TAKE_S - 0.1);
+
+  // The same take at full gain, to prove `gain` is honoured rather than
+  // carried around.
+  const loud = ctx.createBuffer(1, 5 * 48000, 48000);
+  if (take) mixVoicesInto(loud, 0, [{ ...take, gain: 1 }]);
+  let loudSum = 0;
+  const loudData = loud.getChannelData(0);
+  for (let i = Math.round((AT + 0.1) * 48000); i < Math.round((AT + TAKE_S - 0.1) * 48000); i++) {
+    loudSum += Math.abs(loudData[i] ?? 0);
+  }
+
+  return {
+    collected: pcm.length,
+    at: take?.at ?? -1,
+    gain: take?.gain ?? -1,
+    decodedS: take ? take.samples.length / take.sampleRate : 0,
+    before: energy(0, AT - 0.1),
+    during,
+    after: energy(AT + TAKE_S + 0.1, 5),
+    halfGainRatio: loudSum === 0 ? 0 : during / loudSum,
+    envelopeFound,
+  };
+}
+
 declare global {
   interface Window {
     __bitsE2E: {
@@ -413,8 +554,9 @@ declare global {
       runBundle: () => Promise<BundleE2EResult>;
       runV0: () => Promise<V0E2EResult>;
       runFlip: () => Promise<FlipE2EResult>;
+      runVoice: () => Promise<VoiceE2EResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice };

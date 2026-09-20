@@ -1080,7 +1080,7 @@ try {
       // another would change what the puppets look like in the film.
       check(
         'performing-gives-the-stage-the-screen',
-        bare.stage > 0.78 && Math.abs(bare.aspect - 9 / 16) < 0.02,
+        bare.stage > 0.78 && Math.abs(bare.aspect - 9 / 16) < 0.005,
         `${Math.round(bare.stage * 100)}% of the window at ${bare.aspect.toFixed(3)}`,
       );
       await tapText('.perform-controls button', 'done performing');
@@ -1415,6 +1415,159 @@ try {
       /a bit from a friend/.test(flat) && /after a bit from a friend/.test(flat),
       flat.slice(0, 110),
     );
+  });
+
+  // A server's Chromium is not a phone. Throttling it four times over is
+  // a rough stand-in for a mid-range one, on the heaviest bit there is:
+  // the demo, six puppets and ten passes, with mouths, a warp and a snip.
+  await phase('the-frame-loop-holds-up-on-a-slow-phone', async () => {
+    await goToList();
+    // The heaviest bit in the list, by pass count: names drift as the walk
+    // copies and renames things, but the workload is what matters.
+    const demoHandle = await page.evaluateHandle(() => {
+      let best = null;
+      let most = -1;
+      for (const r of document.querySelectorAll('.source-row')) {
+        const n = Number(/(\d+) pass/.exec(r.querySelector('.size')?.textContent ?? '')?.[1] ?? 0);
+        if (n > most) {
+          most = n;
+          best = r.querySelector('.row-open');
+        }
+      }
+      return most > 0 ? best : null;
+    });
+    const demo = demoHandle.asElement();
+    if (!demo) throw new Error('no bit with passes to open');
+    await demo.tap();
+    await sleep(1200);
+
+    const cdp = await page.createCDPSession();
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+    await sleep(500);
+    await page.evaluate(() => {
+      window.__frames = [];
+      let last = performance.now();
+      const tick = (t) => {
+        window.__frames.push(t - last);
+        last = t;
+        if (window.__framesOn) requestAnimationFrame(tick);
+      };
+      window.__framesOn = true;
+      requestAnimationFrame(tick);
+    });
+    await tapLabel('play');
+    await sleep(4000);
+    const frames = await page.evaluate(() => {
+      window.__framesOn = false;
+      // The first few frames carry the cost of starting audio.
+      return window.__frames.slice(5);
+    });
+    if (await page.$('.dock-stop')) await tapLabel('stop');
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+    await cdp.detach();
+    await sleep(400);
+
+    const sorted = [...frames].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 999;
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 999;
+    const janky = frames.filter((f) => f > 50).length / Math.max(1, frames.length);
+    check(
+      'the-frame-loop-holds-up-on-a-slow-phone',
+      frames.length > 60 && median <= 34 && janky <= 0.1,
+      `${frames.length} frames, median ${median.toFixed(1)}ms, p95 ${p95.toFixed(1)}ms, ${Math.round(janky * 100)}% over 50ms`,
+    );
+    measure(
+      'Frame time on the demo at 4x CPU throttle',
+      `${median.toFixed(1)}ms median, ${p95.toFixed(1)}ms p95`,
+    );
+  });
+
+  // A puppet's own take, through the render's own code. The render proof
+  // cannot reach this: making a film at all needs an H.264 encoder, and
+  // this container's Chromium has none. A mix nobody can hear is a mix
+  // nobody has checked.
+  await phase('a-voice-take-reaches-the-mix', async () => {
+    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction('window.__bitsE2E !== undefined', { timeout: 20000 });
+    const v = await page.evaluate(() => window.__bitsE2E.runVoice());
+    check(
+      'a-take-is-found-and-decoded',
+      v.collected === 1 && Math.abs(v.decodedS - 1.5) < 0.1 && v.envelopeFound,
+      `${v.collected} collected, ${v.decodedS.toFixed(2)}s decoded, envelope=${v.envelopeFound}`,
+    );
+    check(
+      'a-take-lands-at-its-own-offset',
+      v.at === 2 && v.during > 100 && v.before < 1 && v.after < 1,
+      `at ${v.at}s: before ${v.before.toFixed(1)}, during ${v.during.toFixed(1)}, after ${v.after.toFixed(1)}`,
+    );
+    check(
+      'a-takes-gain-is-honoured',
+      Math.abs(v.halfGainRatio - 0.5) < 0.02,
+      `half gain is ${v.halfGainRatio.toFixed(3)} of full`,
+    );
+    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
+    await sleep(600);
+  });
+
+  // `height: 100%` with an aspect-ratio and a max-width looks like "the
+  // biggest box of this shape that fits" and is not: when one dimension
+  // clamps, the other stays, and the shape comes apart. It came apart
+  // twice in perform mode, where a puppet was a different shape on the
+  // stage than in the film being performed for it.
+  await phase('the-stage-keeps-its-shape-in-any-window', async () => {
+    await goToList();
+    const withSoundHandle = await page.evaluateHandle(() =>
+      Array.from(document.querySelectorAll('.source-row')).find((r) =>
+        /\d:\d\d/.test(r.querySelector('.size')?.textContent ?? ''),
+      )?.querySelector('.row-open'),
+    );
+    const openRow = withSoundHandle.asElement();
+    if (!openRow) throw new Error('no bit with sound to open');
+    await openRow.tap();
+    await sleep(900);
+    const shapeIn = async (w, h) => {
+      await page.setViewport({
+        width: w,
+        height: h,
+        deviceScaleFactor: 2,
+        isMobile: true,
+        hasTouch: true,
+      });
+      await sleep(400);
+      return page.evaluate(() => {
+        const r = document.querySelector('.stagebox')?.getBoundingClientRect();
+        const area = document.querySelector('.stagearea')?.getBoundingClientRect();
+        if (!r || !area) return null;
+        return {
+          aspect: r.width / r.height,
+          fits: r.width <= area.width + 1 && r.height <= area.height + 1,
+          // The largest box of that shape that fits touches one bound.
+          snug: r.width >= area.width - 1 || r.height >= area.height - 1,
+        };
+      });
+    };
+    const windows = [
+      ['a tall phone', 390, 844],
+      ['a small phone', 375, 667],
+      ['a short window', 390, 480],
+      ['a squat window', 900, 420],
+      ['a square window', 600, 600],
+    ];
+    const bad = [];
+    for (const [name, w, h] of windows) {
+      const got = await shapeIn(w, h);
+      if (!got || Math.abs(got.aspect - 9 / 16) > 0.005 || !got.fits || !got.snug) {
+        bad.push(`${name}: ${got ? `${got.aspect.toFixed(3)} fits=${got.fits} snug=${got.snug}` : 'no stage'}`);
+      }
+    }
+    check(
+      'the-stage-keeps-its-shape-in-any-window',
+      bad.length === 0,
+      bad.join('; ') || `9:16 in all ${windows.length}`,
+    );
+    await page.emulate(puppeteer.KnownDevices['iPhone 14']);
+    await sleep(400);
   });
 
   // A tall bit in a short landscape window is a postage stamp. A wide bit

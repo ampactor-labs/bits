@@ -374,12 +374,16 @@ so the table can be re-taken with one command.
 | Foley pills clipped at 390px | 2 of 5 | 0 of 5 |
 | A pass, once recorded | invisible | a span in the lanes, mutable and trimmable |
 | Ways to start a bit without talking out loud | 0 | 1 (any audio or video file) |
+| Frame time on the heaviest bit at 4x CPU throttle | not measured | 16.8ms median, 33.4ms p95 |
+| Windows the stage keeps its shape in | 1 (it broke in short ones) | 5 of 5, including square and squat |
 
-Two rows the original table could not have: the walkthrough now carries
-76 assertions, up from a driver that only took screenshots, and it
-records the event kinds each phase leaves in the recipe so a refactor
-that changes what a person's actions record fails in CI rather than on a
-phone.
+Rows the original table could not have: the walkthrough now carries 81
+assertions, up from a driver that only took screenshots; it records the
+event kinds each phase leaves in the recipe, so a refactor that changes
+what a person's actions record fails in CI rather than on a phone; and it
+runs the render's own voice-mixing code in the browser, because making a
+film needs an H.264 encoder that the audit's container does not have, and
+a mix nobody can hear is a mix nobody has checked.
 
 ### Screenshot index
 
