@@ -1,59 +1,197 @@
 # BITS
 
-A puppet-show instrument for phones. You don't animate a scene with timelines and keyframes; you put on the show. Record the bit first (the voices, the argument, the dumb song), cast puppets from photos of yourselves or finger doodles, then perform in passes like a musician overdubs tracks: hit record, drag one puppet while the audio and every earlier pass play back, stop, layer the next one. Spring physics is the inbetweener: you supply intent, the simulation supplies lag, lean, squash, and settle.
+A puppet-show instrument for phones that runs in the browser: record the
+sound, then perform puppets over it one pass at a time. Each pass is one
+finger dragging one puppet while the audio and earlier passes play back, like
+overdubbing tracks. Puppets come from photos cut out on the phone or from
+finger doodles, and springs add lag, lean, squash and settle. It is built with
+TypeScript, React, Mediabunny, WebCodecs and MediaPipe, and all processing and
+storage stay on the phone.
 
-**Status: shipping.** Live at https://ampactor.dev/bits/; nothing named is left unbuilt — what's missing is mileage, and nothing merges across phones by design.
+**Status: shipping.** It has been checked on real phones in Chrome only, and no iPhone has run it yet.
+
+Live: https://ampactor.dev/bits/
+
+![The demo bit on a 390 by 844 phone screen: two doodle puppets on a lit stage, above the waveform timeline and the record button](docs/screenshot.png)
+
+## Quick start
+
+CI builds with Node 24. The commands below also run on Node 22.
+
+```sh
+npm ci
+npm run dev
+```
+
+Open http://localhost:5173/bits/. Before Vite starts, `npm run dev` runs
+`tools/fetch-assets.mjs`. It copies the MediaPipe wasm from `node_modules`
+into `public/mediapipe/` and downloads two models from Google's model storage
+(0.25 MB for cutouts, 5.8 MB for pose). If a download fails, photo cutouts
+fall back to the whole frame and body passes are unavailable.
+
+On first launch the app builds a demo bit called "how to bits" and opens its
+stage. Press play to watch it, then tap a puppet to see its tools. The back
+arrow leads to the bits list, where "+ new bit" starts your own.
+
+## Usage
+
+A bit is one show: its sound, its cast of puppets and every pass performed
+over them. Making one goes like this:
+
+1. Record the sound from the mic (up to 100 seconds) or pick an audio or
+   video file. An audio-only file is kept byte for byte. A video's sound is
+   decoded and re-encoded.
+2. Cast puppets with the + button: a photo, a selfie, a doodle, a word, a
+   sticker or a backdrop. Drag a puppet to place it. Two fingers resize and
+   rotate it. Tap a puppet for its tools.
+3. Press record, drag a puppet while the sound and earlier passes play, then
+   stop. Two click beats count you in. Recording starts at the playhead, so a
+   pass can punch in anywhere. Repeat for the next puppet.
+4. Make a film from the bit's menu and send the mp4 through the share sheet.
+
+Undo steps back one change and redo brings it back. The lanes panel draws
+each pass as a span on the timeline, where you can mute, solo, trim or delete
+it. The bit's menu also switches the stage between tall (9:16) and wide
+(16:9).
+
+A selected puppet's tools are snip, mouth, eyes, pin, flip and more. A snip
+splits a puppet along a drawn line, and the piece dangles from the cut like a
+paper-doll joint. A mouth flaps with the voice track. Once a puppet has
+passes, it talks only while one of them covers the moment, so holding a
+puppet is how you say who is speaking (the talker rule). Wires make a puppet
+bounce, shake or lean with the voice, or bounce and shake on the beat. A body
+pass lets your wrists drive puppets through the front camera. [docs/USAGE.md](docs/USAGE.md)
+describes every tool.
+
+### Collaboration
+
+There is no server, so people collaborate by sharing a phone or a file. On
+one phone, players take turns performing passes, and blind recording hides
+the earlier passes until playback. Across phones, "send the bit" exports a
+`.bit.json` file with the recipe and every asset. The receiver opens it from
+the bits list or the share sheet as the full working show, ready to
+re-perform. [docs/USAGE.md](docs/USAGE.md#collaboration) has the details.
 
 ## How it works
 
-Then the scissors come out. Draw a line across a puppet and it splits where you cut: the far side hangs from the line's midpoint and dangles with the motion, paper-doll style — and you can grab the piece itself in a pass and puppet it directly. Pin a mouth on anything and it flaps with the voice track; once a puppet has passes, it only talks while one of them covers the moment, so holding the talker is how you say who's speaking. Googly eyes lag the motion. Doodles boil. Backdrops drop in from the camera roll or straight from the camera; two fingers resize and rotate anything; long press drops a puppet; the playhead scrubs and passes punch in anywhere.
+Everything a show is lives in the recipe (`src/engine/recipe.ts`): an
+append-only log of events such as CAST, PASS, SNIP, MOUTH, PIN and WIRE,
+saved as one JSON file per bit. Undo pops the last event and redo puts it
+back. Removing a feature appends a REMOVE event instead of rewriting history.
 
-Everything lands in an append-only recipe with undo and redo; the same recipe simulates to the same frames (bit-exact, fixed-step grid), so preview and render agree, and the preview clock rides the AudioContext so mouths flap on the audio's time. Everything runs on-device in the browser: WebCodecs for encode/decode, Mediabunny for containers, MediaPipe segmentation for photo cutouts (with a whole-frame fallback), OPFS for storage with asset cleanup on delete. No uploads, no accounts, no generated pixels.
+The show simulator (`src/engine/show.ts`) turns the recipe into motion. For
+each puppet, the newest pass covering a moment supplies the target, and a
+spring pulls the puppet toward it on a fixed grid of 1/120-second steps
+(`src/engine/puppet.ts`). Every advance schedule runs the same steps, so the
+same recipe always simulates to the same frames. A unit test checks that
+split advance schedules stay bit-exact.
 
-Mouths speak in spectral visemes (loudness plus zero-crossing rate classifies closed, small, wide, fricative slit, and round shapes; deterministic from the PCM). Pins bend uncut photo puppets through moving-least-squares similarity warp (the closed-form ARAP-family deformer), drawn as a textured triangle mesh; pins are spring points you can grab in passes, and pins and snips are exclusive per puppet: cut paper or bend it. Body passes drive puppets with your wrists via MediaPipe pose from the front camera, one hand per target, recorded as ordinary passes. Any bit exports as a single .bit.json bundle (recipe plus every asset, base64) that anyone can open from the bits list and re-perform: the remix loop.
+One drawer (`src/media/stageDraw.ts`) paints both the live preview and the
+film, so the film shows what was performed. The preview clock follows the
+AudioContext, so mouths move on the audio's time. The render
+(`src/media/render.ts`) steps the show frame by frame and encodes an H.264
+mp4 with Mediabunny, which uses WebCodecs (the browser's video encode and
+decode API). Films are 720 by 1280 for a tall stage and 1280 by 720 for a
+wide one, at 30 frames per second.
 
-## Collaboration
+Mouths use spectral visemes: every 20 ms, loudness and zero-crossing rate
+(how often the waveform crosses zero, high for hissy sounds like s and sh)
+pick one of five mouth shapes. Pins bend a photo with moving-least-squares
+similarity deformation, a closed-form warp that keeps each small region
+close to rigid. Bits and assets live in OPFS, the Origin Private File System,
+a per-site file store inside the browser. A bit file is the recipe plus every
+asset it references, base64-encoded. [docs/DESIGN.md](docs/DESIGN.md) covers
+these in depth, along with snips, cutouts, body passes, the service worker
+and the colour rule.
 
-There is no server, so collaboration is physical: share the phone, or share a file.
+## Project layout
 
-On one phone the instrument is already multiplayer. The bit is recorded together; passes are performed one player at a time, and the talker rule makes hand-offs read as dialogue: whoever holds the puppet is the one speaking. Body passes give two hands to two puppets, one player can work the foley board while another drags, and corpse mode is the party game: perform your pass blind, meet the whole show on playback.
+```
+src/engine/     recipe model, undo history, onsets, springs, pieces, warp, wires, sfx, show sim
+src/media/      OPFS and assets, Mediabunny decode, mic, cutouts, pose, bundle, poster, render
+src/ui/         React UI: the bits list and the stage
+src/kit/        shared controls and design tokens
+src/demo/       first-run demo bit, synthesized on the device
+src/pwa/        service worker registration and install prompt
+src/e2e/        in-browser test harness, loaded with ?e2e
+public/sw.js    precache service worker
+tools/          asset staging, browser test drivers, device checklist
+docs/ux-audit/  the UX audit and the plan that followed it
+```
 
-Across phones the unit is the bit file. Export packs the recipe plus every asset it references into one .bit.json; the receiver opens it from the bits list and gets the working instrument, not a flattened video. Import copies assets under fresh ids, so every show owns its storage exclusively: deleting any show never breaks another, and re-importing your own bit yields an independent copy. A bit whose bundle lost its sound still opens and offers a re-record. Finished shows leave as ordinary mp4s through the system share sheet.
+## Deploy
 
-## What this is not
-
-Nothing merges. Two people editing the same bit on two phones produce two bits; the loop is pass-the-theater, deliberately. The append-only recipe would make merge tractable later if it ever earns its keep. A share-target route (opening a received bit straight from the share sheet) existed for the phase-0 deck and left with it; today the picker is the door.
+The app is a static site on GitHub Pages at https://ampactor.dev/bits/ (Vite's
+`base` is `/bits/`). `.github/workflows/deploy.yml` runs on every push to
+`main`, on every pull request and on manual dispatch. It installs with
+`npm ci` on Node 24, then runs lint, the unit tests, the build, the payload
+budget, the render proof and the UX walkthrough. Only a run on `main`
+uploads `dist/` and deploys it, so the live site passed every check on the
+commit that shipped it.
 
 ## Testing
 
-Engine tests run under vitest (`npm test`). `npm run test:e2e` drives
-headless Chrome through the real loop: synthesize a bit on-device,
-perform, render, re-probe the output. Every deploy is gated on both —
-`.github/workflows/deploy.yml` runs `npm test`, the production build,
-and the e2e pass before Pages ever sees the artifact, so what's live
-passed the full loop on the commit that shipped it. Real phones stay a
-manual pass; `tools/` carries the device checklist.
+```sh
+npm test             # unit tests (Vitest)
+npm run lint         # ESLint over src/
+npm run build        # stage assets, typecheck, production build to dist/
+npm run test:budget  # gzipped size of the scripts loaded before first paint
+npm run test:e2e     # render proof in headless Chrome
+npm run test:ux      # phone walkthrough in headless Chrome
+```
 
-## Dev
+`npm test` runs 165 tests in 11 files: the engine, media helpers and stage
+state machine in Node, and the UI kit in jsdom. They cover the springs, pass
+targeting, talk spans, snips, the voice track, the warp, wires, foley, recipe
+parsing and migration, undo and redo, onsets, bit-file asset mapping and hit
+testing. `npm run test:budget` fails above 450 KB; on this commit the eager
+scripts are 213.8 KB gzipped.
 
-    npm install
-    npm run dev        # serves at /bits/
-    npm test           # engine tests (vitest)
-    npm run build      # typecheck + production build to dist/
-    npm run test:e2e   # headless Chrome: synthesize -> perform -> render -> re-probe
-    npm run lint
+The render proof (`tools/e2e/render-proof.mjs`) serves the production build
+with `?e2e`, synthesizes a two-second track, casts a snipped and mouthed
+puppet, replays a scripted pass, renders it and probes the mp4. It also
+round-trips a bit file, checks that flip mirrors the pixels and renders a
+stored v0 bit. It needs a Chrome build with an H.264 encoder. The UX
+walkthrough (`tools/e2e/ux-walk.mjs`) drives the real app on an emulated
+iPhone 14 screen with a fake mic and camera, and runs 81 checks drawn from
+the UX audit, including frame time at 4x CPU throttle. Both look for Chrome
+at `/usr/bin/google-chrome`; set `PUPPETEER_EXECUTABLE_PATH` to use another.
 
-Deploys to ampactor.dev/bits from main via GitHub Pages (.github/workflows/deploy.yml).
+CI runs all six commands. No automated test checks the quality of photo
+cutouts or runs a body pass. Real phones are a manual pass with
+`tools/smoke-checklist.md`, which predates the UX rework and still refers to
+the old kit panel.
 
-## Layout
+## Limitations
 
-    src/engine/    recipe model, onsets, springs, pieces, warp, wires, sfx, show sim
-    src/media/     OPFS + assets, Mediabunny decode, mic, cutouts, pose, bundle, renderers
-    src/ui/        React chrome: bits list and the stage
-    src/demo/      first-run demo bit, synthesized on-device
-    src/pwa/       service worker registration
-    src/e2e/       in-browser proof harness (?e2e)
-    public/sw.js   precache service worker
-    tools/         asset staging, e2e driver, device checklist
+BITS has been checked on real phones in Chrome only, and no iPhone has run
+it. Safari support is unverified: the app depends on browser APIs for file
+storage, H.264 video encoding and audio recording that have not been tried
+there. Nothing merges between phones. Two people editing copies of one bit
+end up with two bits, and sharing means passing the phone or sending the
+file.
 
-One UI rule worth knowing: semantic color pairs are blue vs orange, never red vs green.
+- Making a film needs a WebCodecs H.264 encoder. Without one the render
+  stops with "this device cannot encode H264 video".
+- A mic take stops at 100 seconds.
+- Mouth shapes follow the character of the sound. They do not recognise
+  words or phonemes.
+- The cutout model looks for people. A photo with no person in it keeps its
+  whole frame as a rectangle.
+- The first photo cutout downloads 11.8 MB and the first body pass 5.8 MB.
+  Body passes need that download before they work offline.
+- Opening a bit from the share sheet needs an installed copy in a browser
+  that supports web share targets. Elsewhere, "open a bit file" is the way
+  in.
+- Merging could be built on the append-only recipe later. It has not been.
+
+## Roadmap
+
+- Run it on an iPhone and fix what breaks, or name Android Chrome as the
+  supported platform on the site. This is the one item still open in the UX
+  audit ([docs/ux-audit/README.md](docs/ux-audit/README.md)), and it waits
+  on access to an iPhone.
+
+## License
+
+No license chosen yet.
