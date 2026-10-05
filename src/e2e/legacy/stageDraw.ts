@@ -1,22 +1,24 @@
+// FROZEN. The canvas renderer exactly as it was before the studio work
+// began, kept so the render proof can hold every later renderer to it:
+// a bit made before then must still look the way it did. Never edit this
+// file; if a change here seems necessary, the change elsewhere is wrong.
+//
 // One drawer for preview and render: same inputs, same pixels. Puppets draw
 // as scissored pieces (root clipped to what remains, children hinged at their
 // snip lines), mouths flap with the loudness envelope, doodles boil.
 
-import { boilNoise } from '../engine/puppet';
-import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
-import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
+import { boilNoise } from '../../engine/puppet';
+import { worldToLocal, type PuppetPose, type ShowPuppet } from '../../engine/show';
+import { pointInPoly, type PieceDef, type PuppetPieces } from '../../engine/pieces';
 import {
   SHAPE_ROUND,
   SHAPE_SLIT,
   SHAPE_WIDE,
   type VoiceMoment,
-} from '../engine/envelope';
-import { deformGrid, makeWarpGrid, mlsSimilarity, type Pt } from '../engine/warp';
-import type { WireMods } from '../engine/wires';
-import type { Frame, LayerFrame, PuppetVisual } from '../engine/frame';
-
-export type { PuppetVisual } from '../engine/frame';
-import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
+} from '../../engine/envelope';
+import { deformGrid, makeWarpGrid, mlsSimilarity, type Pt } from '../../engine/warp';
+import type { WireMods } from '../../engine/wires';
+import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../../engine/recipe';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -27,97 +29,19 @@ const BOIL_AMP = 0.014;
 
 export type StageImages = Map<string, ImageBitmap>;
 
+export interface PuppetVisual {
+  pieces: PuppetPieces;
+  mouth: MouthEvent | null;
+  eyes: EyesEvent | null;
+  /** Pin slots; a null slot was removed and keeps its index so the passes
+   *  that name later pins still find them. */
+  pins: (PinEvent | null)[];
+}
+
 const WARP_GRID = makeWarpGrid(10, 14);
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-/** Draws one frame. The canvas renderer: what every frame looked like
- *  before there was any other, and the reference the others are held to. */
-export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, images: StageImages): void {
-  // Trails: leave a fading ghost of the previous frame instead of a clean
-  // wipe (the TouchDesigner feedback-loop trick, canvas edition). The first
-  // beats always wipe fully so renders start from black.
-  const tS = frame.t;
-  const seed = frame.seed;
-  const keep = tS < 0.08 ? 0 : Math.min(0.92, frame.trail);
-  if (keep > 0) {
-    ctx.fillStyle = STAGE_BG;
-    ctx.globalAlpha = 1 - keep;
-    ctx.fillRect(0, 0, W, H);
-    ctx.globalAlpha = 1;
-  } else {
-    ctx.fillStyle = STAGE_BG;
-    ctx.fillRect(0, 0, W, H);
-  }
-
-  for (const layer of frame.layers) drawLayer(ctx, W, H, layer, images, tS, seed);
-}
-
-function drawLayer(
-  ctx: Ctx2D,
-  W: number,
-  H: number,
-  layer: LayerFrame,
-  images: StageImages,
-  tS: number,
-  seed: number,
-): void {
-  const { puppet, pose, visual, mods: mod } = layer;
-  if (puppet.back) {
-    drawBackdrop(ctx, W, H, images.get(puppet.id));
-    return;
-  }
-  if (!pose || !visual) return;
-  const s = pose.root;
-  const pw = puppet.spec.w * W * puppet.home.scale;
-  const ph = puppet.spec.h * H * puppet.home.scale;
-
-  ctx.save();
-  ctx.translate((s.x + mod.dx) * W, (s.y + mod.dy) * H);
-  ctx.rotate(s.angle + puppet.home.rot + mod.dAngle);
-  const wireScale = mod.scaleMul;
-  ctx.scale((1 + s.squash) * wireScale, (1 - s.squash) * wireScale);
-
-  // Pinned cutouts bend through the MLS warp; everything else draws as
-  // scissored pieces (a single uncut piece is the trivial case).
-  const img = images.get(puppet.id);
-  const warp =
-    visual.pins.some((pin) => pin !== null) && puppet.spec.type === 'cutout' && img
-      ? warpControls(puppet, pose, visual.pins)
-      : null;
-
-  // The mirror goes here, after the root frame, so pieces, mouths, eyes
-  // and the warp mesh all follow it. localToWorld already agrees.
-  if (puppet.flip) ctx.scale(-1, 1);
-
-  if (warp && img) {
-    drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
-  } else {
-    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
-    for (const child of visual.pieces.children) {
-      const dangle = pose.dangles[child.snipIndex];
-      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
-    }
-  }
-
-  if (visual.mouth) {
-    const at = warp
-      ? mlsSimilarity({ x: visual.mouth.mx, y: visual.mouth.my }, warp.p, warp.q)
-      : null;
-    drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, layer.voice, at);
-  }
-  if (visual.eyes) {
-    const at = warp
-      ? mlsSimilarity({ x: visual.eyes.ex, y: visual.eyes.ey }, warp.p, warp.q)
-      : null;
-    drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
-  }
-  ctx.restore();
-}
-
-const IDENTITY: WireMods = { scaleMul: 1, dx: 0, dy: 0, dAngle: 0 };
-
-/** The old call shape, kept for the harness's small fixtures. */
 export function drawStage(
   ctx: Ctx2D,
   W: number,
@@ -132,24 +56,84 @@ export function drawStage(
   mods: Map<string, WireMods> = new Map(),
   trailKeep = 0,
 ): void {
-  renderFrame2d(
-    ctx,
-    W,
-    H,
-    {
-      t: tS,
-      seed,
-      trail: trailKeep,
-      layers: cast.map((puppet) => ({
-        puppet,
-        pose: poses.get(puppet.id),
-        visual: visuals.get(puppet.id),
-        voice: voices.get(puppet.id) ?? { open: 0, shape: 0 },
-        mods: mods.get(puppet.id) ?? IDENTITY,
-      })),
-    },
-    images,
-  );
+  // Trails: leave a fading ghost of the previous frame instead of a clean
+  // wipe (the TouchDesigner feedback-loop trick, canvas edition). The first
+  // beats always wipe fully so renders start from black.
+  const keep = tS < 0.08 ? 0 : Math.min(0.92, trailKeep);
+  if (keep > 0) {
+    ctx.fillStyle = STAGE_BG;
+    ctx.globalAlpha = 1 - keep;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  for (const puppet of cast) {
+    if (puppet.back) {
+      drawBackdrop(ctx, W, H, images.get(puppet.id));
+      continue;
+    }
+    const pose = poses.get(puppet.id);
+    const visual = visuals.get(puppet.id);
+    if (!pose || !visual) continue;
+    const s = pose.root;
+    const pw = puppet.spec.w * W * puppet.home.scale;
+    const ph = puppet.spec.h * H * puppet.home.scale;
+
+    const mod = mods.get(puppet.id);
+    ctx.save();
+    ctx.translate((s.x + (mod?.dx ?? 0)) * W, (s.y + (mod?.dy ?? 0)) * H);
+    ctx.rotate(s.angle + puppet.home.rot + (mod?.dAngle ?? 0));
+    const wireScale = mod?.scaleMul ?? 1;
+    ctx.scale((1 + s.squash) * wireScale, (1 - s.squash) * wireScale);
+
+    // Pinned cutouts bend through the MLS warp; everything else draws as
+    // scissored pieces (a single uncut piece is the trivial case).
+    const img = images.get(puppet.id);
+    const warp =
+      visual.pins.some((pin) => pin !== null) && puppet.spec.type === 'cutout' && img
+        ? warpControls(puppet, pose, visual.pins)
+        : null;
+
+    // The mirror goes here, after the root frame, so pieces, mouths, eyes
+    // and the warp mesh all follow it. localToWorld already agrees.
+    if (puppet.flip) ctx.scale(-1, 1);
+
+    if (warp && img) {
+      drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
+    } else {
+      drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
+      for (const child of visual.pieces.children) {
+        const dangle = pose.dangles[child.snipIndex];
+        drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+      }
+    }
+
+    if (visual.mouth) {
+      const at = warp
+        ? mlsSimilarity({ x: visual.mouth.mx, y: visual.mouth.my }, warp.p, warp.q)
+        : null;
+      drawMouth(
+        ctx,
+        visual.mouth,
+        visual.pieces,
+        pose,
+        pw,
+        ph,
+        voices.get(puppet.id) ?? { open: 0, shape: 0 },
+        at,
+      );
+    }
+    if (visual.eyes) {
+      const at = warp
+        ? mlsSimilarity({ x: visual.eyes.ex, y: visual.eyes.ey }, warp.p, warp.q)
+        : null;
+      drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
+    }
+    ctx.restore();
+  }
 }
 
 /** Rest and deformed pin positions in puppet-local coords. */

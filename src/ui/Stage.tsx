@@ -30,7 +30,7 @@ import {
 } from '../engine/recipe';
 import { detectOnsets } from '../engine/onsets';
 import { redoStep, undoStep } from '../engine/history';
-import { IMPACT_SQUASH, impactSfx, renderSfx, type SfxName } from '../engine/sfx';
+import { impactSfx, renderSfx, type SfxName } from '../engine/sfx';
 import { computeVoiceTrack, EMPTY_VOICE, type VoiceTrack } from '../engine/envelope';
 import {
   castOf,
@@ -61,14 +61,7 @@ import { makeCutout } from '../media/cutout';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
 import { PoseDriver } from '../media/pose';
-import {
-  effectiveWires,
-  trailStrength,
-  wireAmount,
-  wireModsFor,
-  type WireMap,
-  type WireMods,
-} from '../engine/wires';
+import { effectiveWires, wireAmount, type WireMap } from '../engine/wires';
 import type { WireSource, WireTarget } from '../engine/recipe';
 import { BannerView, useBanner } from '../kit/Banner';
 import { Sheet } from '../kit/Sheet';
@@ -111,21 +104,17 @@ import { Lanes, type Lane, type LoopRegion } from './stage/Lanes';
 import { TitleBar } from './stage/TitleBar';
 import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
+import { RenderCancelled, renderShow, type RenderProgress } from '../media/render';
 import {
-  RenderCancelled,
-  voiceMap,
-  renderShow,
+  composeFrame,
+  foleyOn,
+  impactsOf,
   visualsOf,
   type OwnVoice,
-  type RenderProgress,
-} from '../media/render';
-import { shareOrDownload } from '../media/shareFile';
-import {
-  drawStage,
-  loadStageImages,
   type PuppetVisual,
-  type StageImages,
-} from '../media/stageDraw';
+} from '../engine/frame';
+import { shareOrDownload } from '../media/shareFile';
+import { loadStageImages, renderFrame2d, type StageImages } from '../media/stageDraw';
 
 interface Grab {
   puppetId: string;
@@ -184,6 +173,11 @@ export function Stage({
   onAspect?: (aspect: '9:16' | '16:9') => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** Marks that are not the show: pin rings, the scissor line, a doodle in
+   *  progress. They live on their own canvas so the stage canvas holds
+   *  nothing but rendered frames (and can become a WebGL canvas). */
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const overlayInkedRef = useRef(false);
   const frameRef = useRef<HTMLDivElement>(null);
 
   const [projectSnap, setProjectSnap] = useState<Project>(() => createProject('untitled bit'));
@@ -1009,6 +1003,10 @@ export function Stage({
       }
 
       if (m === 'playing' || m === 'recording') {
+        if (overlayInkedRef.current && overlayRef.current) {
+          overlayRef.current.getContext('2d')?.clearRect(0, 0, W, H);
+          overlayInkedRef.current = false;
+        }
         const region = loopRef.current;
         const stopAt = Math.min(region?.to ?? Infinity, project.audio?.trim?.to ?? dur);
         const now = currentClock();
@@ -1069,36 +1067,25 @@ export function Stage({
         if (sim) {
           const poses = sim.advanceTo(clock);
           lastPosesRef.current = poses;
-          if (wireAmount(wiresRef.current, '', 'on', 'foley') > 0) {
-            for (const [pid, pose] of poses) {
-              const prev = prevSquashRef.current.get(pid) ?? 0;
-              if (pose.root.squash >= IMPACT_SQUASH && prev < IMPACT_SQUASH) {
-                void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
-              }
-              prevSquashRef.current.set(pid, pose.root.squash);
+          if (foleyOn(wiresRef.current)) {
+            for (let n = impactsOf(prevSquashRef.current, poses).length; n > 0; n--) {
+              void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
             }
           }
-          const cast = castOf(project);
-          const mods = new Map<string, WireMods>();
-          for (const p of cast) {
-            mods.set(
-              p.id,
-              wireModsFor(wiresRef.current, p.id, voiceRef.current, onsets, clock, project.seed),
-            );
-          }
-          drawStage(
+          renderFrame2d(
             ctx,
             W,
             H,
-            cast,
-            poses,
+            composeFrame({
+              project,
+              cast: castOf(project),
+              visuals: visualsRef.current,
+              wires: wiresRef.current,
+              analysis: { voice: voiceRef.current, onsets, voices: voicesRef.current },
+              poses,
+              t: clock,
+            }),
             imagesRef.current,
-            visualsRef.current,
-            voiceMap(project, visualsRef.current, voiceRef.current, clock, voicesRef.current),
-            clock,
-            project.seed,
-            mods,
-            trailStrength(wiresRef.current, voiceRef.current, onsets, clock),
           );
         }
         layoutOverlays();
@@ -1137,67 +1124,58 @@ export function Stage({
         const sim = createShowSim({ ...project, events: applyStagingCast(project, staging) });
         const poses = sim.advanceTo(playheadRef.current);
         lastPosesRef.current = poses;
-        const idleMods = new Map<string, WireMods>();
-        for (const p of cast) {
-          idleMods.set(
-            p.id,
-            wireModsFor(
-              wiresRef.current,
-              p.id,
-              voiceRef.current,
-              onsets,
-              playheadRef.current,
-              project.seed,
-            ),
-          );
-        }
-        drawStage(
+        renderFrame2d(
           ctx,
           W,
           H,
-          cast,
-          poses,
-          imagesRef.current,
-          visualsRef.current,
-          voiceMap(
+          composeFrame({
             project,
-            visualsRef.current,
-            voiceRef.current,
-            playheadRef.current,
-            voicesRef.current,
-          ),
-          playheadRef.current,
-          project.seed,
-          idleMods,
+            cast,
+            visuals: visualsRef.current,
+            wires: wiresRef.current,
+            analysis: { voice: voiceRef.current, onsets, voices: voicesRef.current },
+            poses,
+            t: playheadRef.current,
+            // A still is drawn clean: there is no previous frame to ghost.
+            trails: false,
+          }),
+          imagesRef.current,
         );
-        // Pin rings, visible while staging and pinning.
-        for (const p of cast) {
-          const pose = poses.get(p.id);
-          const visual = visualsRef.current.get(p.id);
-          if (!pose || !visual || visual.pins.length === 0) continue;
-          ctx.strokeStyle = '#58a6ff';
-          ctx.lineWidth = 2;
-          pose.pins.forEach((pin, pi) => {
-            if (!visual.pins[pi]) return;
-            ctx.beginPath();
-            ctx.arc(pin.x * W, pin.y * H, Math.max(6, W * 0.012), 0, Math.PI * 2);
-            ctx.stroke();
-          });
+        // Pin rings, visible while staging and pinning, then whatever the
+        // current tool is drawing. All on the overlay, never the stage.
+        const overlay = overlayRef.current;
+        const octx = overlay ? sizedOverlay(overlay, W, H) : null;
+        if (octx) {
+          octx.clearRect(0, 0, W, H);
+          for (const p of cast) {
+            const pose = poses.get(p.id);
+            const visual = visualsRef.current.get(p.id);
+            if (!pose || !visual || visual.pins.length === 0) continue;
+            octx.strokeStyle = '#58a6ff';
+            octx.lineWidth = 2;
+            pose.pins.forEach((pin, pi) => {
+              if (!visual.pins[pi]) return;
+              octx.beginPath();
+              octx.arc(pin.x * W, pin.y * H, Math.max(6, W * 0.012), 0, Math.PI * 2);
+              octx.stroke();
+            });
+          }
+          if (modeRef.current === 'doodling')
+            drawStrokes(octx, W, H, strokeRef.current, inkRef.current);
+          if (modeRef.current === 'snipping' && snipStrokeRef.current) {
+            const s = snipStrokeRef.current;
+            octx.strokeStyle = '#58a6ff';
+            octx.setLineDash([8, 8]);
+            octx.lineWidth = 3;
+            octx.beginPath();
+            octx.moveTo(s.x0 * W, s.y0 * H);
+            octx.lineTo(s.x1 * W, s.y1 * H);
+            octx.stroke();
+            octx.setLineDash([]);
+          }
+          overlayInkedRef.current = true;
         }
         layoutOverlays();
-        if (modeRef.current === 'doodling')
-          drawStrokes(ctx, W, H, strokeRef.current, inkRef.current);
-        if (modeRef.current === 'snipping' && snipStrokeRef.current) {
-          const s = snipStrokeRef.current;
-          ctx.strokeStyle = '#58a6ff';
-          ctx.setLineDash([8, 8]);
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.moveTo(s.x0 * W, s.y0 * H);
-          ctx.lineTo(s.x1 * W, s.y1 * H);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
       }
     };
     rafRef.current = requestAnimationFrame(loop);
@@ -2410,6 +2388,7 @@ export function Stage({
                 : `the stage, with ${puppets.length} puppet${puppets.length === 1 ? '' : 's'}`
             }
           />
+          <canvas ref={overlayRef} className="stage-overlay" aria-hidden="true" />
           {!performing && (
           <TitleBar
             title={projectSnap.title}
@@ -2857,6 +2836,19 @@ function applyStagingCast(project: Project, staging: StagingDrag | null): Projec
       ? { ...e, x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot }
       : e,
   );
+}
+
+/** The overlay canvas, kept the stage canvas's size. */
+function sizedOverlay(
+  overlay: HTMLCanvasElement,
+  W: number,
+  H: number,
+): CanvasRenderingContext2D | null {
+  if (overlay.width !== W || overlay.height !== H) {
+    overlay.width = W;
+    overlay.height = H;
+  }
+  return overlay.getContext('2d');
 }
 
 function drawStrokes(

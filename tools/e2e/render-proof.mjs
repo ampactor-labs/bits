@@ -120,6 +120,19 @@ try {
     `centroid ${flip.centroidPlain.toFixed(3)} -> ${flip.centroidFlipped.toFixed(3)}`,
   );
 
+  // The frame builder draws exactly what the hand-assembled path drew.
+  const parity = await page.evaluate(() => window.__bitsE2E.runFrameParity());
+  check(
+    'the frame builder draws the old frames pixel for pixel',
+    parity.mismatched === 0,
+    `${parity.mismatched}/${parity.frames} frames differ, worst channel diff ${parity.maxDiff}`,
+  );
+  check(
+    'the parity fixture moves and talks',
+    parity.changedAcrossTime > parity.frames / 2 && parity.mouthOpenFrames > 10,
+    `${parity.changedAcrossTime} frames changed, ${parity.mouthOpenFrames} with an open mouth`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check('a v0 bit still opens', v0.parsedVersion === 1 && v0.castCount === 1, `version ${v0.parsedVersion}`);

@@ -29,6 +29,7 @@ import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
 import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
+import { peekFixture, runFrameParity, type ParityResult } from './parity';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -347,6 +348,9 @@ async function runFlip(): Promise<FlipE2EResult> {
   const draw = (flip: boolean): ImageData => {
     const base: Project = {
       ...createProject('flip'),
+      // A fixed seed: the boil jitter moves the ink, and the centroid check
+      // has a 1% tolerance that a random seed can blow on a bad draw.
+      seed: 1234,
       events: [
         {
           kind: 'CAST',
@@ -555,8 +559,10 @@ declare global {
       runV0: () => Promise<V0E2EResult>;
       runFlip: () => Promise<FlipE2EResult>;
       runVoice: () => Promise<VoiceE2EResult>;
+      runFrameParity: () => Promise<ParityResult>;
+      peekFixture: (times: number[], w?: number, h?: number) => Promise<string[]>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture };
