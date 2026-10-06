@@ -103,6 +103,12 @@ import {
   type StagingDrag,
 } from './stage/gestures';
 import { createStagePlayer, drawMarks, type StagePlayer } from './stage/player';
+import {
+  createSurface,
+  STARTUP_RENDERER,
+  type RendererChoice,
+  type StageSurface,
+} from '../render/surface';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
@@ -340,6 +346,11 @@ export function Stage({
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
   /** The camera the last frame was drawn through; null at rest. */
   const lastCameraRef = useRef<CameraPose | null>(null);
+  /** What draws the stage canvas, made for the canvas element it draws. */
+  const surfaceRef = useRef<{ canvas: HTMLCanvasElement; surface: StageSurface } | null>(null);
+  const rendererChoiceRef = useRef<RendererChoice>(STARTUP_RENDERER);
+  /** Bumped to give the stage a fresh canvas element after a lost context. */
+  const [canvasKey, setCanvasKey] = useState(0);
   /** The camera in hand: while a take rolls, fingers move it instead of
    *  the sheets. */
   const [cameraArmed, setCameraArmed] = useState(false);
@@ -1016,8 +1027,23 @@ export function Stage({
         canvas.height = H;
         dirtyRef.current = true;
       }
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      // One surface per canvas element: GL on a real GPU, canvas otherwise.
+      // A lost GL context gets a fresh canvas element, drawn by Canvas2D.
+      let surf = surfaceRef.current;
+      if (!surf || surf.canvas !== canvas) {
+        surf?.surface.dispose();
+        surf = { canvas, surface: createSurface(canvas, rendererChoiceRef.current) };
+        surfaceRef.current = surf;
+        canvas.dataset.renderer = surf.surface.kind;
+        dirtyRef.current = true;
+      }
+      if (surf.surface.lost) {
+        rendererChoiceRef.current = '2d';
+        surfaceRef.current = null;
+        setCanvasKey((k) => k + 1);
+        return;
+      }
+      const surface = surf.surface;
 
       const m = modeRef.current;
       const project = projectRef.current;
@@ -1107,7 +1133,7 @@ export function Stage({
 
         const sim = simRef.current;
         if (sim) {
-          const frame = playerRef.current.playing(ctx, W, H, project, sim, clock);
+          const frame = playerRef.current.playing(surface, W, H, project, sim, clock);
           lastPosesRef.current = playerRef.current.lastPoses();
           lastCameraRef.current = frame.camera;
           const landed = liveImpactsRef.current?.drain() ?? [];
@@ -1139,7 +1165,7 @@ export function Stage({
         seekSimAtRef.current = playheadRef.current;
         lastSeekDrawRef.current = performance.now();
         const frame = playerRef.current.still(
-          ctx,
+          surface,
           W,
           H,
           project,
@@ -2038,6 +2064,7 @@ export function Stage({
           {/* The stage is a picture that changes; its state is spoken by
               the banner, the clock and the lanes rather than by the pixels. */}
           <canvas
+            key={canvasKey}
             ref={canvasRef}
             role="img"
             aria-label={

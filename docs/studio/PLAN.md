@@ -135,7 +135,31 @@ Original notes:
 - Rooms: `ui/rooms/RoomBar.tsx` (Stage | Wires), `rooms/Wires.tsx` — signal rows with live meters, the selected sheet's targets as cells, a cell opens amount/smooth/threshold/delay. Replaces MoreSheet's five fixed rows. Rooms are drawers on phones (within a third of the stage) and side by side on desktop.
 - Checks: FFT bin of a sine, band separation, query order can't change smoothing, legacy oracle, harness `runBands`, walkthrough `bass-makes-the-sky-pulse`, `a-pass-drives-the-camera-at-30`.
 
-### S4a — WebGL2 parity (+ orbit)
+### S4a — WebGL2 parity — *done*
+What shipped, a different shape from the notes below, chosen for parity: **Canvas2D draws a sheet, WebGL2 draws the stage.**
+
+`drawLayer` split into `placementOf` (where the sheet's own frame sits) and `drawSheetContent` (everything the sheet is, drawn in that frame). The canvas renderer composes the two exactly as before, so parity is byte-identical. `src/render/gl/glRenderer.ts` instead rasterises each sheet's content with that same function into a sprite in the sheet's own frame and places it with one textured quad. The GL side handles:
+- placement, squash and lean through the camera;
+- trails, a background quad faded by the shared `trailFor`;
+- shadows, a blurred silhouette pass, and fog, mixed in the shader;
+- fade, and colour through the CSS hue-rotate matrix the canvas filter uses;
+- the moved backdrop's apron, using `MIRRORED_REPEAT` on a three-by-three quad.
+
+Static content (`sheetContentKey`: no mouth, eyes, swinging pieces or warp; doodles keyed by boil step) keeps its sprite in a 48 MB LRU, so a backdrop uploads once. A single rasteriser means the two renderers can differ only in resampling. The render proof bounds that difference: on the fixture, and on the fixture with the camera moving and a look on, at most 0.36% of pixels are visibly off (channel diff over 40), with mean diff under 1.2.
+
+`src/render/surface.ts` picks the renderer per canvas element:
+- GL on a hardware GPU; software GL (SwiftShader, llvmpipe) counts as none and gets Canvas2D.
+- `?renderer=gl|2d` overrides.
+- A lost context gets a fresh canvas element drawn by Canvas2D.
+
+`UX_RENDERER=gl npm run test:ux` walks the whole app on GL (SwiftShader); the frame gate stays a Canvas2D gate.
+
+Not done here:
+- **Export stays Canvas2D,** so films stay byte-identical to before.
+- **Orbit** (yaw/pitch, projective) waits for full GL sheets, because a projective sheet cannot be a canvas sprite.
+- **SDF mouths and eyes, and GL-native pieces,** are left for when Ink (S4b) needs sheets to be shaders anyway.
+
+Original notes:
 - `src/render/gl/`: mat4 per sheet; painter's order; 4× MSAA; convex pieces as fans; warped grid as one dynamic mesh; doodles and text rasterized by the canvas code into textures per boil variant (LRU); SDF mouths and eyes; ping-pong trails.
 - Loaded as a dynamic chunk; `createRenderer('auto')` with `?renderer=` override; repeated context loss falls back to Canvas2D.
 - Camera `prop 'yaw'|'pitch'` (orbit) — projective, so WebGL only.

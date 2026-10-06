@@ -148,6 +148,11 @@ let browser;
 const dialogs = [];
 const pageErrors = [];
 
+// UX_RENDERER=gl walks the stage drawn by the WebGL2 renderer (on
+// SwiftShader here); the frame gate is the Canvas2D one, so it is reported
+// but not held to in that mode.
+const RENDERER = process.env.UX_RENDERER ? `&renderer=${process.env.UX_RENDERER}` : '';
+
 try {
   mkdirSync(SHOTS, { recursive: true });
   await waitForServer();
@@ -159,6 +164,7 @@ try {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
+      ...(RENDERER ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : []),
     ],
   });
 
@@ -347,7 +353,7 @@ try {
 
   // ---- first exposure ------------------------------------------------
   await phase('first-run-lands-on-a-bit', async () => {
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await page.waitForSelector('.stagebox', { timeout: 20000 });
     await sleep(800);
@@ -1399,7 +1405,7 @@ try {
     check('a-share-is-taken-by-the-worker', posted === 'redirected', String(posted));
 
     // Now open the app the way the redirect would, and let it collect.
-    await page.goto(`${BASE}?e2e&inbox=1`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}&inbox=1`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await sleep(2500);
     await goToList();
@@ -1471,9 +1477,13 @@ try {
     const median = sorted[Math.floor(sorted.length / 2)] ?? 999;
     const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 999;
     const janky = frames.filter((f) => f > 50).length / Math.max(1, frames.length);
+    const drawnBy = await page.evaluate(() => document.querySelector('.stagebox canvas')?.dataset.renderer ?? '?');
+    measure('Stage renderer', drawnBy);
     check(
       'the-frame-loop-holds-up-on-a-slow-phone',
-      frames.length > 60 && median <= 34 && janky <= 0.1,
+      // SwiftShader runs GL on the CPU and ignores the throttle; on GL the
+      // gate only asks that frames kept coming.
+      RENDERER ? frames.length > 30 : frames.length > 60 && median <= 34 && janky <= 0.1,
       `${frames.length} frames, median ${median.toFixed(1)}ms, p95 ${p95.toFixed(1)}ms, ${Math.round(janky * 100)}% over 50ms`,
     );
     measure(
@@ -1487,7 +1497,7 @@ try {
   // this container's Chromium has none. A mix nobody can hear is a mix
   // nobody has checked.
   await phase('a-voice-take-reaches-the-mix', async () => {
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bitsE2E !== undefined', { timeout: 20000 });
     const v = await page.evaluate(() => window.__bitsE2E.runVoice());
     check(
@@ -1505,7 +1515,7 @@ try {
       Math.abs(v.halfGainRatio - 0.5) < 0.02,
       `half gain is ${v.halfGainRatio.toFixed(3)} of full`,
     );
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await sleep(600);
   });
@@ -1719,7 +1729,7 @@ try {
       return tab.screenshot({ path: join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`) });
     };
     try {
-      await tab.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+      await tab.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
       await sleep(800);
       const withSound = await tab.evaluateHandle(() =>
         Array.from(document.querySelectorAll('.source-row')).find((r) =>
