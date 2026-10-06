@@ -53,6 +53,40 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
   for (const layer of frame.layers) drawLayer(ctx, W, H, layer, images, tS, seed);
 }
 
+/** A canvas renderer that remembers the frame before. Trails are a ghost
+ *  of the previous frame, so how much of it survives has to depend on how
+ *  long ago that frame was: a 60 fps preview used to fade twice as fast as
+ *  the 30 fps film. `keep` is defined per thirtieth of a second, so a film
+ *  at 30 fps draws exactly what it always did. */
+export interface Renderer2d {
+  draw(ctx: Ctx2D, W: number, H: number, frame: Frame, images: StageImages): void;
+  /** Forget the previous frame: the next one wipes clean. */
+  reset(): void;
+}
+
+export function createRenderer2d(): Renderer2d {
+  let lastT: number | null = null;
+  return {
+    draw(ctx, W, H, frame, images) {
+      let trail = Math.min(0.92, frame.trail);
+      if (lastT !== null && trail > 0) {
+        const dt = frame.t - lastT;
+        // Going back, or a jump the eye reads as a cut: start clean.
+        if (dt < 0 || dt > 0.25) trail = 0;
+        else {
+          const thirtieths = dt * 30;
+          if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
+        }
+      }
+      lastT = frame.t;
+      renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
+    },
+    reset() {
+      lastT = null;
+    },
+  };
+}
+
 function drawLayer(
   ctx: Ctx2D,
   W: number,

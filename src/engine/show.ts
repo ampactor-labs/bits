@@ -308,10 +308,19 @@ interface PieceGeom {
   joint: { x: number; y: number };
 }
 
+/** Watches every step of the sim: `k` is the step index, so the step ends
+ *  at (k + 1) · PUPPET_DT. Called puppet by puppet, each in time order. */
+export type StepObserver = (puppetId: string, k: number, root: PuppetState) => void;
+
 /** Incremental simulator on the global fixed-step grid: whole steps only, so
  *  every advance schedule runs the identical sequence and replay stays
  *  bit-exact. Seek backward by rebuilding and fast-forwarding. */
-export function createShowSim(project: Project, fromT = 0, targets?: TargetProvider): ShowSim {
+export function createShowSim(
+  project: Project,
+  fromT = 0,
+  targets?: TargetProvider,
+  onStep?: StepObserver,
+): ShowSim {
   const cast = castOf(project);
   const poses = new Map<string, PuppetPose>();
 
@@ -472,6 +481,7 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
               }
             }
             root = next;
+            onStep?.(p.id, k, root);
           }
           poses.set(p.id, { root, dangles, pins });
         }

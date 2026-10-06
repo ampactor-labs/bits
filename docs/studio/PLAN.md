@@ -57,7 +57,10 @@ How a backdrop is picked up, settled while building it: a press on an unselected
 
 Harness note: late in `ux-walk.mjs`, after the window-shape phases, the original tab stops receiving synthetic touches at all; the backdrop phases run in a fresh tab. Put new touch-driven phases there too, or before the window-shape phases.
 
-### S1 (remaining, as S1b) — sheets everywhere
+### S1b — trails and foley that don't depend on frame rate — *done*
+What shipped: `createRenderer2d()` keeps the previous frame's time and fades trails by `keep^(30·Δt)` (exact at 30 fps, so exports are byte-identical; the render proof checks a vanished sheet's ghost after 0.3 s: 37 vs 31 at 30/60 fps, against 37 vs 2 before). `createShowSim` takes an `onStep` observer; `impactListener()` hears landings at the sim's 1/120 s steps, so preview and film hear the same landings at the same moments, and export places foley at the crossing rather than the frame. The `StagePlayer` and store extraction moved to S2a, where the camera needs them.
+
+### S1 (original notes, kept for the record)
 - Migration chain. Backdrop CASTs become `fit:'cover'` with a reset transform; stray WIRE/MOUTH/EYES/PIN/SNIP/PASS events on backdrop ids drop, with MUTE/TRIM/REMOVE that point at dropped passes. `back` then means only "back layer": transform, sim, hit-testing, snip, pin, wires, mouth and eyes all apply.
 - Trails into renderer state with Δt-correct fade; impacts on the 30 Hz grid.
 - `engine/assetRefs.ts`.

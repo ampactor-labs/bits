@@ -30,7 +30,13 @@ import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
 import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
-import { peekFixture, runFrameParity, type ParityResult } from './parity';
+import {
+  peekFixture,
+  runFrameParity,
+  runTrailRate,
+  type ParityResult,
+  type TrailRateResult,
+} from './parity';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -565,8 +571,9 @@ declare global {
       runVoice: () => Promise<VoiceE2EResult>;
       runFrameParity: () => Promise<ParityResult>;
       peekFixture: (times: number[], w?: number, h?: number) => Promise<string[]>;
+      runTrailRate: () => Promise<TrailRateResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture, runTrailRate };

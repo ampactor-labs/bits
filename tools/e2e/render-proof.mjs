@@ -133,6 +133,17 @@ try {
     `${parity.changedAcrossTime} frames changed, ${parity.mouthOpenFrames} with an open mouth`,
   );
 
+  // Trails fade by elapsed time, so a 60 fps preview ghosts like the film.
+  const trail = await page.evaluate(() => window.__bitsE2E.runTrailRate());
+  const [t30, t60] = trail.byTime;
+  const [f30, f60] = trail.byFrame;
+  check(
+    'a ghost fades in the same time at 60 fps as at 30',
+    // Twice the frames means twice the 8-bit rounding, hence the slack.
+    t30 > 3 && Math.abs(t30 - t60) <= Math.max(3, t30 * 0.25) && Math.abs(f30 - f60) > 2 * Math.abs(t30 - t60),
+    `ghost after 0.3s: ${t30} vs ${t60} by time; ${f30} vs ${f60} the old way`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(
