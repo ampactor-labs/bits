@@ -13,6 +13,13 @@ export function mapAssetRefs(project: Project, rename: (id: string) => string): 
       const id = rename(e.puppet.assetId);
       return id === e.puppet.assetId ? e : { ...e, puppet: { ...e.puppet, assetId: id } };
     }
+    // A clip travels with its read, or it arrives unable to mask or move.
+    if (e.kind === 'CAST' && e.puppet.type === 'video') {
+      const id = rename(e.puppet.assetId);
+      const read = e.puppet.analysisId ? rename(e.puppet.analysisId) : undefined;
+      if (id === e.puppet.assetId && read === e.puppet.analysisId) return e;
+      return { ...e, puppet: { ...e.puppet, assetId: id, ...(read ? { analysisId: read } : {}) } };
+    }
     // A puppet's own take travels with the bit, or the file arrives mute
     // for whoever recorded it.
     if (e.kind === 'VOICE') {

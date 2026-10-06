@@ -9,7 +9,7 @@ import { CastChip } from '../CastChip';
 import type { ShowPuppet } from '../../../engine/show';
 import type { StageImages } from '../../../media/stageDraw';
 
-export type CastKind = 'photo' | 'selfie' | 'doodle' | 'word' | 'backdrop' | 'sticker' | 'ink';
+export type CastKind = 'photo' | 'selfie' | 'doodle' | 'word' | 'backdrop' | 'sticker' | 'ink' | 'video';
 
 export interface CastSheetProps {
   cast: ShowPuppet[];
@@ -34,6 +34,7 @@ const TILES: { kind: CastKind; icon: IconName; label: string; sub: string }[] = 
   { kind: 'backdrop', icon: 'backdrop', label: 'a backdrop', sub: 'behind everyone' },
   { kind: 'sticker', icon: 'sticker', label: 'a sticker', sub: 'star, heart, cloud…' },
   { kind: 'ink', icon: 'ink', label: 'grow an ink', sub: 'a texture you breed' },
+  { kind: 'video', icon: 'camera', label: 'a video', sub: 'it plays in time' },
 ];
 
 export function CastSheet({

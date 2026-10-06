@@ -2109,6 +2109,62 @@ try {
         await sleep(300);
         check('a-sheet-on-twos', kinds.join(',') === 'CAST' && spring === 'twos', `${kinds.join(',')} ${spring}`);
       });
+
+      // A clip from the camera roll becomes a sheet that plays in time.
+      await phase('a-video-becomes-a-sheet', async () => {
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        const fed = await tab.evaluate(() => window.__bitsE2E.pickVideo());
+        if (!fed) throw new Error('no video picker');
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.slice(n).some((e) => e.kind === 'CAST' && e.puppet.type === 'video'),
+          { timeout: 20000 },
+          before,
+        );
+        await sleep(800);
+        await label('play');
+        await sleep(1500);
+        await tabShot('video-sheet');
+        if (await tab.$('.dock-stop')) await label('stop');
+        await sleep(300);
+        const spec = await tab.evaluate((n) => {
+          const e = window.__bits.project().events.slice(n).find((x) => x.kind === 'CAST' && x.puppet.type === 'video');
+          return e ? e.puppet : null;
+        }, before);
+        check('a-video-becomes-a-sheet', !!spec && spec.durationS > 1.4 && spec.durationS < 1.6, spec ? `${spec.durationS.toFixed(2)}s` : 'no clip');
+      });
+
+      // Reading it: the real models, offline, with progress; then it can
+      // show just the person.
+      await phase('a-clip-can-be-read-and-masked', async () => {
+        await label('more');
+        await sleep(350);
+        const read = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) =>
+            (b.textContent || '').startsWith('read the clip'),
+          ),
+        );
+        if (!read.asElement()) throw new Error('no read button');
+        await read.asElement().tap();
+        await tab.waitForFunction(
+          () => {
+            const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+            return !!casts[casts.length - 1]?.puppet.analysisId;
+          },
+          { timeout: 60000 },
+        );
+        await sleep(500);
+        const before = await kindsNow();
+        await option('what of the clip shows', 'the person');
+        await sleep(400);
+        const masked = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+          return casts[casts.length - 1]?.puppet.masked === true;
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-clip-can-be-read-and-masked', masked && kinds.join(',') === 'CAST', `${kinds.join(',')} masked ${masked}`);
+      });
     } finally {
       await tab.close();
     }

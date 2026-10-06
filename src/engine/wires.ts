@@ -118,7 +118,8 @@ export function wireSignal(w: Wire, ctx: WireContext, t: number): number {
     hit.src.onsets !== ctx.onsets ||
     hit.src.bands !== ctx.bands ||
     hit.src.voices !== ctx.voices ||
-    hit.src.seed !== ctx.seed
+    hit.src.seed !== ctx.seed ||
+    hit.src.videos !== ctx.videos
   ) {
     const src: SignalSources = {
       voice: ctx.voice,
@@ -126,6 +127,7 @@ export function wireSignal(w: Wire, ctx: WireContext, t: number): number {
       voices: ctx.voices,
       bands: ctx.bands,
       seed: ctx.seed,
+      ...(ctx.videos ? { videos: ctx.videos } : {}),
     };
     hit = { src, track: bakeSignal(w.signal, w, src) };
     baked.set(w, hit);
