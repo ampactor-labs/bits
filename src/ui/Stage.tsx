@@ -2055,6 +2055,18 @@ export function Stage({
             }
             onBack={onBack}
             onMenu={() => setSheet({ kind: 'show' })}
+            extra={
+              // In the strip, where no halo, banner or sheet ever sits on it.
+              (mode === 'idle' || mode === 'recording') && puppets.length > 0 && durationS > 0 ? (
+                <IconButton
+                  icon="camera"
+                  label={cameraArmed ? 'put the camera down' : 'pick up the camera'}
+                  aria-pressed={cameraArmed}
+                  className={`stage-camera${cameraArmed ? ' on' : ''}`}
+                  onClick={() => toggleCamera(!cameraArmed)}
+                />
+              ) : null
+            }
           />
           )}
           <BannerView />
@@ -2176,16 +2188,6 @@ export function Stage({
             </div>
           )}
           {mode === 'recording' && <span className="recdot">●</span>}
-          {(mode === 'idle' || mode === 'recording') && puppets.length > 0 && durationS > 0 && (
-            <IconButton
-              icon="camera"
-              label={cameraArmed ? 'put the camera down' : 'pick up the camera'}
-              aria-pressed={cameraArmed}
-              className={`stage-camera${cameraArmed ? ' on' : ''}`}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => toggleCamera(!cameraArmed)}
-            />
-          )}
           {sideView && (mode === 'idle' || mode === 'recording') && !performing && (
             <DirectorView
               cast={castOf(projectSnap)}

@@ -692,16 +692,8 @@ body {
   outline: 2px solid var(--accent-2);
 }
 
-/* Bottom right: the top of the stage is the banner's, and the camera's
- * own hint would cover the button that puts it down. */
 .stage-camera {
-  position: absolute;
-  bottom: 12px;
-  right: 8px;
-  z-index: 3;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 85%, transparent);
-  backdrop-filter: blur(4px);
 }
 
 .stage-camera.on {
@@ -711,7 +703,8 @@ body {
 
 .camera-tools {
   position: absolute;
-  bottom: 68px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 8px;
   z-index: 3;
   display: flex;
