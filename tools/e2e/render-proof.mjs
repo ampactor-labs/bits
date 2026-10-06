@@ -45,7 +45,13 @@ try {
   browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: 'new',
-    args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'],
+    // SwiftShader gives headless Chrome a WebGL2 to hold the GL renderer to.
+    args: [
+      '--no-sandbox',
+      '--autoplay-policy=no-user-gesture-required',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
+    ],
   });
   const page = await browser.newPage();
   const pageErrors = [];
@@ -142,6 +148,130 @@ try {
     // Twice the frames means twice the 8-bit rounding, hence the slack.
     t30 > 3 && Math.abs(t30 - t60) <= Math.max(3, t30 * 0.25) && Math.abs(f30 - f60) > 2 * Math.abs(t30 - t60),
     `ghost after 0.3s: ${t30} vs ${t60} by time; ${f30} vs ${f60} the old way`,
+  );
+
+  // The camera: depth is free at rest, parallax when it pans, and a
+  // backdrop never shows the void behind it.
+  const cam = await page.evaluate(() => window.__bitsE2E.runCamera());
+  check('a show with no camera draws no camera', cam.restIsNull, String(cam.restIsNull));
+  check(
+    'a pan slides near sheets with the world and far ones by f / (f + depth)',
+    Math.abs(cam.pan) > 40 &&
+      Math.abs(cam.nearSlide + cam.pan) < 2 &&
+      Math.abs(cam.farSlide - cam.farExpected) < 2,
+    `pan ${cam.pan.toFixed(1)}px: near ${cam.nearSlide.toFixed(1)}, far ${cam.farSlide.toFixed(1)} (want ${cam.farExpected.toFixed(1)})`,
+  );
+  check(
+    'a panned backdrop never opens onto the void',
+    cam.voidAtRest < 0.001 && cam.voidPanned < 0.001,
+    `bare stage ${(cam.voidAtRest * 100).toFixed(2)}% at rest, ${(cam.voidPanned * 100).toFixed(2)}% panned`,
+  );
+
+  // The look: shadows fall further across a bigger depth gap, fog eats far
+  // sheets more than near ones, and a cut leaves no ghost.
+  const look = await page.evaluate(() => window.__bitsE2E.runLook());
+  check(
+    'a shadow falls further onto a sheet further back',
+    look.shadowReachNear > 2 && look.shadowReachFar > look.shadowReachNear + 2,
+    `reach ${look.shadowReachNear}px over the plane, ${look.shadowReachFar}px over a far backdrop`,
+  );
+  check(
+    'fog takes far sheets more than near ones',
+    look.fogNear > 10 && look.fogFar > look.fogNear * 1.5,
+    `colour moved ${look.fogNear} near, ${look.fogFar} far`,
+  );
+  check(
+    'a cut leaves no ghost',
+    look.ghostPlain > 50 && look.ghostCut === 0,
+    `ghost ${look.ghostPlain} without a cut, ${look.ghostCut} across one`,
+  );
+
+  // Folds: a flap bent out of the paper is shorter and darker; folded
+  // right over it shows the paper's back where the card was, and bare
+  // stage where the flap used to be.
+  const fold = await page.evaluate(() => window.__bitsE2E.runFold());
+  const magenta = ([r, g, b]) => r > 200 && g < 60 && b > 200;
+  const bare = ([r, g, b]) => r + g + b < 80;
+  const rgb = (c) => c.join(',');
+  check(
+    'a fold lying open is the whole card',
+    fold.flat.every(magenta),
+    fold.flat.map(rgb).join(' / '),
+  );
+  check(
+    'a bent fold is shorter and darker',
+    magenta([fold.bent[1][0] + 30, fold.bent[1][1], fold.bent[1][2] + 30]) &&
+      fold.bent[1][0] < fold.flat[1][0] - 20 &&
+      bare(fold.bent[2]),
+    fold.bent.map(rgb).join(' / '),
+  );
+  check(
+    'a fold right over shows the back of the paper',
+    fold.over[0][1] > 180 && fold.over[0][0] > 180 && bare(fold.over[1]) && bare(fold.over[2]),
+    fold.over.map(rgb).join(' / '),
+  );
+
+  // Bands: decoded at the file's own rate, analysed in the worker, the
+  // same numbers as inline, and bass is bass.
+  const bands = await page.evaluate(() => window.__bitsE2E.runBands());
+  check('the worker hears the same bands as the page', bands.sameAsInline, String(bands.sameAsInline));
+  check(
+    'bass is heard in the bass band and air in the air band',
+    bands.bassLow > 0.8 && bands.bassHigh < 0.3 && bands.airHigh > 0.8 && bands.airLow < 0.3,
+    `bass ${bands.bassLow.toFixed(2)} then ${bands.bassHigh.toFixed(2)}, air ${bands.airLow.toFixed(2)} then ${bands.airHigh.toFixed(2)}`,
+  );
+
+  // The WebGL2 renderer draws what the canvas renderer draws, within the
+  // one extra resampling its sprites cost.
+  const glp = await page.evaluate(() => window.__bitsE2E.runGlParity());
+  check('webgl2 is there to test', glp.available, glp.renderer);
+  check('a palette and paper really change the picture', glp.gradeEffect > 8, `mean red shift ${glp.gradeEffect.toFixed(1)}`);
+  for (const sc of glp.scenes) {
+    check(
+      `the GL renderer matches the canvas (${sc.name})`,
+      sc.frames >= 12 && sc.worstVisible < 0.02 && sc.worstMean < 3,
+      `${(sc.worstVisible * 100).toFixed(2)}% of pixels visibly off at worst, mean diff ${sc.worstMean.toFixed(2)}`,
+    );
+  }
+
+  const surf = await page.evaluate(() => window.__bitsE2E.runSurface());
+  check(
+    'asked for GL, the stage draws with GL; left to choose on software GL, it picks the canvas',
+    surf.forced === 'gl' && surf.auto === '2d' && surf.colours > 50,
+    `forced ${surf.forced}, auto ${surf.auto}, ${surf.colours} colours drawn`,
+  );
+
+  // Video sheets: the film draws exactly the frame the rule names.
+  const vid = await page.evaluate(() => window.__bitsE2E.runVideo());
+  const wrong = vid.frames.filter((f) => f.want !== f.got);
+  check(
+    'a video sheet shows exactly the frame its moment names',
+    vid.frames.length >= 9 && wrong.length === 0,
+    wrong.length ? wrong.map((f) => `t ${f.t}: want ${f.want} got ${f.got}`).join('; ') : `${vid.frames.length} moments, clip ${vid.durationS.toFixed(2)}s`,
+  );
+
+  // Reading a clip: motion and drift, masks, pose, and what they drive.
+  const read = await page.evaluate(() => window.__bitsE2E.runVideoRead());
+  check(
+    'a read hears the bar drift right and move',
+    read.meanFlowX > 0.1 && read.meanMotion > 0.2,
+    `flow x ${read.meanFlowX.toFixed(2)}, motion ${read.meanMotion.toFixed(2)}`,
+  );
+  check('a read keeps a mask per sample', read.maskShare > 0.005 && read.maskShare < 0.1, `${(read.maskShare * 100).toFixed(1)}% of mask lit`);
+  check(
+    'the real models load offline and answer at the right sizes',
+    typeof read.realModels === 'object' && read.realModels.masks > 10 && read.realModels.pose,
+    typeof read.realModels === 'object' ? `${read.realModels.masks} masks at ${read.realModels.maskSize}, pose ${read.realModels.pose}` : read.realModels,
+  );
+  check(
+    'a masked clip shows only its person',
+    read.maskedBar > 200 && read.maskedElsewhere === 16 && read.unmaskedElsewhere === 0,
+    `bar ${read.maskedBar}, elsewhere ${read.maskedElsewhere} masked vs ${read.unmaskedElsewhere} plain`,
+  );
+  check(
+    'a hand in the clip leads another sheet',
+    read.leadMoves[1] > read.leadMoves[0] + 0.1,
+    `card x ${read.leadMoves[0].toFixed(2)} then ${read.leadMoves[1].toFixed(2)}`,
   );
 
   // A bit saved by the shipped v0 app must keep opening and keep rendering.

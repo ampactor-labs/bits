@@ -10,7 +10,8 @@
 import { createFramer } from '../engine/frame';
 import type { Project } from '../engine/recipe';
 import { getAsset } from './assets';
-import { loadStageImages, renderFrame2d, STAGE_BG } from './stageDraw';
+import { loadStageImages, renderFrame2d, STAGE_BG, type StageImages } from './stageDraw';
+import { loadVideos, videosReadyAt } from './video';
 
 /** Where in the bit the still is taken. Far enough that a pass has moved
  *  something, early enough that most bits have reached it. */
@@ -48,6 +49,9 @@ export async function posterFor(
   try {
     const images = await loadStageImages(framer.cast, getAsset);
     const t = (project.audio?.durationS ?? 0) * AT;
+    const specs = framer.cast.map((p) => p.spec);
+    await loadVideos(specs, getAsset);
+    await videosReadyAt(specs, t);
     renderFrame2d(ctx, W, H, framer.frameAt(t), images);
     for (const img of images.values()) img.close();
   } catch {
@@ -58,4 +62,34 @@ export async function posterFor(
   if (cache.size > 40) cache.clear();
   cache.set(key, url);
   return url;
+}
+
+/** Stills of one bit at several moments, for the shots room: drawn with
+ *  the stage's own images through the same frame builder, in time order so
+ *  the sim only runs forward. Mouths are shut, as on a poster. */
+export async function stillsAt(
+  project: Project,
+  times: number[],
+  images: StageImages,
+  width = 72,
+): Promise<string[]> {
+  const framer = createFramer(project);
+  const W = width;
+  const H = Math.round(project.aspect === '16:9' ? (width * 9) / 16 : (width * 16) / 9);
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return [];
+  const order = times.map((t, i) => ({ t, i })).sort((a, b) => a.t - b.t);
+  const out: string[] = new Array<string>(times.length).fill('');
+  for (const { t, i } of order) {
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+    renderFrame2d(ctx, W, H, framer.frameAt(t), images);
+    out[i] = canvas.toDataURL('image/webp', 0.7);
+    // One still per task, so the stage keeps its frames while they draw.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return out;
 }

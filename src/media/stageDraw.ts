@@ -2,9 +2,12 @@
 // as scissored pieces (root clipped to what remains, children hinged at their
 // snip lines), mouths flap with the loudness envelope, doodles boil.
 
+import { viewOf } from '../engine/camera';
+import { fogAmount, shadowGap, shadowOffset } from '../engine/look';
+import { gradeParams, gradePixels, grainTile } from '../engine/grade';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
-import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
+import { pointInPoly, type PieceDef, type PuppetPieces, type SnipLine } from '../engine/pieces';
 import {
   SHAPE_ROUND,
   SHAPE_SLIT,
@@ -17,6 +20,25 @@ import type { Frame, LayerFrame, PuppetVisual } from '../engine/frame';
 
 export type { PuppetVisual } from '../engine/frame';
 import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
+import type { Genome } from '../engine/ink';
+import { inkCanvas } from './inkDraw';
+import { videoFrame } from './video';
+import { maskCanvas, tracksOf } from './videoAnalysis';
+import { maskIndex, videoLocalTime } from '../engine/video';
+import { blinkAt } from '../engine/blink';
+
+/** One scratch canvas for masking clips, reused. */
+let maskScratch: OffscreenCanvasRenderingContext2D | null = null;
+function masking(w: number, h: number): OffscreenCanvasRenderingContext2D {
+  const cw = Math.max(1, Math.min(1280, w));
+  const ch = Math.max(1, Math.min(1280, h));
+  if (!maskScratch) maskScratch = new OffscreenCanvas(cw, ch).getContext('2d')!;
+  if (maskScratch.canvas.width !== cw || maskScratch.canvas.height !== ch) {
+    maskScratch.canvas.width = cw;
+    maskScratch.canvas.height = ch;
+  }
+  return maskScratch;
+}
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -38,7 +60,6 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
   // wipe (the TouchDesigner feedback-loop trick, canvas edition). The first
   // beats always wipe fully so renders start from black.
   const tS = frame.t;
-  const seed = frame.seed;
   const keep = tS < 0.08 ? 0 : Math.min(0.92, frame.trail);
   if (keep > 0) {
     ctx.fillStyle = STAGE_BG;
@@ -50,7 +71,69 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
     ctx.fillRect(0, 0, W, H);
   }
 
-  for (const layer of frame.layers) drawLayer(ctx, W, H, layer, images, tS, seed);
+  // Only shadows and fog need each sheet drawn on its own; a palette or
+  // paper grades the finished frame (see createRenderer2d).
+  const look = frame.look && (frame.look.shadow > 0 || frame.look.fog > 0) ? frame.look : null;
+  frame.layers.forEach((layer, i) => {
+    if (!look) {
+      drawProjected(ctx, W, H, frame, layer, images);
+      return;
+    }
+    // A look draws each sheet on its own first, so its fog tints only the
+    // sheet and its shadow is the whole sheet's silhouette: a shadow cast
+    // from inside the sheet's clip would be cut off at its edges.
+    const sprite = spriteFor(W, H);
+    sprite.setTransform(1, 0, 0, 1, 0, 0);
+    sprite.globalCompositeOperation = 'source-over';
+    sprite.clearRect(0, 0, W, H);
+    drawProjected(sprite, W, H, frame, layer, images);
+    const haze = look.fog > 0 ? fogAmount(look.fog, layer.depth) : 0;
+    if (haze > 0) {
+      sprite.globalCompositeOperation = 'source-atop';
+      sprite.globalAlpha = haze;
+      sprite.fillStyle = look.fogColor;
+      sprite.fillRect(0, 0, W, H);
+      sprite.globalAlpha = 1;
+      sprite.globalCompositeOperation = 'source-over';
+    }
+    ctx.save();
+    // The back layer has nothing behind it to fall on.
+    if (look.shadow > 0 && !layer.puppet.back) {
+      const gap = shadowGap(frame.layers, i, frame.camera, W, H);
+      const off = shadowOffset(look.shadow, gap, W);
+      ctx.shadowColor = `rgba(0, 0, 0, ${(0.55 * look.shadow).toFixed(3)})`;
+      ctx.shadowOffsetX = off.dx;
+      ctx.shadowOffsetY = off.dy;
+      ctx.shadowBlur = off.blur;
+    }
+    ctx.drawImage(sprite.canvas, 0, 0);
+    ctx.restore();
+  });
+}
+
+/** One layer through the camera. At rest there is no transform at all. */
+function drawProjected(ctx: Ctx2D, W: number, H: number, frame: Frame, layer: LayerFrame, images: StageImages): void {
+  const view = viewOf(frame.camera, layer.depth, W, H);
+  if (!view) {
+    drawLayer(ctx, W, H, layer, images, frame.t, frame.seed, false);
+    return;
+  }
+  // The camera is one similarity per sheet, applied on top of whatever
+  // the caller set (device pixels), so everything inside the sheet
+  // follows it.
+  ctx.save();
+  ctx.transform(view.a, view.b, view.c, view.d, view.e, view.f);
+  drawLayer(ctx, W, H, layer, images, frame.t, frame.seed, true);
+  ctx.restore();
+}
+
+/** One scratch canvas for every looked layer, kept the stage's size. */
+let sprite: OffscreenCanvasRenderingContext2D | null = null;
+function spriteFor(W: number, H: number): OffscreenCanvasRenderingContext2D {
+  if (!sprite || sprite.canvas.width !== W || sprite.canvas.height !== H) {
+    sprite = new OffscreenCanvas(W, H).getContext('2d')!;
+  }
+  return sprite;
 }
 
 /** A canvas renderer that remembers the frame before. Trails are a ghost
@@ -64,20 +147,64 @@ export interface Renderer2d {
   reset(): void;
 }
 
+/** How much of the previous frame survives under this one, given when
+ *  that frame was: per thirtieth of a second, so 30 fps is exact. */
+function trailSince(frame: Frame, lastT: number | null): number {
+  let trail = Math.min(0.92, frame.trail);
+  if (lastT !== null && trail > 0) {
+    const dt = frame.t - lastT;
+    // Going back, a jump the eye reads as a cut, or a real one: start
+    // clean.
+    if (dt < 0 || dt > 0.25 || (frame.cutAt !== null && frame.cutAt > lastT)) trail = 0;
+    else {
+      const thirtieths = dt * 30;
+      if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
+    }
+  }
+  return trail;
+}
+
+/** The fade every renderer applies before drawing a frame: the canvas
+ *  renderer's own rule, for renderers that do not go through it. */
+export function trailFor(frame: Frame, lastT: number | null): number {
+  const trail = trailSince(frame, lastT);
+  return frame.t < 0.08 ? 0 : Math.min(0.92, trail);
+}
+
 export function createRenderer2d(): Renderer2d {
   let lastT: number | null = null;
+  // A graded show draws onto a working canvas, which keeps the trails, and
+  // puts a graded copy on screen: grading the screen itself would grade
+  // every ghost again each frame it survives.
+  let work: OffscreenCanvasRenderingContext2D | null = null;
+  let grading = false;
+  let grain: { seed: number; tile: Uint8Array } | null = null;
+  let out: ImageData | null = null;
   return {
     draw(ctx, W, H, frame, images) {
-      let trail = Math.min(0.92, frame.trail);
-      if (lastT !== null && trail > 0) {
-        const dt = frame.t - lastT;
-        // Going back, or a jump the eye reads as a cut: start clean.
-        if (dt < 0 || dt > 0.25) trail = 0;
-        else {
-          const thirtieths = dt * 30;
-          if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
-        }
+      const grade = frame.look && (frame.look.palette || frame.look.paper) ? frame.look : null;
+      if (!!grade !== grading) {
+        // Switching in or out: the working canvas has no history worth
+        // keeping.
+        grading = !!grade;
+        lastT = null;
       }
+      if (grade) {
+        if (!work || work.canvas.width !== W || work.canvas.height !== H) {
+          work = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+          lastT = null;
+        }
+        const trail = trailSince(frame, lastT);
+        lastT = frame.t;
+        renderFrame2d(work, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
+        if (!grain || grain.seed !== frame.seed) grain = { seed: frame.seed, tile: grainTile(frame.seed) };
+        if (!out || out.width !== W || out.height !== H) out = new ImageData(W, H);
+        const params = gradeParams({ palette: grade.palette, paper: grade.paper, seed: frame.seed }, W, frame.t);
+        gradePixels(work.getImageData(0, 0, W, H).data, out.data, W, H, params, grain.tile);
+        ctx.putImageData(out, 0, 0);
+        return;
+      }
+      const trail = trailSince(frame, lastT);
       lastT = frame.t;
       renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
     },
@@ -95,18 +222,72 @@ function drawLayer(
   images: StageImages,
   tS: number,
   seed: number,
+  moved: boolean,
 ): void {
-  const { puppet, pose, visual, mods: mod } = layer;
-  if (!pose || !visual) return;
-  const s = pose.root;
-  const pw = puppet.spec.w * W * puppet.home.scale;
-  const ph = puppet.spec.h * H * puppet.home.scale;
-
+  const place = placementOf(layer, W, H);
+  if (!place) return;
+  const mod = layer.mods;
   ctx.save();
-  ctx.translate((s.x + mod.dx) * W, (s.y + mod.dy) * H);
-  ctx.rotate(s.angle + puppet.home.rot + mod.dAngle);
-  const wireScale = mod.scaleMul;
-  ctx.scale((1 + s.squash) * wireScale, (1 - s.squash) * wireScale);
+  // Wired fade and colour. Absent unless wired, so an unwired sheet never
+  // touches either and draws as it always did.
+  if (mod.alpha !== undefined) ctx.globalAlpha *= mod.alpha;
+  if (mod.hue) ctx.filter = `hue-rotate(${mod.hue.toFixed(1)}deg)`;
+  ctx.translate(place.x, place.y);
+  ctx.rotate(place.rot);
+  ctx.scale(place.sx, place.sy);
+  drawSheetContent(ctx, layer, W, H, images, tS, seed, moved);
+  ctx.restore();
+}
+
+/** Where a sheet's own frame sits on the stage, in pixels: the spring's
+ *  position, lean and squash, plus whatever the wires add. Null when the
+ *  sheet has nothing to draw. */
+export interface Placement {
+  x: number;
+  y: number;
+  rot: number;
+  sx: number;
+  sy: number;
+}
+
+export function placementOf(layer: LayerFrame, W: number, H: number): Placement | null {
+  const { puppet, pose, visual, mods: mod } = layer;
+  if (!pose || !visual) return null;
+  const s = pose.root;
+  return {
+    x: (s.x + mod.dx) * W,
+    y: (s.y + mod.dy) * H,
+    rot: s.angle + puppet.home.rot + mod.dAngle,
+    sx: (1 + s.squash) * mod.scaleMul,
+    sy: (1 - s.squash) * mod.scaleMul,
+  };
+}
+
+/** The sheet's box in pixels, before squash and wires. */
+export function sheetSize(layer: LayerFrame, W: number, H: number): { pw: number; ph: number } {
+  const p = layer.puppet;
+  return { pw: p.spec.w * W * p.home.scale, ph: p.spec.h * H * p.home.scale };
+}
+
+/** Everything a sheet is, drawn in its own frame (origin at its centre,
+ *  unrotated): pieces or the warp, then mouth and eyes. The canvas
+ *  renderer draws it straight onto the stage; the GL renderer draws it
+ *  onto a sprite and places that. One rasteriser for a sheet's content,
+ *  so the two can only differ in how the result is placed. */
+export function drawSheetContent(
+  ctx: Ctx2D,
+  layer: LayerFrame,
+  W: number,
+  H: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  apron: boolean,
+): void {
+  const { puppet, pose, visual } = layer;
+  if (!pose || !visual) return;
+  const { pw, ph } = sheetSize(layer, W, H);
+  const folds = foldsNow(visual, layer.mods);
 
   // Pinned cutouts bend through the MLS warp; everything else draws as
   // scissored pieces (a single uncut piece is the trivial case).
@@ -120,14 +301,26 @@ function drawLayer(
   // and the warp mesh all follow it. localToWorld already agrees.
   if (puppet.flip) ctx.scale(-1, 1);
 
+  // A backdrop the camera has moved would slide off and show the void
+  // behind it, so it carries a mirrored apron: the photo reflected across
+  // each edge, which reads as more of the same place rather than a seam.
+  if (apron && puppet.back && img && puppet.spec.type === 'cutout' && puppet.spec.fit === 'cover') {
+    drawApron(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
+  }
+
   if (warp && img) {
     const crop = cropOf(puppet.spec, img, pw, ph);
     drawWarpedMesh(ctx, img, crop, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
   } else {
-    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
+    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed, visual.ink);
     for (const child of visual.pieces.children) {
+      const fold = folds?.[child.snipIndex] ?? null;
+      if (fold !== null && child.line) {
+        drawFoldedPiece(ctx, puppet, child, child.line, fold, pw, ph, images, tS, seed, visual.ink);
+        continue;
+      }
       const dangle = pose.dangles[child.snipIndex];
-      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed, visual.ink);
     }
   }
 
@@ -135,15 +328,85 @@ function drawLayer(
     const at = warp
       ? mlsSimilarity({ x: visual.mouth.mx, y: visual.mouth.my }, warp.p, warp.q)
       : null;
-    drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, layer.voice, at);
+    drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, layer.voice, at, folds);
   }
   if (visual.eyes) {
     const at = warp
       ? mlsSimilarity({ x: visual.eyes.ex, y: visual.eyes.ey }, warp.p, warp.q)
       : null;
-    drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
+    drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at, folds);
   }
-  ctx.restore();
+}
+
+/** When a sheet's drawn content can be reused from an earlier frame: the
+ *  same key draws the same pixels. Null when it changes every frame
+ *  (a mouth, eyes, dangling pieces, a warp). Doodles and words boil, so
+ *  they key on the boil variant. */
+export function sheetContentKey(layer: LayerFrame, W: number, H: number, tS: number): string | null {
+  const { puppet, visual } = layer;
+  if (!visual) return null;
+  if (visual.mouth || visual.eyes) return null;
+  // Inks and clips move every tick.
+  if (visual.ink || puppet.spec.type === 'ink' || puppet.spec.type === 'video') return null;
+  if (visual.pieces.children.length > 0) return null;
+  if (visual.pins.some((pin) => pin !== null)) return null;
+  const { pw, ph } = sheetSize(layer, W, H);
+  const boils = puppet.spec.type === 'doodle' || puppet.spec.type === 'text';
+  const variant = boils ? Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS : 0;
+  return `${puppet.id}#${specId(puppet.spec)}|${pw.toFixed(2)}|${ph.toFixed(2)}|${puppet.flip ? 1 : 0}|${variant}|${visual.pieces.root.poly.length}`;
+}
+
+/** A number per spec object: a recoloured or re-drawn sheet has a new spec,
+ *  so its cached sprite is never reused. Specs are immutable recipe data. */
+const specIds = new WeakMap<PuppetSpec, number>();
+let nextSpecId = 0;
+function specId(spec: PuppetSpec): number {
+  let id = specIds.get(spec);
+  if (id === undefined) {
+    id = nextSpecId++;
+    specIds.set(spec, id);
+  }
+  return id;
+}
+
+/** How far past its box a sheet's content can reach, in pixels: pieces
+ *  swing out on their hinges, eyes and mouths sit near the edge, strokes
+ *  have width. */
+export function sheetMargin(layer: LayerFrame, W: number, H: number): number {
+  const { pw, ph } = sheetSize(layer, W, H);
+  const swings = (layer.visual?.pieces.children.length ?? 0) > 0;
+  const warps = layer.visual?.pins.some((pin) => pin !== null) ?? false;
+  return swings || warps ? Math.hypot(pw, ph) * 0.6 : Math.max(8, Math.min(pw, ph) * 0.12);
+}
+
+/** The eight neighbours of a cover-fit box, each mirrored so its edge
+ *  meets the box's own edge with the same pixels. */
+function drawApron(
+  ctx: Ctx2D,
+  spec: PuppetSpec,
+  puppetId: string,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+): void {
+  for (let j = -1; j <= 1; j++) {
+    for (let i = -1; i <= 1; i++) {
+      if (i === 0 && j === 0) continue;
+      ctx.save();
+      ctx.translate(i * pw, j * ph);
+      ctx.scale(i === 0 ? 1 : -1, j === 0 ? 1 : -1);
+      // A little past the shared edge, under the box itself: two
+      // anti-aliased clips meeting on one line let the stage show through
+      // as a hairline seam.
+      ctx.beginPath();
+      ctx.rect(-pw / 2 - 1.5, -ph / 2 - 1.5, pw + 3, ph + 3);
+      ctx.clip();
+      drawContent(ctx, spec, puppetId, pw, ph, images, tS, seed);
+      ctx.restore();
+    }
+  }
 }
 
 const IDENTITY: WireMods = { scaleMul: 1, dx: 0, dy: 0, dAngle: 0 };
@@ -171,12 +434,16 @@ export function drawStage(
       t: tS,
       seed,
       trail: trailKeep,
+      camera: null,
+      look: null,
+      cutAt: null,
       layers: cast.map((puppet) => ({
         puppet,
         pose: poses.get(puppet.id),
         visual: visuals.get(puppet.id),
         voice: voices.get(puppet.id) ?? { open: 0, shape: 0 },
         mods: mods.get(puppet.id) ?? IDENTITY,
+        depth: puppet.depth,
       })),
     },
     images,
@@ -324,9 +591,10 @@ function drawEyes(
   tS: number,
   seed: number,
   warpedAt: Pt | null,
+  folds: Folds,
 ): void {
   ctx.save();
-  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey);
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey, folds);
   const cx = ((warpedAt?.x ?? eyes.ex) - 0.5) * pw;
   const cy = ((warpedAt?.y ?? eyes.ey) - 0.5) * ph;
   const eyeR = (eyes.size * pw) / 4.4;
@@ -337,15 +605,19 @@ function drawEyes(
   const jitX = boilNoise(seed, variant, 4242) * eyeR * 0.08;
   const jitY = boilNoise(seed, variant, 5353) * eyeR * 0.08;
 
+  // Shut is a line, not nothing: the lid comes down over the white.
+  const shut = eyes.blink ? blinkAt(seed, eyes.puppetId, tS) : 0;
+  const open = 1 - shut * 0.9;
   for (const side of [-1, 1]) {
     const ex = cx + side * gap;
     ctx.fillStyle = '#f4efe7';
     ctx.beginPath();
-    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08 * open, 0, 0, Math.PI * 2);
     ctx.fill();
+    if (open < 0.35) continue;
     ctx.fillStyle = '#17120e';
     ctx.beginPath();
-    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42 * Math.min(1, open * 1.2), 0, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -364,9 +636,13 @@ function applyCarrierTransform(
   ph: number,
   lx: number,
   ly: number,
+  folds: Folds,
 ): void {
   const carrier = pieces.children.find((c) => pointInPoly(c.poly, lx, ly));
-  if (carrier?.joint) {
+  const fold = carrier ? (folds?.[carrier.snipIndex] ?? null) : null;
+  if (carrier?.line && fold !== null) {
+    applyFold(ctx, carrier.line, fold, pw, ph);
+  } else if (carrier?.joint) {
     const dangle = pose.dangles[carrier.snipIndex];
     const jx = (carrier.joint.x - 0.5) * pw;
     const jy = (carrier.joint.y - 0.5) * ph;
@@ -374,6 +650,120 @@ function applyCarrierTransform(
     ctx.rotate(dangle?.angle ?? 0);
     ctx.translate(-jx, -jy);
   }
+}
+
+/** Each snip slot's fold angle this frame, wires included; null when the
+ *  sheet has no folds, which draws exactly as before folds existed. */
+type Folds = (number | null)[] | null;
+
+function foldsNow(visual: PuppetVisual, mods: WireMods): Folds {
+  const folds = visual.folds;
+  if (!folds || !folds.some((f) => f !== null)) return null;
+  const d = mods.dFold ?? 0;
+  return folds.map((f) => (f === null ? null : f + d));
+}
+
+/** Turns the canvas so a piece folds about its snip line. Seen square-on,
+ *  a fold squashes the piece across the line by cos(angle) and, past a
+ *  right angle, lays it over the other side. Pixel space, so a fold on a
+ *  tall sheet stays square to its line. */
+function applyFold(ctx: Ctx2D, line: SnipLine, angle: number, pw: number, ph: number): void {
+  const x0 = (line.x0 - 0.5) * pw;
+  const y0 = (line.y0 - 0.5) * ph;
+  const len = Math.hypot((line.x1 - line.x0) * pw, (line.y1 - line.y0) * ph);
+  if (len < 1e-6) return;
+  const ux = ((line.x1 - line.x0) * pw) / len;
+  const uy = ((line.y1 - line.y0) * ph) / len;
+  const c = Math.cos(angle);
+  // M = u·uᵀ + cos·n·nᵀ with n ⟂ u, fixing the line where it lies.
+  const a = ux * ux + c * uy * uy;
+  const b = ux * uy * (1 - c);
+  const d = uy * uy + c * ux * ux;
+  ctx.transform(a, b, b, d, x0 - (a * x0 + b * y0), y0 - (b * x0 + d * y0));
+}
+
+/** The plain back of the paper, for a piece folded right over. */
+const PAPER_BACK = '#e8e0d2';
+/** How dark a piece turned edge-on to the light gets. */
+const FOLD_SHADE = 0.45;
+
+/** One scratch canvas for folded pieces, reused. */
+let folding: OffscreenCanvasRenderingContext2D | null = null;
+
+/** A folded piece: turned about its line, darker the more it turns from
+ *  the light, and showing the paper's plain back once it is past a right
+ *  angle. The shading is laid only where the piece has paper, so a cutout
+ *  keeps its silhouette. */
+function drawFoldedPiece(
+  ctx: Ctx2D,
+  puppet: ShowPuppet,
+  piece: PieceDef,
+  line: SnipLine,
+  angle: number,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  ink: Genome | null,
+): void {
+  const c = Math.cos(angle);
+  const back = c < 0;
+  const shade = FOLD_SHADE * (1 - Math.abs(c));
+  ctx.save();
+  applyFold(ctx, line, angle, pw, ph);
+  if (!back && shade < 0.004) {
+    ctx.restore();
+    // Flat: a fold lying open is just the piece, unswung.
+    drawPiece(ctx, puppet, piece, 0, pw, ph, images, tS, seed, ink);
+    return;
+  }
+  clipTo(ctx, piece, pw, ph);
+  const m = Math.max(4, Math.min(pw, ph) * 0.1);
+  const tw = pw + m * 2;
+  const th = ph + m * 2;
+  const tr = ctx.getTransform();
+  const k = Math.min(3, Math.max(1, Math.hypot(tr.a, tr.b), Math.hypot(tr.c, tr.d)));
+  const w = Math.min(2048, Math.ceil(tw * k));
+  const h = Math.min(2048, Math.ceil(th * k));
+  if (!folding) folding = new OffscreenCanvas(w, h).getContext('2d')!;
+  const f = folding;
+  if (f.canvas.width !== w || f.canvas.height !== h) {
+    f.canvas.width = w;
+    f.canvas.height = h;
+  }
+  f.setTransform(1, 0, 0, 1, 0, 0);
+  f.globalCompositeOperation = 'source-over';
+  f.clearRect(0, 0, w, h);
+  f.setTransform(w / tw, 0, 0, h / th, w / 2, h / 2);
+  if (ink) drawDressed(f, puppet, pw, ph, images, tS, seed, ink);
+  else drawContent(f, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  f.globalCompositeOperation = 'source-atop';
+  f.setTransform(1, 0, 0, 1, 0, 0);
+  if (back) {
+    f.fillStyle = PAPER_BACK;
+    f.fillRect(0, 0, w, h);
+  }
+  if (shade >= 0.004) {
+    f.fillStyle = `rgba(24, 16, 10, ${shade.toFixed(3)})`;
+    f.fillRect(0, 0, w, h);
+  }
+  ctx.drawImage(f.canvas, -tw / 2, -th / 2, tw, th);
+  ctx.restore();
+}
+
+function clipTo(ctx: Ctx2D, piece: PieceDef, pw: number, ph: number): void {
+  if (piece.poly.length < 3) return;
+  ctx.beginPath();
+  for (let i = 0; i < piece.poly.length; i++) {
+    const [px, py] = piece.poly[i]!;
+    const x = (px - 0.5) * pw;
+    const y = (py - 0.5) * ph;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.clip();
 }
 
 function drawPiece(
@@ -386,6 +776,7 @@ function drawPiece(
   images: StageImages,
   tS: number,
   seed: number,
+  ink: Genome | null = null,
 ): void {
   ctx.save();
   if (dangleAngle !== null && piece.joint) {
@@ -407,8 +798,54 @@ function drawPiece(
     ctx.closePath();
     ctx.clip();
   }
-  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  if (ink) drawDressed(ctx, puppet, pw, ph, images, tS, seed, ink);
+  else drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
   ctx.restore();
+}
+
+/** One scratch canvas for dressing, reused. */
+let dressing: OffscreenCanvasRenderingContext2D | null = null;
+
+/** A sheet dressed in an ink keeps its own shape and takes the ink's
+ *  colours, like paper cut from patterned stock: its content is drawn
+ *  alone, the ink laid over exactly where that content is, and the result
+ *  placed where the content would have gone. */
+function drawDressed(
+  ctx: Ctx2D,
+  puppet: ShowPuppet,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  ink: Genome,
+): void {
+  // Strokes and words reach a little past the box.
+  const m = Math.max(4, Math.min(pw, ph) * 0.1);
+  const tw = pw + m * 2;
+  const th = ph + m * 2;
+  // Drawn at the resolution it lands at, so it is as sharp as undressed.
+  const tr = ctx.getTransform();
+  const k = Math.min(3, Math.max(1, Math.hypot(tr.a, tr.b)));
+  const w = Math.min(2048, Math.ceil(tw * k));
+  const h = Math.min(2048, Math.ceil(th * k));
+  if (!dressing) dressing = new OffscreenCanvas(w, h).getContext('2d')!;
+  const d = dressing;
+  if (d.canvas.width !== w || d.canvas.height !== h) {
+    d.canvas.width = w;
+    d.canvas.height = h;
+  }
+  d.setTransform(1, 0, 0, 1, 0, 0);
+  d.globalCompositeOperation = 'source-over';
+  d.clearRect(0, 0, w, h);
+  d.setTransform(w / tw, 0, 0, h / th, w / 2, h / 2);
+  drawContent(d, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  d.globalCompositeOperation = 'source-atop';
+  d.imageSmoothingEnabled = true;
+  d.imageSmoothingQuality = 'high';
+  d.drawImage(inkCanvas(ink, tS), -pw / 2, -ph / 2, pw, ph);
+  d.globalCompositeOperation = 'source-over';
+  ctx.drawImage(d.canvas, -tw / 2, -th / 2, tw, th);
 }
 
 function drawContent(
@@ -442,6 +879,44 @@ function drawContent(
       ctx.fillStyle = spec.color;
       ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
       break;
+    case 'video': {
+      // The latest frame at or before this moment of the clip; a clip
+      // still opening shows as a dark card rather than nothing.
+      const frame = videoFrame(spec, tS);
+      const tracks = spec.masked ? tracksOf(spec) : null;
+      const mask =
+        tracks && spec.analysisId
+          ? maskCanvas(spec.analysisId, tracks, maskIndex(tracks, videoLocalTime(spec, tS)))
+          : null;
+      if (frame && mask) {
+        // Only the person the read found: the frame, cut by its mask.
+        const m = masking(Math.ceil(pw), Math.ceil(ph));
+        m.globalCompositeOperation = 'source-over';
+        m.clearRect(0, 0, m.canvas.width, m.canvas.height);
+        m.drawImage(frame, 0, 0, m.canvas.width, m.canvas.height);
+        m.globalCompositeOperation = 'destination-in';
+        m.imageSmoothingEnabled = true;
+        m.drawImage(mask, 0, 0, m.canvas.width, m.canvas.height);
+        m.globalCompositeOperation = 'source-over';
+        ctx.drawImage(m.canvas, -pw / 2, -ph / 2, pw, ph);
+      } else if (frame) ctx.drawImage(frame, -pw / 2, -ph / 2, pw, ph);
+      else {
+        ctx.fillStyle = '#1b1b1b';
+        ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      }
+      break;
+    }
+    case 'ink': {
+      // Grown at a small fixed size and scaled smoothly: soft, like print.
+      const smooth = ctx.imageSmoothingEnabled;
+      const quality = ctx.imageSmoothingQuality;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(inkCanvas(spec.genome, tS), -pw / 2, -ph / 2, pw, ph);
+      ctx.imageSmoothingEnabled = smooth;
+      ctx.imageSmoothingQuality = quality;
+      break;
+    }
     case 'doodle':
       drawDoodle(ctx, spec.strokes, spec.strokeStyle, pw, ph, tS, seed);
       break;
@@ -522,9 +997,10 @@ function drawMouth(
   ph: number,
   voice: VoiceMoment,
   warpedAt: Pt | null,
+  folds: Folds,
 ): void {
   ctx.save();
-  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my);
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my, folds);
   const mx = ((warpedAt?.x ?? mouth.mx) - 0.5) * pw;
   const my = ((warpedAt?.y ?? mouth.my) - 0.5) * ph;
   const width = mouth.size * pw;

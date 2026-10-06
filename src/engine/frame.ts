@@ -10,19 +10,29 @@
 // A "sheet" in docs/VISION.md is a puppet here: the recipe's names stay what
 // files on phones already say.
 
+import { inFront, isRestCamera, type CameraPose } from './camera';
+import type { Bands } from './signals';
+import type { VideoSpec, VideoTracks } from './video';
+import type { Genome } from './ink';
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
 import { PUPPET_DT } from './puppet';
 import { IMPACT_SQUASH } from './sfx';
-import type { EyesEvent, MouthEvent, PinEvent, Project } from './recipe';
+import type { CutEvent, EyesEvent, MouthEvent, PinEvent, Project } from './recipe';
 import {
   castOf,
   createShowSim,
+  cutBefore,
+  cutsOf,
+  lookOf,
   eyesOf,
+  foldsOf,
+  inkOf,
   mouthOf,
   pinsOf,
   snipsOf,
   talkOpenFor,
+  type Look,
   type PuppetPose,
   type ShowPuppet,
   type StepObserver,
@@ -30,10 +40,12 @@ import {
 } from './show';
 import {
   effectiveWires,
+  stageMods,
   trailStrength,
   wireAmount,
   wireModsFor,
   type WireMap,
+  type WireContext,
   type WireMods,
 } from './wires';
 
@@ -45,6 +57,11 @@ export interface PuppetVisual {
   /** Pin slots; a null slot was removed and keeps its index so the passes
    *  that name later pins still find them. */
   pins: (PinEvent | null)[];
+  /** The ink it is dressed in, if any. */
+  ink: Genome | null;
+  /** Per snip slot: the fold angle, or null for a swinging cut. Absent
+   *  draws every cut as a swing. */
+  folds?: (number | null)[];
 }
 
 export function visualsOf(project: Project): Map<string, PuppetVisual> {
@@ -55,6 +72,8 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
       mouth: mouthOf(project, p.id),
       eyes: eyesOf(project, p.id),
       pins: pinsOf(project, p.id),
+      ink: inkOf(project, p.id),
+      folds: foldsOf(project, p.id),
     });
   }
   return visuals;
@@ -76,6 +95,10 @@ export interface Analysis {
   onsets: number[];
   /** Per-puppet takes. */
   voices: Map<string, OwnVoice>;
+  /** Band loudness and brightness, once decoded; absent reads as silence. */
+  bands?: Bands | null;
+  /** Video sheets that have been read, by sheet id, for their signals. */
+  videos?: Map<string, { spec: VideoSpec; tracks: VideoTracks }>;
 }
 
 export const EMPTY_ANALYSIS: Analysis = { voice: EMPTY_VOICE, onsets: [], voices: new Map() };
@@ -122,6 +145,9 @@ export interface LayerFrame {
   visual: PuppetVisual | undefined;
   voice: VoiceMoment;
   mods: WireMods;
+  /** Behind the stage plane; the renderer projects the sheet through the
+   *  camera at this depth. */
+  depth: number;
 }
 
 export interface Frame {
@@ -129,6 +155,14 @@ export interface Frame {
   seed: number;
   /** How much of the previous frame survives (0 wipes clean). */
   trail: number;
+  /** Null when the camera is at rest: an explicit identity, so a renderer
+   *  draws exactly what it drew before there was a camera. */
+  camera: CameraPose | null;
+  /** Shadows and fog; null draws as every bit before looks did. */
+  look: Look | null;
+  /** The latest camera cut at or before t: a renderer that last drew
+   *  before it starts clean. */
+  cutAt: number | null;
   /** Back to front. */
   layers: LayerFrame[];
 }
@@ -145,23 +179,72 @@ export interface ComposeInput {
   t: number;
   /** Idle stills are drawn clean; playing and rendering ghost. Default on. */
   trails?: boolean;
+  camera?: CameraPose | null;
+  /** Precomputed by callers that build many frames; read from the project
+   *  otherwise. */
+  look?: Look | null;
+  cuts?: CutEvent[];
+}
+
+/** Paint order: the back layer stays behind, and within each layer a
+ *  further sheet paints first. Stable, so sheets at the same depth keep
+ *  the cast's order and a show with no depth paints as it always did. */
+export function paintOrder(cast: ShowPuppet[]): ShowPuppet[] {
+  if (cast.every((p) => p.depth === 0)) return cast;
+  const rank = new Map(cast.map((p, i) => [p.id, i]));
+  return [...cast].sort(
+    (a, b) =>
+      Number(a.back === false) - Number(b.back === false) ||
+      b.depth - a.depth ||
+      rank.get(a.id)! - rank.get(b.id)!,
+  );
 }
 
 /** The pure half: given poses, everything else about the frame. */
 export function composeFrame(input: ComposeInput): Frame {
   const { project, cast, visuals, wires, analysis, poses, t } = input;
+  const ctx: WireContext = {
+    voice: analysis.voice,
+    onsets: analysis.onsets,
+    voices: analysis.voices,
+    bands: analysis.bands ?? null,
+    seed: project.seed,
+    poses,
+    ...(analysis.videos ? { videos: analysis.videos } : {}),
+  };
+  // The stage's wires move the camera and the fog after the sim: wires
+  // never feed physics.
+  const staged = stageMods(
+    wires,
+    ctx,
+    t,
+    input.camera ?? null,
+    input.look === undefined ? lookOf(project) : input.look,
+  );
+  const camera = staged.camera && !isRestCamera(staged.camera) ? staged.camera : null;
   const voices = voiceMap(project, visuals, analysis.voice, t, analysis.voices);
-  const layers: LayerFrame[] = cast.map((puppet) => ({
-    puppet,
-    pose: poses.get(puppet.id),
-    visual: visuals.get(puppet.id),
-    voice: voices.get(puppet.id) ?? SHUT,
-    mods: wireModsFor(wires, puppet.id, analysis.voice, analysis.onsets, t, project.seed),
-  }));
+  const layers: LayerFrame[] = [];
+  for (const puppet of paintOrder(cast)) {
+    // Behind the lens is not drawn at all.
+    const mods = wireModsFor(wires, puppet.id, ctx, t);
+    const depth = puppet.depth + (mods.dDepth ?? 0);
+    if (camera && !inFront(camera, depth)) continue;
+    layers.push({
+      puppet,
+      pose: poses.get(puppet.id),
+      visual: visuals.get(puppet.id),
+      voice: voices.get(puppet.id) ?? SHUT,
+      mods,
+      depth,
+    });
+  }
   return {
     t,
     seed: project.seed,
-    trail: input.trails === false ? 0 : trailStrength(wires, analysis.voice, analysis.onsets, t),
+    trail: input.trails === false ? 0 : trailStrength(wires, ctx, t),
+    camera,
+    look: staged.look,
+    cutAt: cutBefore(input.cuts ?? cutsOf(project), t),
     layers,
   };
 }
@@ -197,7 +280,7 @@ export function impactListener(): { onStep: StepObserver; drain(): Impact[] } {
 }
 
 /** Impact foley is a stage wire. */
-export const foleyOn = (wires: WireMap): boolean => wireAmount(wires, '', 'on', 'foley') > 0;
+export const foleyOn = (wires: WireMap): boolean => wireAmount(wires, '', 'const', 'foley') > 0;
 
 export interface Framer {
   /** Forward only, like the sim it drives: seeking back means a new one. */
@@ -224,6 +307,8 @@ export function createFramer(
   const cast = castOf(project);
   const visuals = visualsOf(project);
   const wires = effectiveWires(project);
+  const look = lookOf(project);
+  const cuts = cutsOf(project);
   const listener = foleyOn(wires) ? impactListener() : null;
   const sim = createShowSim(project, options.fromT ?? 0, options.targets, listener?.onStep);
   return {
@@ -238,6 +323,9 @@ export function createFramer(
         analysis,
         poses,
         t,
+        camera: sim.camera(),
+        look,
+        cuts,
         ...(options.trails === undefined ? {} : { trails: options.trails }),
       });
     },

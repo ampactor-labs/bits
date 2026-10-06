@@ -18,6 +18,9 @@ export interface PieceDef {
   joint: { x: number; y: number } | null;
   /** Index into the snip list that created this child; -1 for the root. */
   snipIndex: number;
+  /** The snip line that made it, which a fold turns about; null for the
+   *  root. */
+  line?: SnipLine | null;
 }
 
 export interface PuppetPieces {
@@ -112,8 +115,9 @@ export function splitPieces(snips: (SnipLine | null)[]): PuppetPieces {
         y: Math.min(1, Math.max(0, (line.y0 + line.y1) / 2)),
       },
       snipIndex: i,
+      line: { x0: line.x0, y0: line.y0, x1: line.x1, y1: line.y1 },
     });
     rootPoly = keptPoly;
   }
-  return { root: { poly: rootPoly, joint: null, snipIndex: -1 }, children };
+  return { root: { poly: rootPoly, joint: null, snipIndex: -1, line: null }, children };
 }

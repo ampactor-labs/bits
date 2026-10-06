@@ -2,9 +2,15 @@
 // performed passes, scissor cuts, mouths, drops. Same recipe simulates to the
 // same frames, always. Undo is popping the last event.
 
-export const RECIPE_VERSION = 2 as const;
+import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
+import { isTargetFor } from './props';
+import { parseSignal } from './signals';
+import { genomeProblem, type Genome } from './ink';
+import type { Palette, Paper } from './grade';
+
+export const RECIPE_VERSION = 11 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
 
 interface EventBase {
   id: string;
@@ -18,9 +24,9 @@ interface EventBase {
 
 /** How floppy a puppet is. 'felt' reproduces the original constants, so an
  *  unset spring and 'felt' simulate identically. */
-export type SpringPreset = 'paper' | 'felt' | 'rubber';
+export type SpringPreset = 'paper' | 'felt' | 'rubber' | 'jelly' | 'stiff' | 'twos';
 
-export const SPRING_PRESETS = ['paper', 'felt', 'rubber'] as const;
+export const SPRING_PRESETS = ['paper', 'felt', 'rubber', 'jelly', 'stiff', 'twos'] as const;
 
 interface SpecCommon {
   w: number;
@@ -47,7 +53,25 @@ export type PuppetSpec =
       strokeStyle?: { color: string; width: number }[];
     } & SpecCommon)
   | ({ type: 'text'; text: string } & SpecCommon)
-  | ({ type: 'rect'; color: string } & SpecCommon);
+  | ({ type: 'rect'; color: string } & SpecCommon)
+  /** A sheet grown rather than drawn: an ink genome, stored whole. */
+  | ({ type: 'ink'; genome: Genome } & SpecCommon)
+  /** A clip playing in show time. `at` is when its first frame shows,
+   *  `clipFrom` how far into the file it starts, and it loops unless
+   *  told not to. Its duration is stored, so where it is at any moment
+   *  is a rule of the recipe, not of whichever decoder opens it. */
+  | ({
+      type: 'video';
+      assetId: string;
+      durationS: number;
+      at?: number;
+      clipFrom?: number;
+      loop?: boolean;
+      /** The stored read of the clip (motion, masks, pose): an asset. */
+      analysisId?: string;
+      /** Shows only the person the read found. */
+      masked?: boolean;
+    } & SpecCommon);
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
  *  wins and moves it to the front; `back` puts it in the back layer, behind
@@ -68,6 +92,15 @@ export interface CastEvent extends EventBase {
    *  flip has to live in the local/world transform or a dragged pin renders
    *  at the mirror image of the finger. */
   flip?: boolean;
+  /** How far behind the stage plane the sheet sits, in focal units (the
+   *  focal distance is 2). Absent is 0. Free at rest: it changes nothing
+   *  until the camera moves, except that a further sheet paints behind a
+   *  nearer one in its layer. */
+  depth?: number;
+  /** Rides another sheet: springs toward the point (x, y) in that sheet's
+   *  own box whenever no pass is driving it. A hat on a head, a head on a
+   *  body: a kit. Chains are fine; circles are refused. */
+  attach?: { to: string; x: number; y: number };
 }
 
 /** Draw order for non-backdrops, back to front. Latest REORDER wins.
@@ -95,6 +128,43 @@ export interface PassEvent extends EventBase {
   piece?: number;
   /** Targets a warp pin (by pin index) instead of the body or a piece. */
   pin?: number;
+  /** Records one number instead of a point: samples are [t, v, 0]
+   *  triples, so everything that reads passes by threes still works. Only
+   *  the camera (puppetId '@camera') has props so far: dolly, roll, zoom. */
+  prop?: CameraProp;
+  /** What performed it: a finger (absent) or the phone's tilt. Metadata
+   *  only; the pass plays the same either way. */
+  via?: 'finger' | 'gyro' | 'video';
+}
+
+/** How the whole stage looks. Latest wins per field; an absent field is
+ *  off, which is how every bit before looks existed is drawn. */
+export interface LookEvent extends EventBase {
+  kind: 'LOOK';
+  puppetId: '';
+  /** Paper shadows, 0..1: how dark, and how far they fall per unit of
+   *  depth between a sheet and the one behind it. */
+  shadow?: number;
+  /** Depth haze, 0..1: far sheets fade toward the fog colour. */
+  fog?: number;
+  fogColor?: string;
+  /** Five colours the whole picture is mapped onto by brightness; null
+   *  takes the palette off. */
+  palette?: Palette | null;
+  /** What it is printed on; null takes the paper away. */
+  paper?: Paper | null;
+}
+
+/** A cut: at `at` the camera is simply somewhere else, still. It snaps the
+ *  camera's pose and stops its motion, and the trails start clean. */
+export interface CutEvent extends EventBase {
+  kind: 'CUT';
+  puppetId: typeof CAMERA_ID;
+  x: number;
+  y: number;
+  z: number;
+  rot: number;
+  scale: number;
 }
 
 /** A warp control point in puppet-local box coords. Pins accumulate; drag
@@ -143,10 +213,10 @@ export interface EyesEvent extends EventBase {
   ey: number;
   /** Eye-pair width as a fraction of the puppet box width. */
   size: number;
+  /** Blinks now and then, on a schedule from the seed. Absent: never, as
+   *  every pair of eyes before blinking existed. */
+  blink?: boolean;
 }
-
-export type WireSource = 'on' | 'voice' | 'beat';
-export type WireTarget = 'bounce' | 'shake' | 'lean' | 'trails' | 'foley';
 
 export type SfxKind = 'boing' | 'slap' | 'honk' | 'scratch' | 'drop';
 
@@ -158,16 +228,25 @@ export interface SoundEvent extends EventBase {
   sfx: SfxKind;
 }
 
-/** A modulation wire: a signal patched into a property. puppetId '' targets
- *  the stage itself (trails). Latest wire per (puppet, source, target) wins;
- *  amount 0 unplugs. Sources are deterministic (the recorded voice track and
- *  its beat grid), so wired shows replay and render bit-true. */
+/** A modulation wire: a signal patched into a property, matrix-style.
+ *  `from` names a signal (engine/signals.ts), `to` a target
+ *  (engine/props.ts); puppetId '' is the stage. Latest wire per (sheet,
+ *  from, to) wins; amount 0 unplugs. Every signal is deterministic, so
+ *  wired shows replay and render bit-true. Since v5; v4's {source,
+ *  target} migrate to it. */
 export interface WireEvent extends EventBase {
   kind: 'WIRE';
   puppetId: string;
-  source: WireSource;
-  target: WireTarget;
+  from: string;
+  to: string;
+  /** -1..1: negative drives the target the other way. */
   amount: number;
+  /** 0..1: lag, from 20 ms to 5 s. */
+  smooth?: number;
+  /** 0..1: ignore the signal below this. */
+  threshold?: number;
+  /** 0..2 seconds late. */
+  delay?: number;
 }
 
 /** What a REMOVE tombstones. Slot indices are never renumbered: pin and
@@ -180,7 +259,8 @@ export type RemoveTarget =
   | { pin: number }
   | { snip: number }
   | { pass: string }
-  | { sound: string };
+  | { sound: string }
+  | { cut: string };
 
 /** Undoes a feature without rewriting history. puppetId is '' for pass and
  *  sound targets, which are named by event id. */
@@ -221,6 +301,26 @@ export interface VoiceEvent extends EventBase {
   gain?: number;
 }
 
+/** Dresses a sheet in an ink: its own content keeps its shape, the ink
+ *  colours it. Latest wins; a null genome takes the ink off. The genome is
+ *  stored whole, so a bit keeps its inks whatever breeding becomes. */
+export interface InkEvent extends EventBase {
+  kind: 'INK';
+  puppetId: string;
+  genome: Genome | null;
+}
+
+/** Turns a cut into a fold: the piece a SNIP made stays joined along the
+ *  snip line and turns out of the paper by `angle` radians (0 lies flat,
+ *  ±π folds it right over, showing its back). Latest per snip slot wins;
+ *  a null angle makes it a swinging cut again. */
+export interface FoldEvent extends EventBase {
+  kind: 'FOLD';
+  puppetId: string;
+  snip: number;
+  angle: number | null;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
@@ -241,7 +341,11 @@ export type RecipeEvent =
   | WireEvent
   | SoundEvent
   | VoiceEvent
-  | DropEvent;
+  | DropEvent
+  | LookEvent
+  | CutEvent
+  | InkEvent
+  | FoldEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -340,6 +444,38 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
     }
     return { ...raw, version: 2, events: kept };
   },
+  /** v3 adds depth, the camera and scalar passes. Nothing in v2 means
+   *  anything new, so only the header moves. */
+  2: (raw) => ({ ...raw, version: 3 }),
+  /** v4 adds looks, cuts and tilt-performed passes; nothing older changes. */
+  3: (raw) => ({ ...raw, version: 4 }),
+  /** v5 opens the wires into a matrix: {source, target} becomes {from,
+   *  to}, and the old 'on' source is the signal 'const'. */
+  4: (raw) => {
+    const events = Array.isArray(raw.events) ? (raw.events as Raw[]) : [];
+    return {
+      ...raw,
+      version: 5,
+      events: events.map((e) => {
+        if (e.kind !== 'WIRE') return e;
+        const { source, target, ...rest } = e;
+        return { ...rest, from: source === 'on' ? 'const' : source, to: target };
+      }),
+    };
+  },
+  /** v6 adds inks (an ink sheet, and INK to dress any sheet); nothing
+   *  older changes. */
+  5: (raw) => ({ ...raw, version: 6 }),
+  /** v7 adds palettes, paper and three springs; nothing older changes. */
+  6: (raw) => ({ ...raw, version: 7 }),
+  /** v8 adds video sheets; nothing older changes. */
+  7: (raw) => ({ ...raw, version: 8 }),
+  /** v9 adds a clip's stored read, masking, and passes made from it. */
+  8: (raw) => ({ ...raw, version: 9 }),
+  /** v10 adds kits (attach) and blinking; nothing older changes. */
+  9: (raw) => ({ ...raw, version: 10 }),
+  /** v11 adds folds; nothing older changes. */
+  10: (raw) => ({ ...raw, version: 11 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -365,6 +501,11 @@ export function serializeProject(project: Project): string {
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** How near and how far a sheet can sit. Nearer than -1.5 and a modest
+ *  dolly would put it behind the lens; past 20 it barely moves at all. */
+export const MIN_DEPTH = -1.5;
+export const MAX_DEPTH = 20;
 
 export function parseProject(text: string): Project {
   let parsed: unknown;
@@ -408,6 +549,8 @@ export function parseProject(text: string): Project {
   const pinSlots = new Map<string, number>();
   const snipSlots = new Map<string, number>();
   let prevGroup: string | undefined;
+  /** Who rides whom, latest CAST per sheet: checked for circles at the end. */
+  const attachments = new Map<string, string>();
   const closedGroups = new Set<string>();
 
   for (const e of p.events) {
@@ -456,12 +599,51 @@ export function parseProject(text: string): Project {
         if (ev.flip !== undefined && typeof ev.flip !== 'boolean') {
           throw new Error('recipe: CAST flip must be a boolean');
         }
+        if (ev.puppetId === CAMERA_ID) {
+          throw new Error('recipe: the camera is not a puppet');
+        }
+        if (ev.attach !== undefined) {
+          const at = ev.attach as Record<string, unknown> | null;
+          if (
+            typeof at !== 'object' ||
+            at === null ||
+            typeof at.to !== 'string' ||
+            at.to === ev.puppetId ||
+            !isNum(at.x) ||
+            !isNum(at.y)
+          ) {
+            throw new Error('recipe: CAST attach needs another sheet and a point on it');
+          }
+          attachments.set(ev.puppetId, at.to);
+        } else {
+          attachments.delete(ev.puppetId);
+        }
+        if (ev.depth !== undefined && !(isNum(ev.depth) && ev.depth >= MIN_DEPTH && ev.depth <= MAX_DEPTH)) {
+          throw new Error(`recipe: CAST depth must be in ${MIN_DEPTH}..${MAX_DEPTH}`);
+        }
         const spec = ev.puppet as Record<string, unknown>;
         if (spec.spring !== undefined && !SPRING_PRESETS.includes(spec.spring as SpringPreset)) {
           throw new Error('recipe: unknown spring preset');
         }
         if (spec.fit !== undefined && !(spec.type === 'cutout' && spec.fit === 'cover')) {
           throw new Error('recipe: fit is cover, on photos only');
+        }
+        if (spec.type === 'video') {
+          const ok =
+            typeof spec.assetId === 'string' &&
+            spec.assetId.length > 0 &&
+            isNum(spec.durationS) &&
+            (spec.durationS as number) > 0 &&
+            (spec.at === undefined || isNum(spec.at)) &&
+            (spec.clipFrom === undefined ||
+              (isNum(spec.clipFrom) && spec.clipFrom >= 0 && spec.clipFrom < (spec.durationS as number))) &&
+            (spec.loop === undefined || typeof spec.loop === 'boolean') &&
+            (spec.analysisId === undefined || (typeof spec.analysisId === 'string' && spec.analysisId.length > 0)) &&
+            (spec.masked === undefined || typeof spec.masked === 'boolean');
+          if (!ok) throw new Error('recipe: video needs an assetId, a positive duration, and a start inside it');
+        }
+        if (spec.type === 'ink' && genomeProblem(spec.genome) !== null) {
+          throw new Error(`recipe: ink genome is malformed (${genomeProblem(spec.genome)})`);
         }
         if (spec.name !== undefined && typeof spec.name !== 'string') {
           throw new Error('recipe: puppet name must be a string');
@@ -499,6 +681,20 @@ export function parseProject(text: string): Project {
         if (ev.piece !== undefined && ev.pin !== undefined) {
           throw new Error('recipe: PASS cannot target both a piece and a pin');
         }
+        if (ev.prop !== undefined) {
+          if (!CAMERA_PROPS.includes(ev.prop as CameraProp)) {
+            throw new Error('recipe: PASS prop must be z, rot or scale');
+          }
+          if (ev.puppetId !== CAMERA_ID) {
+            throw new Error('recipe: only the camera records props');
+          }
+        }
+        if (ev.via !== undefined && ev.via !== 'finger' && ev.via !== 'gyro' && ev.via !== 'video') {
+          throw new Error('recipe: PASS via must be finger, gyro or video');
+        }
+        if (ev.puppetId === CAMERA_ID && (ev.piece !== undefined || ev.pin !== undefined)) {
+          throw new Error('recipe: the camera has no pieces or pins');
+        }
         break;
       }
       case 'SNIP': {
@@ -517,6 +713,9 @@ export function parseProject(text: string): Project {
       case 'EYES':
         if (!(isNum(ev.ex) && isNum(ev.ey) && isNum(ev.size) && (ev.size as number) > 0)) {
           throw new Error('recipe: EYES event needs ex, ey, positive size');
+        }
+        if (ev.blink !== undefined && typeof ev.blink !== 'boolean') {
+          throw new Error('recipe: EYES blink must be true or false');
         }
         break;
       case 'PIN': {
@@ -556,6 +755,8 @@ export function parseProject(text: string): Project {
           refersBack(target.pass, 'PASS', 'REMOVE pass');
         } else if ('sound' in target) {
           refersBack(target.sound, 'SOUND', 'REMOVE sound');
+        } else if ('cut' in target) {
+          refersBack(target.cut, 'CUT', 'REMOVE cut');
         } else {
           throw new Error('recipe: unknown REMOVE target');
         }
@@ -597,24 +798,88 @@ export function parseProject(text: string): Project {
         break;
       }
       case 'WIRE': {
-        const srcOk = ev.source === 'on' || ev.source === 'voice' || ev.source === 'beat';
-        const tgtOk =
-          ev.target === 'bounce' ||
-          ev.target === 'shake' ||
-          ev.target === 'lean' ||
-          ev.target === 'trails' ||
-          ev.target === 'foley';
-        if (!(srcOk && tgtOk && isNum(ev.amount) && ev.amount >= 0 && ev.amount <= 1)) {
-          throw new Error('recipe: WIRE event needs a source, target, and amount in 0..1');
+        const unit = (v: unknown, max = 1) => v === undefined || (isNum(v) && v >= 0 && v <= max);
+        if (
+          typeof ev.from !== 'string' ||
+          typeof ev.to !== 'string' ||
+          !parseSignal(ev.from) ||
+          !isTargetFor(ev.puppetId as string, ev.to)
+        ) {
+          throw new Error('recipe: WIRE needs a known signal and a target for its sheet or the stage');
+        }
+        if (!(isNum(ev.amount) && ev.amount >= -1 && ev.amount <= 1)) {
+          throw new Error('recipe: WIRE amount must be in -1..1');
+        }
+        if (!unit(ev.smooth) || !unit(ev.threshold) || !unit(ev.delay, 2)) {
+          throw new Error('recipe: WIRE smooth and threshold are 0..1, delay 0..2');
         }
         break;
       }
       case 'DROP':
         break;
+      case 'LOOK': {
+        const unit = (v: unknown) => v === undefined || (isNum(v) && v >= 0 && v <= 1);
+        if (ev.puppetId !== '' || !unit(ev.shadow) || !unit(ev.fog)) {
+          throw new Error('recipe: LOOK shadow and fog are 0..1, on the stage');
+        }
+        if (ev.fogColor !== undefined && !(typeof ev.fogColor === 'string' && /^#[0-9a-f]{6}$/i.test(ev.fogColor))) {
+          throw new Error('recipe: LOOK fogColor must be #rrggbb');
+        }
+        if (ev.palette !== undefined && ev.palette !== null) {
+          const pal = ev.palette as Record<string, unknown>;
+          const ok =
+            Array.isArray(pal.colors) &&
+            pal.colors.length === 5 &&
+            pal.colors.every((c: unknown) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c)) &&
+            unit(pal.mix);
+          if (!ok) throw new Error('recipe: LOOK palette needs five #rrggbb colours and a mix in 0..1');
+        }
+        if (ev.paper !== undefined && ev.paper !== null) {
+          const pp = ev.paper as Record<string, unknown>;
+          const ok = ['edge', 'grain', 'fade', 'misreg'].every((k) => isNum(pp[k]) && unit(pp[k]));
+          if (!ok) throw new Error('recipe: LOOK paper needs edge, grain, fade and misreg in 0..1');
+        }
+        break;
+      }
+      case 'INK':
+        if (ev.genome !== null && genomeProblem(ev.genome) !== null) {
+          throw new Error(`recipe: INK genome is malformed (${genomeProblem(ev.genome)})`);
+        }
+        break;
+      case 'FOLD': {
+        const n = ev.snip;
+        if (!(isNum(n) && Number.isInteger(n) && n >= 0 && n < (snipSlots.get(ev.puppetId as string) ?? 0))) {
+          throw new Error('recipe: FOLD must name an existing snip');
+        }
+        if (ev.angle !== null && !(isNum(ev.angle) && Math.abs(ev.angle as number) <= Math.PI + 1e-9)) {
+          throw new Error('recipe: FOLD angle is radians within ±π, or null');
+        }
+        break;
+      }
+      case 'CUT':
+        if (
+          ev.puppetId !== CAMERA_ID ||
+          !(isNum(ev.x) && isNum(ev.y) && isNum(ev.z) && isNum(ev.rot) && isNum(ev.scale)) ||
+          (ev.scale as number) <= 0
+        ) {
+          throw new Error('recipe: CUT needs the camera and a pose (x, y, z, rot, scale > 0)');
+        }
+        break;
       default:
         throw new Error(`recipe: unknown event kind ${ev.kind}`);
     }
     seen.set(ev.id, ev.kind);
+  }
+  // A kit is a tree: a sheet riding itself, however far round, would have
+  // nowhere to be.
+  for (const start of attachments.keys()) {
+    const path = new Set<string>([start]);
+    let at = attachments.get(start);
+    while (at !== undefined) {
+      if (path.has(at)) throw new Error('recipe: attachments go round in a circle');
+      path.add(at);
+      at = attachments.get(at);
+    }
   }
   return p as unknown as Project;
 }

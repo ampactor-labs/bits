@@ -9,7 +9,8 @@ import { pointInPoly } from '../../engine/pieces';
 import { restingPuppet } from '../../engine/puppet';
 import { castOf, worldToLocal, type Channel, type PuppetPose, type ShowPuppet } from '../../engine/show';
 import type { Project } from '../../engine/recipe';
-import type { PuppetVisual } from '../../engine/frame';
+import { paintOrder, type PuppetVisual } from '../../engine/frame';
+import { inFront, toStage, type CameraPose } from '../../engine/camera';
 
 /** A tap is a release that never travelled this far. In CSS pixels, not a
  *  fraction of the stage: the old normalised measure gave nearly twice the
@@ -30,6 +31,20 @@ export interface StageScene {
   project: Project;
   poses: Map<string, PuppetPose>;
   visuals: Map<string, PuppetVisual>;
+  /** The camera the scene was drawn through, and the stage's size in any
+   *  unit (only its shape matters). Absent or null pose: at rest. */
+  camera?: { pose: CameraPose | null; W: number; H: number };
+}
+
+/** Where a screen point (normalised) lands on a sheet at `depth`. */
+export function stagePointAt(
+  scene: Pick<StageScene, 'camera'>,
+  depth: number,
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const c = scene.camera;
+  return c ? toStage(c.pose, depth, x, y, c.W, c.H) : { x, y };
 }
 
 /** One transform for hit testing and for drawing. The private copy this
@@ -61,13 +76,21 @@ export function hitTest(
   y: number,
   options: HitOptions = {},
 ): { puppet: ShowPuppet; channel: Channel } | null {
-  const cast = castOf(scene.project);
+  // In paint order, so what you see on top is what you get, and through
+  // the camera at each sheet's own depth.
+  const cast = paintOrder(castOf(scene.project));
+  const pose = scene.camera?.pose ?? null;
+  const at = (p: ShowPuppet) => {
+    if (pose && !inFront(pose, p.depth)) return null;
+    const s = stagePointAt(scene, p.depth, x, y);
+    return hitOne(scene, p, s.x, s.y);
+  };
   // Front sheets first, front to back; the back layer only after all of
   // them, so a puppet standing on a backdrop is always the one you get.
   for (let i = cast.length - 1; i >= 0; i--) {
     const p = cast[i]!;
     if (p.back) continue;
-    const hit = hitOne(scene, p, x, y);
+    const hit = at(p);
     if (hit) return hit;
   }
   const back = options.back;
@@ -75,7 +98,7 @@ export function hitTest(
   for (let i = cast.length - 1; i >= 0; i--) {
     const p = cast[i]!;
     if (!p.back || !back(p)) continue;
-    const hit = hitOne(scene, p, x, y);
+    const hit = at(p);
     if (hit) return hit;
   }
   return null;
@@ -101,6 +124,9 @@ function hitOne(
         }
       }
       for (const child of visual.pieces.children) {
+        // A fold is part of the sheet, not a piece to swing: grabbing it
+        // grabs the sheet.
+        if (visual.folds?.[child.snipIndex] != null) continue;
         const dangle = pose.dangles[child.snipIndex]?.angle ?? 0;
         const j = child.joint!;
         const ca = Math.cos(-dangle);

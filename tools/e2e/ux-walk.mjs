@@ -148,6 +148,11 @@ let browser;
 const dialogs = [];
 const pageErrors = [];
 
+// UX_RENDERER=gl walks the stage drawn by the WebGL2 renderer (on
+// SwiftShader here); the frame gate is the Canvas2D one, so it is reported
+// but not held to in that mode.
+const RENDERER = process.env.UX_RENDERER ? `&renderer=${process.env.UX_RENDERER}` : '';
+
 try {
   mkdirSync(SHOTS, { recursive: true });
   await waitForServer();
@@ -159,6 +164,7 @@ try {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
+      ...(RENDERER ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : []),
     ],
   });
 
@@ -347,7 +353,7 @@ try {
 
   // ---- first exposure ------------------------------------------------
   await phase('first-run-lands-on-a-bit', async () => {
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await page.waitForSelector('.stagebox', { timeout: 20000 });
     await sleep(800);
@@ -1399,7 +1405,7 @@ try {
     check('a-share-is-taken-by-the-worker', posted === 'redirected', String(posted));
 
     // Now open the app the way the redirect would, and let it collect.
-    await page.goto(`${BASE}?e2e&inbox=1`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}&inbox=1`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await sleep(2500);
     await goToList();
@@ -1471,9 +1477,13 @@ try {
     const median = sorted[Math.floor(sorted.length / 2)] ?? 999;
     const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 999;
     const janky = frames.filter((f) => f > 50).length / Math.max(1, frames.length);
+    const drawnBy = await page.evaluate(() => document.querySelector('.stagebox canvas')?.dataset.renderer ?? '?');
+    measure('Stage renderer', drawnBy);
     check(
       'the-frame-loop-holds-up-on-a-slow-phone',
-      frames.length > 60 && median <= 34 && janky <= 0.1,
+      // SwiftShader runs GL on the CPU and ignores the throttle; on GL the
+      // gate only asks that frames kept coming.
+      RENDERER ? frames.length > 30 : frames.length > 60 && median <= 34 && janky <= 0.1,
       `${frames.length} frames, median ${median.toFixed(1)}ms, p95 ${p95.toFixed(1)}ms, ${Math.round(janky * 100)}% over 50ms`,
     );
     measure(
@@ -1487,7 +1497,7 @@ try {
   // this container's Chromium has none. A mix nobody can hear is a mix
   // nobody has checked.
   await phase('a-voice-take-reaches-the-mix', async () => {
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bitsE2E !== undefined', { timeout: 20000 });
     const v = await page.evaluate(() => window.__bitsE2E.runVoice());
     check(
@@ -1505,7 +1515,7 @@ try {
       Math.abs(v.halfGainRatio - 0.5) < 0.02,
       `half gain is ${v.halfGainRatio.toFixed(3)} of full`,
     );
-    await page.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
     await page.waitForFunction('window.__bits !== undefined', { timeout: 15000 });
     await sleep(600);
   });
@@ -1699,7 +1709,15 @@ try {
       await tab.touchscreen.touchEnd();
     };
     const label = async (name) => {
-      const h = await tab.$(`[aria-label="${name}"]`);
+      let h = await tab.$(`[aria-label="${name}"]`);
+      // A pill's text is its name.
+      if (!h) {
+        const byText = await tab.evaluateHandle(
+          (n) => Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === n),
+          name,
+        );
+        h = byText.asElement();
+      }
       if (!h) throw new Error(`no control labelled "${name}"`);
       await h.tap();
     };
@@ -1711,7 +1729,7 @@ try {
       return tab.screenshot({ path: join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`) });
     };
     try {
-      await tab.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+      await tab.goto(`${BASE}?e2e${RENDERER}`, { waitUntil: 'networkidle0' });
       await sleep(800);
       const withSound = await tab.evaluateHandle(() =>
         Array.from(document.querySelectorAll('.source-row')).find((r) =>
@@ -1765,6 +1783,41 @@ try {
         check('a-backdrop-can-be-snipped', kinds.join(',') === 'SNIP', kinds.join(',') || 'nothing');
       });
 
+      // The cut just made can fold instead of swing, and back again.
+      await phase('a-cut-can-fold', async () => {
+        if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
+        await label('more');
+        await sleep(350);
+        const pick = async (text) => {
+          const h = await tab.evaluateHandle(
+            (t) =>
+              Array.from(document.querySelectorAll('[aria-label="how cut 1 moves"] button')).find(
+                (b) => b.textContent?.trim() === t,
+              ),
+            text,
+          );
+          if (!h.asElement()) throw new Error(`no "${text}" for the cut`);
+          await h.asElement().evaluate((e) => e.scrollIntoView({ block: 'center' }));
+          await h.asElement().tap();
+        };
+        const before = await kindsNow();
+        await pick('folded over');
+        await sleep(400);
+        await label('close');
+        await sleep(400);
+        await tabShot('a-cut-folded-over');
+        const angle = await tab.evaluate(() => window.__bits.project().events.filter((e) => e.kind === 'FOLD').pop()?.angle);
+        // Back to a swinging cut: the later phases expect the whole backdrop.
+        await label('more');
+        await sleep(350);
+        await pick('swings');
+        await sleep(300);
+        await label('close');
+        await sleep(300);
+        const kinds = await kindsSince(before);
+        check('a-cut-can-fold', kinds.join(',') === 'FOLD,FOLD' && angle > 3, `${kinds.join(',') || 'nothing'}, angle ${angle}`);
+      });
+
       await phase('a-backdrop-can-be-wired', async () => {
         if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
         await label('more');
@@ -1777,13 +1830,489 @@ try {
         }
         await sleep(300);
         const before = await kindsNow();
-        const levels = await tab.$$('[aria-label="beat makes it shake"] button');
-        const wild = levels[levels.length - 1];
-        if (!wild) throw new Error('no beat-shake control');
-        await wild.tap();
+        // The Wires room: the bass row's "size" chip plugs bass into it.
+        const chip = await tab.$('[aria-label="bass drives size"]');
+        if (!chip) throw new Error('no bass → size chip');
+        await chip.tap();
+        await sleep(300);
+        await tabShot('wires-room');
+        const kinds = await kindsSince(before);
+        const wire = await tab.evaluate(() => {
+          const w = window.__bits.project().events.filter((e) => e.kind === 'WIRE').pop();
+          return w ? `${w.from}>${w.to}@${w.amount}` : 'none';
+        });
+        check('a-backdrop-can-be-wired', kinds.join(',') === 'WIRE', kinds.join(',') || 'nothing');
+        check('bass-makes-the-sky-pulse', wire === 'band:bass>scale@0.5', wire);
+        // Shaping it is one more event; pulling it out is undoable.
+        const smooth = await tab.$('[aria-label="smooth"]');
+        if (!smooth) throw new Error('no smooth control');
+        await smooth.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+        await sleep(200);
+        const box = await smooth.boundingBox();
+        await tab.touchscreen.tap(box.x + box.width * 0.6, box.y + box.height / 2);
+        await sleep(300);
+        const shaped = await tab.evaluate(() => {
+          const w = window.__bits.project().events.filter((e) => e.kind === 'WIRE').pop();
+          return w?.smooth ?? 0;
+        });
+        check('a-wire-can-be-smoothed', shaped > 0, `smooth ${shaped}`);
+        await label('close');
+        await sleep(300);
+        await label('more');
+        await sleep(300);
+      });
+
+      // Depth is free at rest: pushing the backdrop back records a CAST
+      // and moves nothing until the camera does.
+      await phase('a-sheet-can-be-pushed-back', async () => {
+        const before = await kindsNow();
+        const far = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('[aria-label="how far back it sits"] button')).find(
+            (b) => b.textContent?.trim() === 'far',
+          ),
+        );
+        if (!far.asElement()) throw new Error('no depth control');
+        await far.asElement().tap();
+        await sleep(300);
+        await tabShot('pushed-back');
+        const kinds = await kindsSince(before);
+        const depth = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.depth ?? 0;
+        });
+        check('a-sheet-can-be-pushed-back', kinds.join(',') === 'CAST' && depth === 3, `${kinds.join(',') || 'nothing'} at depth ${depth}`);
+        await label('close');
+        await sleep(300);
+      });
+
+      // The camera is one more thing to perform: pick it up, record, and a
+      // single finger dragged across the stage is a camera pass.
+      await phase('a-camera-pass-is-one-finger', async () => {
+        await label('pick up the camera');
+        await sleep(300);
+        const before = await kindsNow();
+        await label('record a pass');
+        await tab.waitForFunction(
+          () => document.querySelector('.stagebox')?.classList.contains('mode-recording'),
+          { timeout: 10000 },
+        );
+        await sleep(300);
+        await finger(
+          [
+            [0.5, 0.5],
+            [0.45, 0.5],
+            [0.38, 0.52],
+            [0.3, 0.52],
+            [0.25, 0.5],
+          ],
+          { stepMs: 120 },
+        );
+        await sleep(300);
+        await tabShot('camera-pass');
+        await label('stop');
+        await sleep(500);
+        const passes = await tab.evaluate((k) =>
+          window.__bits
+            .project()
+            .events.slice(k)
+            .filter((e) => e.kind === 'PASS')
+            .map((e) => `${e.puppetId}${e.prop ? `.${e.prop}` : ''}`),
+          before,
+        );
+        check('a-camera-pass-is-one-finger', passes.join(',') === '@camera', passes.join(',') || 'no pass');
+        await label('put the camera down');
+      });
+
+      // A segmented control's option by its text, inside a labelled group.
+      const option = async (group, text) => {
+        const h = await tab.evaluateHandle(
+          (g, t) =>
+            Array.from(document.querySelectorAll(`[aria-label="${g}"] button`)).find(
+              (b) => b.textContent?.trim() === t,
+            ),
+          group,
+          text,
+        );
+        if (!h.asElement()) throw new Error(`no "${text}" in ${group}`);
+        await h.asElement().tap();
+      };
+      const recordCameraTake = async (during) => {
+        await label('pick up the camera');
+        await sleep(300);
+        await label('record a pass');
+        await tab.waitForFunction(
+          () => document.querySelector('.stagebox')?.classList.contains('mode-recording'),
+          { timeout: 10000 },
+        );
+        await sleep(300);
+        await during();
+        await label('stop');
+        await sleep(500);
+        await label('put the camera down');
+        await sleep(200);
+      };
+
+      await phase('shadows-and-fog-from-the-menu', async () => {
+        await label('this bit');
+        await sleep(350);
+        const before = await kindsNow();
+        await option('paper shadows', 'deep');
+        await sleep(200);
+        await option('fog with distance', 'haze');
+        await sleep(200);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(400);
+        await tabShot('shadows-and-fog');
+        check('shadows-and-fog-from-the-menu', kinds.join(',') === 'LOOK,LOOK', kinds.join(',') || 'nothing');
+      });
+
+      // The stage has its own room: a slow wave patched into the camera
+      // makes it drift by itself.
+      await phase('the-stage-wires-move-the-camera', async () => {
+        await label('this bit');
+        await sleep(350);
+        await label('stage wires');
+        await sleep(350);
+        const before = await kindsNow();
+        const chip = await tab.$('[aria-label="slow wave drives camera sideways"]');
+        if (!chip) throw new Error('no slow wave → camera chip');
+        await chip.tap();
         await sleep(300);
         const kinds = await kindsSince(before);
-        check('a-backdrop-can-be-wired', kinds.join(',') === 'WIRE', kinds.join(',') || 'nothing');
+        check('the-stage-wires-move-the-camera', kinds.join(',') === 'WIRE', kinds.join(',') || 'nothing');
+        // And out again: a drifting camera would move the later phases'
+        // targets about.
+        await label('pull it out');
+        await sleep(300);
+        const unplugged = await tab.evaluate(() => {
+          const w = window.__bits.project().events.filter((e) => e.kind === 'WIRE').pop();
+          return w ? w.amount : -1;
+        });
+        const toast = await tab.evaluate(() => document.body.textContent?.includes('pulled that wire out') ?? false);
+        check('a-wire-pulled-out-can-be-undone', unplugged === 0 && toast, `amount ${unplugged}, toast ${toast}`);
+        await label('close');
+        await sleep(300);
+      });
+
+      await phase('a-cut-snaps-the-camera', async () => {
+        const before = await kindsNow();
+        await recordCameraTake(async () => {
+          await finger([[0.5, 0.5], [0.4, 0.5], [0.3, 0.5]], { stepMs: 120 });
+          await sleep(200);
+          await label('cut');
+          await sleep(200);
+        });
+        const kinds = await kindsSince(before);
+        check('a-cut-snaps-the-camera', kinds.includes('CUT') && kinds.includes('PASS'), kinds.join(',') || 'nothing');
+      });
+
+      await phase('a-tilt-is-a-camera-pass', async () => {
+        const cdp = await tab.createCDPSession();
+        await cdp.send('DeviceOrientation.setDeviceOrientationOverride', { alpha: 0, beta: 0, gamma: 0 });
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        await recordCameraTake(async () => {
+          await label('tilt');
+          await sleep(200);
+          for (let g = 0; g <= 24; g += 4) {
+            await cdp.send('DeviceOrientation.setDeviceOrientationOverride', { alpha: 0, beta: g / 2, gamma: g });
+            await sleep(120);
+          }
+          await sleep(200);
+        });
+        await cdp.send('DeviceOrientation.clearDeviceOrientationOverride');
+        const passes = await tab.evaluate(
+          (k) =>
+            window.__bits
+              .project()
+              .events.slice(k)
+              .filter((e) => e.kind === 'PASS')
+              .map((e) => `${e.puppetId}${e.via ? `/${e.via}` : ''}`),
+          before,
+        );
+        check('a-tilt-is-a-camera-pass', passes.join(',') === '@camera/gyro', passes.join(',') || 'no pass');
+      });
+
+      await phase('depth-in-the-director-view', async () => {
+        // The backdrop is the sheet that is always there: pick it up, and
+        // open the side view from its own panel.
+        await finger([[0.6, 0.3]], { holdMs: 800 });
+        await sleep(400);
+        await tabShot('director-long-press');
+        await label('more');
+        await sleep(350);
+        for (const h of await tab.$$('.sheet button')) {
+          if ((await h.evaluate((e) => (e.textContent || '').trim())) === 'see the stage from the side') {
+            await h.tap();
+            break;
+          }
+        }
+        await sleep(400);
+        const dot = await tab.$('.director-dot:not(.back)');
+        if (!dot) throw new Error('no sheet in the side view');
+        const r = await dot.boundingBox();
+        const before = await kindsNow();
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        await tab.touchscreen.touchStart(cx, cy);
+        for (let i = 1; i <= 5; i++) {
+          await tab.touchscreen.touchMove(cx, cy - i * 12);
+          await sleep(60);
+        }
+        await tab.touchscreen.touchEnd();
+        await sleep(400);
+        await tabShot('director-view');
+        const kinds = await kindsSince(before);
+        const depth = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.depth ?? 0;
+        });
+        check('depth-in-the-director-view', kinds.join(',') === 'CAST' && depth > 0, `${kinds.join(',') || 'nothing'} at depth ${depth}`);
+      });
+
+      // Ink: grow one from the cast sheet, breed it once, keep it as a new
+      // sheet; then dress that sheet in a child of its own ink.
+      await phase('grow-an-ink-and-keep-it', async () => {
+        if (await tab.$('[aria-label="close the side view"]')) await label('close the side view');
+        await label('cast someone');
+        await sleep(400);
+        const tile = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) =>
+            (b.textContent || '').includes('grow an ink'),
+          ),
+        );
+        if (!tile.asElement()) throw new Error('no ink tile in the cast sheet');
+        await tile.asElement().tap();
+        await sleep(600);
+        const tiles = await tab.$$('.ink-tile');
+        if (tiles.length !== 6) throw new Error(`${tiles.length} ink tiles`);
+        await tiles[3].tap();
+        await sleep(500);
+        await tabShot('ink-tray');
+        const before = await kindsNow();
+        await label('a new sheet');
+        await sleep(600);
+        const cast = await tab.evaluate((k) => {
+          const e = window.__bits.project().events.slice(k).find((x) => x.kind === 'CAST');
+          return e ? e.puppet.type : 'none';
+        }, before);
+        check('grow-an-ink-and-keep-it', cast === 'ink', `cast ${cast}`);
+      });
+
+      await phase('dress-a-sheet-in-ink', async () => {
+        await label('more');
+        await sleep(350);
+        await label('dress it in an ink');
+        await sleep(600);
+        const before = await kindsNow();
+        await label('keep it');
+        await sleep(600);
+        await tabShot('inked');
+        const kinds = await kindsSince(before);
+        check('dress-a-sheet-in-ink', kinds.join(',') === 'INK', kinds.join(',') || 'nothing');
+      });
+
+      // Print: a palette and a paper from the show menu.
+      await phase('a-palette-and-paper-from-the-menu', async () => {
+        await label('this bit');
+        await sleep(350);
+        const before = await kindsNow();
+        await label('tropic');
+        await sleep(250);
+        await option('what it is printed on', 'newsprint');
+        await sleep(250);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(500);
+        await tabShot('printed');
+        check('a-palette-and-paper-from-the-menu', kinds.join(',') === 'LOOK,LOOK', kinds.join(',') || 'nothing');
+      });
+
+      // Motion style: the ink sheet on twos.
+      await phase('a-sheet-on-twos', async () => {
+        await label('more');
+        await sleep(350);
+        const before = await kindsNow();
+        await option('how floppy it is', 'on twos');
+        await sleep(300);
+        const spring = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.puppet.spring ?? 'none';
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-sheet-on-twos', kinds.join(',') === 'CAST' && spring === 'twos', `${kinds.join(',')} ${spring}`);
+      });
+
+      // A clip from the camera roll becomes a sheet that plays in time.
+      await phase('a-video-becomes-a-sheet', async () => {
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        const fed = await tab.evaluate(() => window.__bitsE2E.pickVideo());
+        if (!fed) throw new Error('no video picker');
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.slice(n).some((e) => e.kind === 'CAST' && e.puppet.type === 'video'),
+          { timeout: 20000 },
+          before,
+        );
+        await sleep(800);
+        await label('play');
+        await sleep(1500);
+        await tabShot('video-sheet');
+        if (await tab.$('.dock-stop')) await label('stop');
+        await sleep(300);
+        const spec = await tab.evaluate((n) => {
+          const e = window.__bits.project().events.slice(n).find((x) => x.kind === 'CAST' && x.puppet.type === 'video');
+          return e ? e.puppet : null;
+        }, before);
+        check('a-video-becomes-a-sheet', !!spec && spec.durationS > 1.4 && spec.durationS < 1.6, spec ? `${spec.durationS.toFixed(2)}s` : 'no clip');
+      });
+
+      // Reading it: the real models, offline, with progress; then it can
+      // show just the person.
+      await phase('a-clip-can-be-read-and-masked', async () => {
+        await label('more');
+        await sleep(350);
+        const read = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) =>
+            (b.textContent || '').startsWith('read the clip'),
+          ),
+        );
+        if (!read.asElement()) throw new Error('no read button');
+        await read.asElement().tap();
+        await tab.waitForFunction(
+          () => {
+            const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+            return !!casts[casts.length - 1]?.puppet.analysisId;
+          },
+          { timeout: 60000 },
+        );
+        await sleep(500);
+        const before = await kindsNow();
+        await option('what of the clip shows', 'the person');
+        await sleep(400);
+        const masked = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+          return casts[casts.length - 1]?.puppet.masked === true;
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-clip-can-be-read-and-masked', masked && kinds.join(',') === 'CAST', `${kinds.join(',')} masked ${masked}`);
+      });
+
+      // Kits: the clip rides another sheet, then lets go.
+      await phase('a-sheet-rides-another', async () => {
+        // The clip is the one to ride. The read before this can leave it
+        // put down, so pick it up again rather than trust it is held.
+        const clipId = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+          return casts[casts.length - 1]?.puppetId ?? null;
+        });
+        if (!clipId) throw new Error('no clip on the stage');
+        for (let i = 0; i < 3 && (await selected()) !== clipId; i++) {
+          const at = await tab.evaluate((id) => window.__bits.poses()[id] ?? null, clipId);
+          if (!at) throw new Error('the clip has no pose');
+          await finger([[at.x, at.y]]);
+          await sleep(500);
+        }
+        await tab.waitForSelector('[aria-label="more"]', { timeout: 5000 });
+        await label('more');
+        await sleep(350);
+        const pill = await tab.evaluateHandle(() => {
+          const row = Array.from(document.querySelectorAll('.sheet .sheet-row')).find((r) =>
+            (r.textContent || '').startsWith('rides on'),
+          );
+          return row?.querySelector('button.pill') ?? null;
+        });
+        if (!pill.asElement()) throw new Error('nothing to ride');
+        const before = await kindsNow();
+        await pill.asElement().tap();
+        await sleep(400);
+        const attach = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.attach ?? null;
+        });
+        await label('let go');
+        await sleep(400);
+        const free = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return !casts[casts.length - 1]?.attach;
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-sheet-rides-another', !!attach && free && kinds.join(',') === 'CAST,CAST', `${kinds.join(',')} rode ${attach?.to ?? 'nothing'}, free ${free}`);
+      });
+
+      // A selfie kit from a photo with no person in it: one piece, said so.
+      await phase('a-kit-without-a-person-is-one-piece', async () => {
+        const png = makePng(join(SHOTS, 'kit-fixture.png'), 96);
+        const input = await tab.$('input[data-pick="kit"]');
+        if (!input) throw new Error('no kit input');
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        await input.uploadFile(png);
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.slice(n).some((e) => e.kind === 'CAST'),
+          { timeout: 30000 },
+          before,
+        );
+        await sleep(400);
+        const casts = await tab.evaluate(
+          (n) => window.__bits.project().events.slice(n).filter((e) => e.kind === 'CAST').map((e) => e.puppet.type),
+          before,
+        );
+        check('a-kit-without-a-person-is-one-piece', casts.join(',') === 'cutout', casts.join(',') || 'nothing');
+      });
+
+      // Shots: a cut dropped at the playhead from the shots room, reframed,
+      // then taken out again with an undo on offer.
+      await phase('shots-are-cards-to-frame-and-time', async () => {
+        const bar = await tab.evaluate(() => {
+          const r = document.querySelector('.timeline .seek')?.getBoundingClientRect();
+          return r ? { x: r.left + r.width * 0.72, y: r.top + r.height / 2 } : null;
+        });
+        if (!bar) throw new Error('no timeline');
+        await tab.touchscreen.tap(bar.x, bar.y);
+        await sleep(300);
+        await label('this bit');
+        await sleep(350);
+        await label('shots');
+        await sleep(300);
+        // Every card gets a still of how its shot opens.
+        await tab.waitForFunction(
+          () => {
+            const cards = document.querySelectorAll('.shot-card');
+            return cards.length > 0 && document.querySelectorAll('.shot-card img').length === cards.length;
+          },
+          { timeout: 15000 },
+        );
+        const cardsBefore = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        const before = await kindsNow();
+        const cutHere = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) => b.textContent?.startsWith('cut here,')),
+        );
+        if (!cutHere.asElement()) throw new Error('no cut here');
+        await cutHere.asElement().tap();
+        await sleep(400);
+        const cardsAfter = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        // Reframe the new shot with any framing it does not have.
+        const other = await tab.$('.shot-framings button[aria-pressed="false"]');
+        if (!other) throw new Error('no other framing');
+        await other.tap();
+        await sleep(400);
+        await tabShot('shots-room');
+        await label('take the cut out');
+        await sleep(400);
+        const toast = await tab.evaluate(() => document.body.textContent?.includes('took that cut out') ?? false);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check(
+          'shots-are-cards-to-frame-and-time',
+          cardsAfter === cardsBefore + 1 && kinds.join(',') === 'CUT,REMOVE,CUT,REMOVE' && toast,
+          `${cardsBefore}→${cardsAfter} cards, ${kinds.join(',') || 'nothing'}, toast ${toast}`,
+        );
       });
     } finally {
       await tab.close();
