@@ -19,6 +19,8 @@ export interface Lane {
   /** A mouthed puppet's passes are when it talks. */
   mouthed: boolean;
   passes: LanePass[];
+  /** Camera cuts, as ticks: tap one to take it out. */
+  cuts?: { id: string; at: number }[];
 }
 
 export interface LoopRegion {
@@ -40,6 +42,7 @@ export interface LanesProps {
   onTrim: (passId: string, from: number, to: number) => void;
   onSolo: (puppetId: string | null) => void;
   onLoop: (loop: LoopRegion | null) => void;
+  onRemoveCut?: (cutId: string) => void;
 }
 
 interface EdgeDrag {
@@ -65,6 +68,7 @@ export function Lanes({
   onTrim,
   onSolo,
   onLoop,
+  onRemoveCut,
 }: LanesProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<EdgeDrag | null>(null);
@@ -198,6 +202,15 @@ export function Lanes({
                   </button>
                 );
               })}
+              {lane.cuts?.map((c) => (
+                <button
+                  key={c.id}
+                  className="cut-tick"
+                  style={{ left: `${pct(c.at)}%` }}
+                  aria-label={`cut at ${fmt(c.at)}, take it out`}
+                  onClick={() => onRemoveCut?.(c.id)}
+                />
+              ))}
             </div>
           </div>
         ))}

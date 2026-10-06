@@ -5,7 +5,7 @@
 
 import { CAMERA_ID, FOCAL } from '../engine/camera';
 import { createFramer } from '../engine/frame';
-import type { Project, RecipeEvent } from '../engine/recipe';
+import { RECIPE_VERSION, type Project, type RecipeEvent } from '../engine/recipe';
 import { createRenderer2d, STAGE_BG } from '../media/stageDraw';
 import { fixtureImages } from './fixtures';
 
@@ -44,7 +44,7 @@ function cameraProject(withPan: boolean): Project {
   const samples: number[] = [];
   for (let i = 0; i <= 10; i++) samples.push(0.1 + i * 0.05, 0.5 + 0.012 * i, 0.5);
   return {
-    version: 3,
+    version: RECIPE_VERSION,
     id: 'camera',
     title: 'camera',
     createdAt: '2026-10-01T00:00:00.000Z',
@@ -120,4 +120,94 @@ export async function runCamera(): Promise<CameraResult> {
     voidPanned: voidShare(panned.data),
     restIsNull: rest.camera === null,
   };
+}
+
+export interface LookResult {
+  /** How far past a sheet's right edge its shadow reaches, in pixels,
+   *  over a backdrop at the stage plane and one pushed far back. */
+  shadowReachNear: number;
+  shadowReachFar: number;
+  /** How far the fog moved a magenta sheet's colour, near and far. */
+  fogNear: number;
+  fogFar: number;
+  /** A trail ghost's brightness after a plain frame, and after a cut. */
+  ghostPlain: number;
+  ghostCut: number;
+}
+
+function lookProject(skyDepth: number, look: Record<string, unknown>): Project {
+  const p = cameraProject(false);
+  return {
+    ...p,
+    events: [
+      ...p.events.map((e) =>
+        e.kind === 'CAST' && e.puppetId === 'sky' ? { ...e, depth: skyDepth } : e,
+      ),
+      { kind: 'LOOK', id: 'look', at: 0, puppetId: '', ...look } as RecipeEvent,
+    ],
+  };
+}
+
+export async function runLook(): Promise<LookResult> {
+  const fixture = await fixtureImages();
+  const images = new Map([['sky', fixture.get('sky')!]]);
+  const pixels = (project: Project) => {
+    const ctx = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+    const frame = createFramer(project, undefined, { trails: false }).frameAt(1);
+    createRenderer2d().draw(ctx, W, H, frame, images);
+    return ctx.getImageData(0, 0, W, H).data;
+  };
+  // The near sheet is a 0.12-wide box centred at x 0.7, y 0.4.
+  const right = Math.round((0.7 + 0.06) * W);
+  const row = Math.round(0.42 * H);
+  const reach = (skyDepth: number) => {
+    const plain = pixels(lookProject(skyDepth, { shadow: 0 }));
+    const shaded = pixels(lookProject(skyDepth, { shadow: 1 }));
+    let far = 0;
+    for (let x = right; x < W; x++) {
+      const i = (row * W + x) * 4;
+      const darker = plain[i]! + plain[i + 1]! + plain[i + 2]! - (shaded[i]! + shaded[i + 1]! + shaded[i + 2]!);
+      if (darker > 12) far = x - right;
+    }
+    return far;
+  };
+  // Fog: the magenta near sheet, then the same with it pushed far back.
+  const fogShift = (depth: number) => {
+    const p = lookProject(0, { fog: 0.8 });
+    const data = pixels({
+      ...p,
+      events: p.events.map((e) => (e.kind === 'CAST' && e.puppetId === 'near' ? { ...e, depth } : e)),
+    });
+    const i = (Math.round(0.4 * H) * W + Math.round(0.7 * W)) * 4;
+    return Math.abs(data[i]! - 255) + Math.abs(data[i + 1]! - 0) + Math.abs(data[i + 2]! - 255);
+  };
+  return {
+    shadowReachNear: reach(0),
+    shadowReachFar: reach(6),
+    fogNear: fogShift(0),
+    fogFar: fogShift(6),
+    ghostPlain: ghost(null),
+    ghostCut: ghost(1.02),
+  };
+}
+
+/** A white card, then the stage without it a thirtieth later, with trails
+ *  on: what is left of the card is the ghost. A cut between the two frames
+ *  must leave none. */
+function ghost(cutAt: number | null): number {
+  const S = 32;
+  const ctx = new OffscreenCanvas(S, S).getContext('2d', { willReadFrequently: true })!;
+  const renderer = createRenderer2d();
+  const p = cameraProject(false);
+  const framer = createFramer(
+    { ...p, events: p.events.filter((e) => e.kind === 'CAST' && e.puppetId === 'near') },
+    undefined,
+    { trails: false },
+  );
+  const card = framer.frameAt(1);
+  const layer = { ...card.layers[0]!, puppet: { ...card.layers[0]!.puppet, home: { x: 0.5, y: 0.5, scale: 8, rot: 0 } } };
+  renderer.draw(ctx, S, S, { ...card, t: 1, trail: 0.8, layers: [layer] }, new Map());
+  renderer.draw(ctx, S, S, { ...card, t: 1 + 1 / 30, trail: 0.8, cutAt, layers: [] }, new Map());
+  const d = ctx.getImageData(S / 2, S / 2, 1, 1).data;
+  return d[0]! - 16;
 }

@@ -161,6 +161,25 @@ try {
     `bare stage ${(cam.voidAtRest * 100).toFixed(2)}% at rest, ${(cam.voidPanned * 100).toFixed(2)}% panned`,
   );
 
+  // The look: shadows fall further across a bigger depth gap, fog eats far
+  // sheets more than near ones, and a cut leaves no ghost.
+  const look = await page.evaluate(() => window.__bitsE2E.runLook());
+  check(
+    'a shadow falls further onto a sheet further back',
+    look.shadowReachNear > 2 && look.shadowReachFar > look.shadowReachNear + 2,
+    `reach ${look.shadowReachNear}px over the plane, ${look.shadowReachFar}px over a far backdrop`,
+  );
+  check(
+    'fog takes far sheets more than near ones',
+    look.fogNear > 10 && look.fogFar > look.fogNear * 1.5,
+    `colour moved ${look.fogNear} near, ${look.fogFar} far`,
+  );
+  check(
+    'a cut leaves no ghost',
+    look.ghostPlain > 50 && look.ghostCut === 0,
+    `ghost ${look.ghostPlain} without a cut, ${look.ghostCut} across one`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(

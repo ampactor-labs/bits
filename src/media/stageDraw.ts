@@ -3,6 +3,7 @@
 // snip lines), mouths flap with the loudness envelope, doodles boil.
 
 import { viewOf } from '../engine/camera';
+import { fogAmount, shadowGap, shadowOffset } from '../engine/look';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
@@ -39,7 +40,6 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
   // wipe (the TouchDesigner feedback-loop trick, canvas edition). The first
   // beats always wipe fully so renders start from black.
   const tS = frame.t;
-  const seed = frame.seed;
   const keep = tS < 0.08 ? 0 : Math.min(0.92, frame.trail);
   if (keep > 0) {
     ctx.fillStyle = STAGE_BG;
@@ -51,20 +51,67 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
     ctx.fillRect(0, 0, W, H);
   }
 
-  for (const layer of frame.layers) {
-    const view = viewOf(frame.camera, layer.depth, W, H);
-    if (!view) {
-      drawLayer(ctx, W, H, layer, images, tS, seed, false);
-      continue;
+  const look = frame.look;
+  frame.layers.forEach((layer, i) => {
+    if (!look) {
+      drawProjected(ctx, W, H, frame, layer, images);
+      return;
     }
-    // The camera is one similarity per sheet, applied on top of whatever
-    // the caller set (device pixels), so everything inside the sheet
-    // follows it.
+    // A look draws each sheet on its own first, so its fog tints only the
+    // sheet and its shadow is the whole sheet's silhouette: a shadow cast
+    // from inside the sheet's clip would be cut off at its edges.
+    const sprite = spriteFor(W, H);
+    sprite.setTransform(1, 0, 0, 1, 0, 0);
+    sprite.globalCompositeOperation = 'source-over';
+    sprite.clearRect(0, 0, W, H);
+    drawProjected(sprite, W, H, frame, layer, images);
+    const haze = look.fog > 0 ? fogAmount(look.fog, layer.depth) : 0;
+    if (haze > 0) {
+      sprite.globalCompositeOperation = 'source-atop';
+      sprite.globalAlpha = haze;
+      sprite.fillStyle = look.fogColor;
+      sprite.fillRect(0, 0, W, H);
+      sprite.globalAlpha = 1;
+      sprite.globalCompositeOperation = 'source-over';
+    }
     ctx.save();
-    ctx.transform(view.a, view.b, view.c, view.d, view.e, view.f);
-    drawLayer(ctx, W, H, layer, images, tS, seed, true);
+    // The back layer has nothing behind it to fall on.
+    if (look.shadow > 0 && !layer.puppet.back) {
+      const gap = shadowGap(frame.layers, i, frame.camera, W, H);
+      const off = shadowOffset(look.shadow, gap, W);
+      ctx.shadowColor = `rgba(0, 0, 0, ${(0.55 * look.shadow).toFixed(3)})`;
+      ctx.shadowOffsetX = off.dx;
+      ctx.shadowOffsetY = off.dy;
+      ctx.shadowBlur = off.blur;
+    }
+    ctx.drawImage(sprite.canvas, 0, 0);
     ctx.restore();
+  });
+}
+
+/** One layer through the camera. At rest there is no transform at all. */
+function drawProjected(ctx: Ctx2D, W: number, H: number, frame: Frame, layer: LayerFrame, images: StageImages): void {
+  const view = viewOf(frame.camera, layer.depth, W, H);
+  if (!view) {
+    drawLayer(ctx, W, H, layer, images, frame.t, frame.seed, false);
+    return;
   }
+  // The camera is one similarity per sheet, applied on top of whatever
+  // the caller set (device pixels), so everything inside the sheet
+  // follows it.
+  ctx.save();
+  ctx.transform(view.a, view.b, view.c, view.d, view.e, view.f);
+  drawLayer(ctx, W, H, layer, images, frame.t, frame.seed, true);
+  ctx.restore();
+}
+
+/** One scratch canvas for every looked layer, kept the stage's size. */
+let sprite: OffscreenCanvasRenderingContext2D | null = null;
+function spriteFor(W: number, H: number): OffscreenCanvasRenderingContext2D {
+  if (!sprite || sprite.canvas.width !== W || sprite.canvas.height !== H) {
+    sprite = new OffscreenCanvas(W, H).getContext('2d')!;
+  }
+  return sprite;
 }
 
 /** A canvas renderer that remembers the frame before. Trails are a ghost
@@ -85,8 +132,9 @@ export function createRenderer2d(): Renderer2d {
       let trail = Math.min(0.92, frame.trail);
       if (lastT !== null && trail > 0) {
         const dt = frame.t - lastT;
-        // Going back, or a jump the eye reads as a cut: start clean.
-        if (dt < 0 || dt > 0.25) trail = 0;
+        // Going back, a jump the eye reads as a cut, or a real one: start
+        // clean.
+        if (dt < 0 || dt > 0.25 || (frame.cutAt !== null && frame.cutAt > lastT)) trail = 0;
         else {
           const thirtieths = dt * 30;
           if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
@@ -224,6 +272,8 @@ export function drawStage(
       seed,
       trail: trailKeep,
       camera: null,
+      look: null,
+      cutAt: null,
       layers: cast.map((puppet) => ({
         puppet,
         pose: poses.get(puppet.id),

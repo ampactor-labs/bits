@@ -31,13 +31,16 @@ import { detectOnsets } from '../engine/onsets';
 import { redoStep, undoStep } from '../engine/history';
 import { impactSfx, renderSfx, type SfxName } from '../engine/sfx';
 import { computeVoiceTrack, EMPTY_VOICE, type VoiceTrack } from '../engine/envelope';
-import { CAMERA_ID, magnification, toScreen, type CameraPose } from '../engine/camera';
+import { CAMERA_ID, REST_CAMERA, magnification, toScreen, toStage, type CameraPose } from '../engine/camera';
+import { askTilt, tiltSupported, watchTilt } from '../media/gyro';
 import {
   castOf,
   createShowSim,
   eyesOf,
+  cutsOf,
   lanePasses,
   localToWorld,
+  lookOf,
   mouthOf,
   pinsOf,
   sameChannel,
@@ -84,13 +87,16 @@ import { DOODLE_COLORS, DoodleBar, type DoodleInk } from './stage/DoodleBar';
 import { STICKERS, stickerSpec } from './stage/stickers';
 import { canEnter, isBusy, isPlacing, rulesFor, type Mode } from './stage/machine';
 import {
+  TILT_KEY,
   installGestures,
   newId,
   type Grab,
   type HandleDrag,
   type StagingDrag,
 } from './stage/gestures';
+import { createStagePlayer, drawMarks, type StagePlayer } from './stage/player';
 import { MoreSheet } from './stage/sheets/MoreSheet';
+import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
 import { RenderSheet } from './stage/sheets/RenderSheet';
 import { posterFor } from '../media/poster';
@@ -102,7 +108,6 @@ import { Timeline } from './stage/Timeline';
 import { countCommit, probe } from '../e2e/probe';
 import { RenderCancelled, renderShow, type RenderProgress } from '../media/render';
 import {
-  composeFrame,
   foleyOn,
   impactListener,
   visualsOf,
@@ -111,7 +116,6 @@ import {
 } from '../engine/frame';
 import { shareOrDownload } from '../media/shareFile';
 import {
-  createRenderer2d,
   loadStageImages,
   type StageImages,
 } from '../media/stageDraw';
@@ -293,7 +297,6 @@ export function Stage({
   const meterFillRef = useRef<HTMLDivElement>(null);
   const elapsedRef = useRef<HTMLSpanElement>(null);
   /** Draws the stage and remembers the frame before, for trails. */
-  const rendererRef = useRef(createRenderer2d());
   /** Hears landings from the live sim; rebuilt with it. */
   const liveImpactsRef = useRef<ReturnType<typeof impactListener> | null>(null);
   const liveImpactCountRef = useRef(0);
@@ -306,12 +309,25 @@ export function Stage({
   const visualsRef = useRef<Map<string, PuppetVisual>>(new Map());
   const wiresRef = useRef<WireMap>(new Map());
   const simRef = useRef<ShowSim | null>(null);
+  /** The onsets as of now, for the player, which outlives any render. */
+  const onsetsRef = useRef<number[]>([]);
+  onsetsRef.current = onsets;
+  const playerRef = useRef<StagePlayer>(null as unknown as StagePlayer);
+  if (!playerRef.current) {
+    playerRef.current = createStagePlayer({
+      visualsRef,
+      wiresRef,
+      imagesRef,
+      analysis: () => ({ voice: voiceRef.current, onsets: onsetsRef.current, voices: voicesRef.current }),
+    });
+  }
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
   /** The camera the last frame was drawn through; null at rest. */
   const lastCameraRef = useRef<CameraPose | null>(null);
   /** The camera in hand: while a take rolls, fingers move it instead of
    *  the sheets. */
   const [cameraArmed, setCameraArmed] = useState(false);
+  const [sideView, setSideView] = useState(false);
   const cameraArmedRef = useRef(false);
   useEffect(() => {
     cameraArmedRef.current = cameraArmed;
@@ -724,14 +740,15 @@ export function Stage({
         puppetId: grab.puppetId,
         samples: grab.samples,
       };
+      const performed = grab.via ? { ...base, via: grab.via } : base;
       const pass: PassEvent =
         grab.channel === null
-          ? base
+          ? performed
           : 'piece' in grab.channel
-            ? { ...base, piece: grab.channel.piece }
+            ? { ...performed, piece: grab.channel.piece }
             : 'pin' in grab.channel
-              ? { ...base, pin: grab.channel.pin }
-              : { ...base, prop: grab.channel.prop };
+              ? { ...performed, pin: grab.channel.pin }
+              : { ...performed, prop: grab.channel.prop };
       commit((p) => appendEvent(p, pass));
     },
     [commit, currentClock],
@@ -1038,6 +1055,11 @@ export function Stage({
             const assigned = map[side];
             const hand = hands[side];
             if (!assigned || !hand) continue;
+            // The wrist is where it is on screen; the pass records the
+            // stage point under it at the puppet's depth, as a finger's does.
+            const depth =
+              castOf(project).find((p) => p.id === assigned.puppetId)?.depth ?? 0;
+            const at = toStage(lastCameraRef.current, depth, hand.x, hand.y, W, H);
             let g = bodyGrabsRef.current.find(
               (x) => x.puppetId === assigned.puppetId && sameChannel(x.channel, assigned.channel),
             );
@@ -1045,47 +1067,31 @@ export function Stage({
               g = {
                 puppetId: assigned.puppetId,
                 channel: assigned.channel,
-                samples: [clock, hand.x, hand.y],
-                x: hand.x,
-                y: hand.y,
-                depth: 0,
+                samples: [clock, at.x, at.y],
+                x: at.x,
+                y: at.y,
+                depth,
               };
               bodyGrabsRef.current.push(g);
             }
-            g.x = hand.x;
-            g.y = hand.y;
+            g.x = at.x;
+            g.y = at.y;
             const lastT = g.samples[g.samples.length - 3]!;
-            if (clock - lastT >= 1 / 60) g.samples.push(clock, hand.x, hand.y);
+            if (clock - lastT >= 1 / 60) g.samples.push(clock, at.x, at.y);
           }
         }
 
         const sim = simRef.current;
         if (sim) {
-          const poses = sim.advanceTo(clock);
-          lastPosesRef.current = poses;
-          lastCameraRef.current = sim.camera();
+          const frame = playerRef.current.playing(ctx, W, H, project, sim, clock);
+          lastPosesRef.current = playerRef.current.lastPoses();
+          lastCameraRef.current = frame.camera;
           const landed = liveImpactsRef.current?.drain() ?? [];
           if (foleyOn(wiresRef.current)) {
             for (let n = landed.length; n > 0; n--) {
               void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
             }
           }
-          rendererRef.current.draw(
-            ctx,
-            W,
-            H,
-            composeFrame({
-              project,
-              cast: castOf(project),
-              visuals: visualsRef.current,
-              wires: wiresRef.current,
-              analysis: { voice: voiceRef.current, onsets, voices: voicesRef.current },
-              poses,
-              t: clock,
-              camera: lastCameraRef.current,
-            }),
-            imagesRef.current,
-          );
         }
         layoutOverlays();
         if (now >= stopAt) {
@@ -1108,81 +1114,24 @@ export function Stage({
         dirtyRef.current = false;
         seekSimAtRef.current = playheadRef.current;
         lastSeekDrawRef.current = performance.now();
-        let cast = castOf(project);
-        const staging = stagingRef.current;
-        if (staging) {
-          cast = cast.map((p) =>
-            p.id === staging.puppetId
-              ? {
-                  ...p,
-                  home: { x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot },
-                }
-              : p,
-          );
-        }
-        // From the nearest checkpoint, so scrubbing a long bit steps at most
-        // a second of sim rather than everything before the playhead.
-        const sim = createShowSim(
-          { ...project, events: applyStagingCast(project, staging) },
-          0,
-          undefined,
-          undefined,
-          { resumeAt: playheadRef.current },
-        );
-        const poses = sim.advanceTo(playheadRef.current);
-        lastPosesRef.current = poses;
-        lastCameraRef.current = sim.camera();
-        rendererRef.current.draw(
+        const frame = playerRef.current.still(
           ctx,
           W,
           H,
-          composeFrame({
-            project,
-            cast,
-            visuals: visualsRef.current,
-            wires: wiresRef.current,
-            analysis: { voice: voiceRef.current, onsets, voices: voicesRef.current },
-            poses,
-            t: playheadRef.current,
-            // A still is drawn clean: there is no previous frame to ghost.
-            trails: false,
-            camera: lastCameraRef.current,
-          }),
-          imagesRef.current,
+          project,
+          stagingRef.current,
+          playheadRef.current,
         );
-        // Pin rings, visible while staging and pinning, then whatever the
-        // current tool is drawing. All on the overlay, never the stage.
+        lastPosesRef.current = playerRef.current.lastPoses();
+        lastCameraRef.current = frame.camera;
         const overlay = overlayRef.current;
-        const octx = overlay ? sizedOverlay(overlay, W, H) : null;
-        if (octx) {
-          octx.clearRect(0, 0, W, H);
-          for (const p of cast) {
-            const pose = poses.get(p.id);
-            const visual = visualsRef.current.get(p.id);
-            if (!pose || !visual || visual.pins.length === 0) continue;
-            octx.strokeStyle = '#58a6ff';
-            octx.lineWidth = 2;
-            pose.pins.forEach((pin, pi) => {
-              if (!visual.pins[pi]) return;
-              const at = toScreen(lastCameraRef.current, p.depth, pin.x, pin.y, W, H);
-              octx.beginPath();
-              octx.arc(at.x * W, at.y * H, Math.max(6, W * 0.012), 0, Math.PI * 2);
-              octx.stroke();
-            });
-          }
-          if (modeRef.current === 'doodling')
-            drawStrokes(octx, W, H, strokeRef.current, inkRef.current);
-          if (modeRef.current === 'snipping' && snipStrokeRef.current) {
-            const s = snipStrokeRef.current;
-            octx.strokeStyle = '#58a6ff';
-            octx.setLineDash([8, 8]);
-            octx.lineWidth = 3;
-            octx.beginPath();
-            octx.moveTo(s.x0 * W, s.y0 * H);
-            octx.lineTo(s.x1 * W, s.y1 * H);
-            octx.stroke();
-            octx.setLineDash([]);
-          }
+        if (overlay) {
+          const mode = modeRef.current;
+          drawMarks(overlay, W, H, frame, lastPosesRef.current, {
+            strokes: mode === 'doodling' ? strokeRef.current : null,
+            inks: inkRef.current,
+            snip: mode === 'snipping' ? snipStrokeRef.current : null,
+          });
           overlayInkedRef.current = true;
         }
         layoutOverlays();
@@ -1772,7 +1721,7 @@ export function Stage({
   // ---- lanes ----------------------------------------------------------
   const lanes: Lane[] = lanesOpen
     ? castOf(projectSnap)
-        .map((p, i) => ({
+        .map((p, i): Lane => ({
           puppetId: p.id,
           name: puppetLabel(p, i),
           mouthed: !!mouthOf(projectSnap, p.id),
@@ -1782,13 +1731,14 @@ export function Stage({
         .concat(
           // The camera's passes get a lane of their own, on top, so a shot
           // can be muted, trimmed or taken out like any performance.
-          lanePasses(projectSnap, CAMERA_ID).length > 0
+          lanePasses(projectSnap, CAMERA_ID).length > 0 || cutsOf(projectSnap).length > 0
             ? [
                 {
                   puppetId: CAMERA_ID,
                   name: 'camera',
                   mouthed: false,
                   passes: lanePasses(projectSnap, CAMERA_ID),
+                  cuts: cutsOf(projectSnap).map((c) => ({ id: c.id, at: c.at })),
                 },
               ]
             : [],
@@ -1871,6 +1821,70 @@ export function Stage({
     }
     dirtyRef.current = true;
   };
+
+  /** A cut back to the wide shot, on the beat when one is about to land:
+   *  a cut a hair before the beat reads as late. */
+  const dropCut = () => {
+    const clock = Math.max(0, currentClock());
+    const beat = onsetsRef.current.find((o) => o >= clock && o - clock <= 0.3);
+    commit((p) =>
+      appendEvent(p, {
+        kind: 'CUT',
+        id: newId(),
+        at: beat ?? clock,
+        puppetId: CAMERA_ID,
+        ...REST_CAMERA,
+      }),
+    );
+    vibrate(15);
+  };
+
+  // Tilt: while it is on and a camera take rolls, tipping the phone pans.
+  const tiltable = tiltSupported();
+  const [tilting, setTilting] = useState(false);
+  const tiltStopRef = useRef<(() => void) | null>(null);
+  /** Where the camera would be with the phone level, for this take. */
+  const tiltBaseRef = useRef<{ x: number; y: number } | null>(null);
+  const toggleTilt = async (on: boolean) => {
+    if (on && !(await askTilt())) {
+      banner.hint('this phone will not share its tilt.');
+      return;
+    }
+    tiltStopRef.current?.();
+    tiltStopRef.current = null;
+    const held = grabsRef.current.get(TILT_KEY);
+    if (held) {
+      grabsRef.current.delete(TILT_KEY);
+      commitOneGrab(held);
+    }
+    setTilting(on);
+    if (!on) return;
+    tiltStopRef.current = watchTilt((dx, dy) => {
+      if (modeRef.current !== 'recording' || !cameraArmedRef.current) return;
+      const clock = Math.max(0, currentClock());
+      let grab = grabsRef.current.get(TILT_KEY);
+      if (!grab) {
+        const cam = lastCameraRef.current ?? REST_CAMERA;
+        tiltBaseRef.current = { x: cam.x - dx, y: cam.y - dy };
+        grab = {
+          puppetId: CAMERA_ID,
+          channel: null,
+          samples: [clock, cam.x, cam.y],
+          x: cam.x,
+          y: cam.y,
+          depth: 0,
+          via: 'gyro',
+        };
+        grabsRef.current.set(TILT_KEY, grab);
+      }
+      const base = tiltBaseRef.current!;
+      grab.x = base.x + dx;
+      grab.y = base.y + dy;
+      const lastT = grab.samples[grab.samples.length - 3]!;
+      if (clock - lastT >= 1 / 60) grab.samples.push(clock, grab.x, grab.y);
+    });
+  };
+  useEffect(() => () => tiltStopRef.current?.(), []);
 
   /** A tool the selected puppet is holding. The selection has to survive:
    *  the tool acts on it, and the halo it came from belongs to it. */
@@ -2128,6 +2142,31 @@ export function Stage({
               onClick={() => toggleCamera(!cameraArmed)}
             />
           )}
+          {sideView && (mode === 'idle' || mode === 'recording') && !performing && (
+            <DirectorView
+              cast={castOf(projectSnap)}
+              selectedId={selectedId}
+              name={(p) => puppetLabel(p, castOf(projectSnap).indexOf(p))}
+              onDepth={(p, depth) => recastWith(p, { depth })}
+              onClose={() => setSideView(false)}
+            />
+          )}
+          {mode === 'recording' && cameraArmed && (
+            <div className="camera-tools" onPointerDown={(e) => e.stopPropagation()}>
+              <button className="pill" onClick={dropCut}>
+                cut
+              </button>
+              {tiltable && (
+                <button
+                  className={`pill${tilting ? ' on' : ''}`}
+                  aria-pressed={tilting}
+                  onClick={() => void toggleTilt(!tilting)}
+                >
+                  tilt
+                </button>
+              )}
+            </div>
+          )}
           {counting && <div className="stage-hintline">🥁 count-in…</div>}
 
           <video ref={pipVideoRef} className="pip" muted playsInline hidden={!bodyActive} />
@@ -2176,6 +2215,18 @@ export function Stage({
           onTrim={trimPass}
           onSolo={setSoloId}
           onLoop={setLoop}
+          onRemoveCut={(cutId) => {
+            commit((p) =>
+              appendEvent(p, {
+                kind: 'REMOVE',
+                id: newId(),
+                at: 0,
+                puppetId: CAMERA_ID,
+                target: { cut: cutId },
+              }),
+            );
+            toast.undoable('took that cut out', undoRef.current);
+          }}
         />
       )}
 
@@ -2274,6 +2325,10 @@ export function Stage({
           onWire={(source, target, amount) => setWire(selected.id, source, target, amount)}
           onScale={(scale) => recastWith(selected, { scale })}
           onDepth={(depth) => recastWith(selected, { depth })}
+          onSideView={() => {
+            setSheet(null);
+            setSideView(true);
+          }}
           onSpring={(spring: SpringPreset) => setSpec(selected, { spring })}
           onHand={(hand) => assignHand(selected, hand)}
           onDuplicate={() => {
@@ -2353,6 +2408,11 @@ export function Stage({
           }}
           onSound={() => setSheet({ kind: 'sound' })}
           onStageWire={(target, amount) => setWire('', 'on', target, amount)}
+          shadow={lookOf(projectSnap)?.shadow ?? 0}
+          fog={lookOf(projectSnap)?.fog ?? 0}
+          onLook={(patch) =>
+            commit((p) => appendEvent(p, { kind: 'LOOK', id: newId(), at: 0, puppetId: '', ...patch }))
+          }
           onCorpse={setCorpse}
           onClose={() => setSheet(null)}
         />
@@ -2438,56 +2498,4 @@ export function Stage({
       />
     </div>
   );
-}
-
-/** While staging drags, the sim needs the overridden home too. */
-function applyStagingCast(project: Project, staging: StagingDrag | null): Project['events'] {
-  if (!staging) return project.events;
-  return project.events.map((e) =>
-    e.kind === 'CAST' && e.puppetId === staging.puppetId
-      ? { ...e, x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot }
-      : e,
-  );
-}
-
-/** The overlay canvas, kept the stage canvas's size. */
-function sizedOverlay(
-  overlay: HTMLCanvasElement,
-  W: number,
-  H: number,
-): CanvasRenderingContext2D | null {
-  if (overlay.width !== W || overlay.height !== H) {
-    overlay.width = W;
-    overlay.height = H;
-  }
-  return overlay.getContext('2d');
-}
-
-function drawStrokes(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  strokes: number[][],
-  inks: DoodleInk[],
-): void {
-  const base = Math.max(2, W * 0.012);
-  ctx.strokeStyle = '#ece5db';
-  ctx.lineWidth = base;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const [si, stroke] of strokes.entries()) {
-    const ink = inks[si];
-    if (ink) {
-      ctx.strokeStyle = ink.color;
-      ctx.lineWidth = Math.max(1.5, base * ink.width);
-    }
-    ctx.beginPath();
-    for (let i = 0; i + 1 < stroke.length; i += 2) {
-      const x = stroke[i]! * W;
-      const y = stroke[i + 1]! * H;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
 }

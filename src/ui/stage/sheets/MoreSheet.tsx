@@ -67,6 +67,8 @@ export interface MoreSheetProps {
   onWire: (source: WireSource, target: WireTarget, amount: number) => void;
   onScale: (scale: number) => void;
   onDepth: (depth: number) => void;
+  /** Opens the side view of the whole stage. */
+  onSideView: () => void;
   onSpring: (spring: SpringPreset) => void;
   onHand: (hand: 'left' | 'right' | 'none') => void;
   onDuplicate: () => void;
@@ -145,6 +147,8 @@ export function MoreSheet(props: MoreSheetProps) {
           onChange={(stop) => props.onDepth(DEPTHS.find((d) => d.value === stop)!.depth)}
         />
       </div>
+
+      <button onClick={props.onSideView}>see the stage from the side</button>
 
       <button onClick={() => setShowWires(true)}>wires</button>
 

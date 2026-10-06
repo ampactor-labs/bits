@@ -707,6 +707,88 @@ body {
   color: var(--accent-2-ink);
 }
 
+.camera-tools {
+  position: absolute;
+  top: 112px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pill.on {
+  background: var(--accent-2);
+  color: var(--accent-2-ink);
+}
+
+/* The side view: small enough to keep the stage, big enough to aim at. */
+.director {
+  position: absolute;
+  top: 56px;
+  left: 8px;
+  z-index: 3;
+  border-radius: var(--r-1);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(4px);
+  touch-action: none;
+}
+
+.director-plane {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--accent-2) 60%, transparent);
+}
+
+.director-lens {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 0;
+  height: 0;
+  margin-left: -7px;
+  border: 7px solid transparent;
+  border-bottom-color: var(--accent);
+}
+
+.director-dot {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  margin: -14px 0 0 -14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+
+.director-dot::after {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: var(--ink, #ece5db);
+}
+
+.director-dot.back::after {
+  inset: 9px 2px;
+  border-radius: 3px;
+  opacity: 0.6;
+}
+
+.director-dot.on::after {
+  background: var(--accent-2);
+}
+
+.director-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
 .stagepills {
   position: absolute;
   bottom: 12px;
@@ -1026,6 +1108,30 @@ input[type='range'] {
 .lane-name.on {
   background: var(--accent-2);
   color: var(--accent-2-ink);
+}
+
+.cut-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  margin-left: -14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  z-index: 2;
+}
+
+.cut-tick::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 12px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .lane-track {
