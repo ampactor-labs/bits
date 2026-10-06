@@ -12,6 +12,7 @@ import {
 import { splitPieces, polyArea } from './pieces';
 import {
   computeVoiceTrack,
+  type VoiceTrack,
   voiceAt,
   SHAPE_CLOSED,
   SHAPE_ROUND,
@@ -19,7 +20,8 @@ import {
   SHAPE_WIDE,
 } from './envelope';
 import { deformGrid, makeWarpGrid, mlsSimilarity } from './warp';
-import { beatPulse, effectiveWires, trailStrength, wireModsFor } from './wires';
+import { effectiveWires, trailStrength, wireModsFor } from './wires';
+import { beatPulse } from './signals';
 import { SFX_NAMES, impactSfx, mixSfxInto, renderSfx } from './sfx';
 import { appendEvent, createProject, type Project, type RecipeEvent } from './recipe';
 
@@ -354,9 +356,17 @@ describe('wires', () => {
     id: `w${Math.random().toString(36).slice(2, 8)}`,
     at: 0,
     puppetId,
-    source,
-    target,
+    from: source === 'on' ? 'const' : source,
+    to: target,
     amount,
+  });
+  const ctx = (voice: VoiceTrack) => ({
+    voice,
+    onsets: [],
+    voices: new Map(),
+    bands: null,
+    seed: 7,
+    poses: new Map(),
   });
 
   it('latest wire wins and amount 0 unplugs', () => {
@@ -395,18 +405,18 @@ describe('wires', () => {
       wire('', 'on', 'trails', 0.5),
     ]);
     const wires = effectiveWires(proj);
-    const m1 = wireModsFor(wires, 'a', voice, [], 0.5, 7);
-    expect(m1).toEqual(wireModsFor(wires, 'a', voice, [], 0.5, 7));
+    const m1 = wireModsFor(wires, 'a', ctx(voice), 0.5);
+    expect(m1).toEqual(wireModsFor(wires, 'a', ctx(voice), 0.5));
     expect(m1.scaleMul).toBeGreaterThan(1);
     expect(m1.scaleMul).toBeLessThan(1.4);
     expect(Math.abs(m1.dx)).toBeLessThan(0.031);
-    expect(wireModsFor(wires, 'unwired', voice, [], 0.5, 7)).toEqual({
+    expect(wireModsFor(wires, 'unwired', ctx(voice), 0.5)).toEqual({
       scaleMul: 1,
       dx: 0,
       dy: 0,
       dAngle: 0,
     });
-    expect(trailStrength(wires, voice, [], 0.5)).toBe(0.5);
+    expect(trailStrength(wires, ctx(voice), 0.5)).toBe(0.5);
   });
 });
 

@@ -13,32 +13,13 @@ import {
   canEncodeVideo,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
-import {
-  computeVoiceTrack,
-  voiceAt,
-  EMPTY_VOICE,
-  SHAPE_CLOSED,
-  type VoiceMoment,
-  type VoiceTrack,
-} from '../engine/envelope';
-import { detectOnsets } from '../engine/onsets';
-import { splitPieces } from '../engine/pieces';
-import { IMPACT_SQUASH, impactSfx, mixSfxInto, type SfxName } from '../engine/sfx';
-import { wireAmount } from '../engine/wires';
+import { impactSfx, mixSfxInto, type SfxName } from '../engine/sfx';
 import type { Project } from '../engine/recipe';
-import {
-  castOf,
-  createShowSim,
-  eyesOf,
-  mouthOf,
-  pinsOf,
-  snipsOf,
-  talkOpenFor,
-  voiceOf,
-} from '../engine/show';
-import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
-import { AudioSourceHandle, decodeMono, mixPcmInto, mixdownMono } from './audio';
-import { STAGE_BG, drawStage, loadStageImages, type PuppetVisual } from './stageDraw';
+import { createFramer } from '../engine/frame';
+import { AudioSourceHandle, mixPcmInto } from './audio';
+import { analyzeShow, type VoicePcm } from './analyze';
+import { STAGE_BG, createRenderer2d, loadStageImages } from './stageDraw';
+import { loadVideos, videosReadyAt } from './video';
 
 export interface RenderProgress {
   phase: 'video' | 'audio' | 'finalize';
@@ -67,100 +48,10 @@ export class RenderCancelled extends Error {
 
 const even = (n: number) => 2 * Math.round(n / 2);
 
-export function visualsOf(project: Project): Map<string, PuppetVisual> {
-  const visuals = new Map<string, PuppetVisual>();
-  for (const p of castOf(project)) {
-    visuals.set(p.id, {
-      pieces: splitPieces(snipsOf(project, p.id)),
-      mouth: mouthOf(project, p.id),
-      eyes: eyesOf(project, p.id),
-      pins: pinsOf(project, p.id),
-    });
-  }
-  return visuals;
-}
-
-/** A puppet's own take, decoded: its envelope and where in show time it
- *  starts. */
-export interface OwnVoice {
-  track: VoiceTrack;
-  at: number;
-  durationS: number;
-}
-
-/** Per-puppet voice moment at t.
- *
- *  A puppet with a take of its own flaps to that take, gated by the take's
- *  own span: the voice is the talker rule for it, so it does not also need
- *  a pass to be covering the moment. Everyone else flaps to the bit, gated
- *  by their passes as before. */
-export function voiceMap(
-  project: Project,
-  visuals: Map<string, PuppetVisual>,
-  track: VoiceTrack,
-  t: number,
-  voices?: Map<string, OwnVoice>,
-): Map<string, VoiceMoment> {
-  const out = new Map<string, VoiceMoment>();
-  const base = voiceAt(track, t);
-  for (const [id, v] of visuals) {
-    if (!v.mouth) continue;
-    const own = voices?.get(id);
-    if (own) {
-      const local = t - own.at;
-      if (local < 0 || local > own.durationS) {
-        out.set(id, { open: 0, shape: SHAPE_CLOSED });
-      } else {
-        const m = voiceAt(own.track, local);
-        out.set(id, { open: m.open, shape: m.open === 0 ? SHAPE_CLOSED : m.shape });
-      }
-      continue;
-    }
-    const open = talkOpenFor(project, id, base.open, t);
-    out.set(id, { open, shape: open === 0 ? SHAPE_CLOSED : base.shape });
-  }
-  return out;
-}
-
-/** One puppet's take, decoded and placed in show time. */
-export interface VoicePcm {
-  samples: Float32Array;
-  sampleRate: number;
-  at: number;
-  gain: number;
-}
-
-/** Every take the recipe names, decoded twice: once coarse for the
- *  envelope that drives its mouth, once at full rate for the mix. A take
- *  that will not open leaves its puppet on the bed, which is what it had
- *  before anyone recorded for it. */
-export async function collectVoices(
-  project: Project,
-  getAssetBlob: (assetId: string) => Promise<Blob>,
-): Promise<{ voices: Map<string, OwnVoice>; pcm: VoicePcm[] }> {
-  const voices = new Map<string, OwnVoice>();
-  const pcm: VoicePcm[] = [];
-  for (const p of castOf(project)) {
-    const own = voiceOf(project, p.id);
-    if (!own) continue;
-    try {
-      const blob = await getAssetBlob(own.assetId);
-      const env = await mixdownMono(blob);
-      const full = await decodeMono(blob);
-      if (env) {
-        voices.set(p.id, {
-          track: computeVoiceTrack(env.samples, env.sampleRate),
-          at: own.at,
-          durationS: own.durationS,
-        });
-      }
-      if (full) pcm.push({ ...full, at: own.at, gain: own.gain ?? 1 });
-    } catch {
-      // A missing take leaves that puppet on the bed.
-    }
-  }
-  return { voices, pcm };
-}
+// These moved to the frame builder and the analysis; re-exported for the
+// callers that still import them from here.
+export { visualsOf, voiceMap, type OwnVoice } from '../engine/frame';
+export { collectVoices, type VoicePcm } from './analyze';
 
 /** Lay every take onto one slice of the output bus, in place. Exported so
  *  the browser harness can run the step the render runs: this container's
@@ -219,19 +110,18 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const toS = trim ? Math.max(fromS, Math.min(trim.to, durationS)) : durationS;
   const spanS = Math.max(1 / fps, toS - fromS);
 
-  const cast = castOf(project);
-  const visuals = visualsOf(project);
-  const images = await loadStageImages(cast, options.getAssetBlob);
-  const sim = createShowSim(project);
-
-  const mix = options.audioBlob ? await mixdownMono(options.audioBlob) : null;
-  const voice = mix ? computeVoiceTrack(mix.samples, mix.sampleRate) : EMPTY_VOICE;
-  const onsets = mix ? detectOnsets(mix.samples, mix.sampleRate) : [];
-  const wires = effectiveWires(project);
-
   // Per-puppet takes: their envelopes drive their own mouths, and their
   // PCM is mixed into the output so the film says what was recorded.
-  const { voices, pcm: voicePcm } = await collectVoices(project, options.getAssetBlob);
+  const { analysis, pcm: voicePcm } = await analyzeShow(
+    project,
+    options.audioBlob,
+    options.getAssetBlob,
+  );
+  const framer = createFramer(project, analysis);
+  const renderer = createRenderer2d();
+  const images = await loadStageImages(framer.cast, options.getAssetBlob);
+  const specs = framer.cast.map((p) => p.spec);
+  await loadVideos(specs, options.getAssetBlob);
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -254,11 +144,9 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     const sounds: { at: number; sfx: SfxName }[] = project.events
       .filter((e) => e.kind === 'SOUND')
       .map((e) => ({ at: e.at, sfx: e.sfx }));
-    const foleyOn = wireAmount(wires, '', 'on', 'foley') > 0;
-    const prevSquash = new Map<string, number>();
     let impactCount = 0;
 
-    // drawStage only wipes the whole canvas when trails are off or the
+    // The renderer only wipes the whole canvas when trails are off or the
     // clock is near zero, so a trimmed render would otherwise start from an
     // untouched (transparent) canvas.
     ctx.fillStyle = STAGE_BG;
@@ -267,34 +155,13 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     const frameCount = Math.max(1, Math.ceil(spanS * fps));
     for (let i = 0; i < frameCount; i++) {
       const t = fromS + (i + 0.5) / fps;
-      const poses = sim.advanceTo(t);
-      if (foleyOn) {
-        for (const [pid, pose] of poses) {
-          const prev = prevSquash.get(pid) ?? 0;
-          if (pose.root.squash >= IMPACT_SQUASH && prev < IMPACT_SQUASH) {
-            sounds.push({ at: t, sfx: impactSfx(impactCount++) });
-          }
-          prevSquash.set(pid, pose.root.squash);
-        }
+      // The film waits for every clip's exact frame before drawing.
+      await videosReadyAt(specs, t);
+      const frame = framer.frameAt(t);
+      for (const hit of framer.impacts()) {
+        sounds.push({ at: hit.at, sfx: impactSfx(impactCount++) });
       }
-      const mods = new Map<string, WireMods>();
-      for (const p of cast) {
-        mods.set(p.id, wireModsFor(wires, p.id, voice, onsets, t, project.seed));
-      }
-      drawStage(
-        ctx,
-        outW,
-        outH,
-        cast,
-        poses,
-        images,
-        visuals,
-        voiceMap(project, visuals, voice, t, voices),
-        t,
-        project.seed,
-        mods,
-        trailStrength(wires, voice, onsets, t),
-      );
+      renderer.draw(ctx, outW, outH, frame, images);
       await videoSource.add(i / fps, 1 / fps);
       if (i % 10 === 0) {
         progress({ phase: 'video', fraction: i / frameCount });

@@ -692,6 +692,226 @@ body {
   outline: 2px solid var(--accent-2);
 }
 
+.stage-camera {
+  border-radius: 999px;
+}
+
+.stage-camera.on {
+  background: var(--accent-2);
+  color: var(--accent-2-ink);
+}
+
+.camera-tools {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pill.on {
+  background: var(--accent-2);
+  color: var(--accent-2-ink);
+}
+
+/* The side view: small enough to keep the stage, big enough to aim at. */
+.director {
+  position: absolute;
+  top: 56px;
+  left: 8px;
+  z-index: 3;
+  border-radius: var(--r-1);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(4px);
+  touch-action: none;
+}
+
+.director-plane {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--accent-2) 60%, transparent);
+}
+
+.director-lens {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 0;
+  height: 0;
+  margin-left: -7px;
+  border: 7px solid transparent;
+  border-bottom-color: var(--accent);
+}
+
+.director-dot {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  margin: -14px 0 0 -14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+
+.director-dot::after {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: var(--ink, #ece5db);
+}
+
+.director-dot.back::after {
+  inset: 9px 2px;
+  border-radius: 3px;
+  opacity: 0.6;
+}
+
+.director-dot.on::after {
+  background: var(--accent-2);
+}
+
+.director-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.wire-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--raised) 70%, transparent);
+}
+
+.wire-signal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wire-signal-name {
+  min-width: 6.5em;
+  font-size: var(--fs-body);
+}
+
+.wire-meter {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.wire-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-2);
+  transform-origin: left;
+  transform: scaleX(0);
+}
+
+.wire-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.wire-chip {
+  flex: none;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--raised);
+  white-space: nowrap;
+}
+
+.wire-chip.lit {
+  background: color-mix(in srgb, var(--accent-2) 30%, var(--raised));
+  outline: 1.5px solid var(--accent-2);
+}
+
+.wire-chip.on {
+  outline: 2px solid var(--accent);
+}
+
+.wire-chip-amount {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.wire-editor {
+  padding: 8px 0 12px;
+  border-bottom: 2px solid var(--accent-2);
+}
+
+.wire-editor-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+}
+
+.ink-tray {
+  /* One row of six: the sheet is a third of the stage at most, and the
+     keep buttons have to be in sight without scrolling. */
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.ink-tile {
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--r-1);
+  overflow: hidden;
+  border: 2px solid transparent;
+  touch-action: none;
+}
+
+.ink-tile canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ink-tile.front {
+  border-color: var(--accent-2);
+}
+
+.ink-tile.marked {
+  border-color: var(--accent);
+}
+
+.palette-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.palette-chip {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+.palette-chip.on {
+  border-color: var(--accent-2);
+}
+
 .stagepills {
   position: absolute;
   bottom: 12px;
@@ -1013,6 +1233,30 @@ input[type='range'] {
   color: var(--accent-2-ink);
 }
 
+.cut-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  margin-left: -14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  z-index: 2;
+}
+
+.cut-tick::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 12px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 .lane-track {
   position: relative;
   flex: 1;
@@ -1292,4 +1536,62 @@ body:has(.lanes) {
   border-radius: 8px;
   display: block;
   background: var(--stage);
+}
+
+/* The shots room: a strip of shot cards, one line, scrolled sideways so
+   the framing pills stay in sight under it. */
+.shot-strip {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  margin-bottom: 4px;
+}
+
+.shot-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  min-height: 0;
+  border-radius: var(--r-1);
+  border: 2px solid transparent;
+}
+
+.shot-card.on {
+  border-color: var(--accent-2);
+}
+
+.shot-card img,
+.shot-still-wait {
+  display: block;
+  height: 88px;
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.shot-strip.tall .shot-card img,
+.shot-strip.tall .shot-still-wait {
+  width: 50px;
+}
+
+.shot-strip.wide .shot-card img,
+.shot-strip.wide .shot-still-wait {
+  width: 156px;
+}
+
+.shot-card-label {
+  font-size: var(--fs-hint);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.shot-framings,
+.shot-timing-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }

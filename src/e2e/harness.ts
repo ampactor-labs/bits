@@ -12,6 +12,7 @@ import {
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
 import {
+  RECIPE_VERSION,
   createProject,
   parseProject,
   type CastEvent,
@@ -29,6 +30,18 @@ import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
 import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
+import {
+  peekFixture,
+  runFrameParity,
+  runTrailRate,
+  type ParityResult,
+  type TrailRateResult,
+} from './parity';
+import { runCamera, runLook, type CameraResult, type LookResult } from './camera';
+import { runFold, type FoldResult } from './fold';
+import { runBands, type BandsResult } from './bands';
+import { runGlParity, runSurface, type GlParityResult, type SurfaceResult } from './glParity';
+import { pickVideo, runVideo, runVideoRead, type ReadResult, type VideoResult } from './videoProof';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -121,8 +134,8 @@ function scriptedShow(): Project {
         scale: 1.4,
         rot: -0.2,
       },
-      { kind: 'WIRE', id: 'w1', at: 0, puppetId: 'hero', source: 'voice', target: 'bounce', amount: 1 },
-      { kind: 'WIRE', id: 'w3', at: 0, puppetId: '', source: 'on', target: 'foley', amount: 1 },
+      { kind: 'WIRE', id: 'w1', at: 0, puppetId: 'hero', from: 'voice', to: 'bounce', amount: 1 },
+      { kind: 'WIRE', id: 'w3', at: 0, puppetId: '', from: 'const', to: 'foley', amount: 1 },
       { kind: 'SOUND', id: 'snd1', at: 0.6, puppetId: '', sfx: 'honk' },
       {
         kind: 'CAST',
@@ -135,7 +148,7 @@ function scriptedShow(): Project {
         scale: 1,
         rot: 0,
       },
-      { kind: 'WIRE', id: 'w2', at: 0, puppetId: '', source: 'on', target: 'trails', amount: 0.6 },
+      { kind: 'WIRE', id: 'w2', at: 0, puppetId: '', from: 'const', to: 'trails', amount: 0.6 },
       { kind: 'PIN', id: 'pin1', at: 0, puppetId: 'dood', px: 0.5, py: 0.1 },
       {
         kind: 'PASS',
@@ -290,6 +303,8 @@ const V0_RECIPE = JSON.stringify({
 
 interface V0E2EResult {
   parsedVersion: number;
+  /** What this app writes, so the proof follows version bumps. */
+  currentVersion: number;
   updatedAt: string;
   castCount: number;
   renderedDurationS: number;
@@ -314,6 +329,7 @@ async function runV0(): Promise<V0E2EResult> {
   const probe = await VideoSourceHandle.open(rendered);
   const out: V0E2EResult = {
     parsedVersion: project.version,
+    currentVersion: RECIPE_VERSION,
     updatedAt: project.updatedAt ?? '',
     castCount: castOfProject(project).length,
     renderedDurationS: probe.durationS,
@@ -347,6 +363,9 @@ async function runFlip(): Promise<FlipE2EResult> {
   const draw = (flip: boolean): ImageData => {
     const base: Project = {
       ...createProject('flip'),
+      // A fixed seed: the boil jitter moves the ink, and the centroid check
+      // has a 1% tolerance that a random seed can blow on a bad draw.
+      seed: 1234,
       events: [
         {
           kind: 'CAST',
@@ -555,8 +574,38 @@ declare global {
       runV0: () => Promise<V0E2EResult>;
       runFlip: () => Promise<FlipE2EResult>;
       runVoice: () => Promise<VoiceE2EResult>;
+      runFrameParity: () => Promise<ParityResult>;
+      peekFixture: (times: number[], w?: number, h?: number) => Promise<string[]>;
+      runTrailRate: () => Promise<TrailRateResult>;
+      runCamera: () => Promise<CameraResult>;
+      runLook: () => Promise<LookResult>;
+      runFold: () => Promise<FoldResult>;
+      runBands: () => Promise<BandsResult>;
+      runGlParity: () => Promise<GlParityResult>;
+      runSurface: () => Promise<SurfaceResult>;
+      runVideo: () => Promise<VideoResult>;
+      pickVideo: () => Promise<boolean>;
+      runVideoRead: () => Promise<ReadResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice };
+window.__bitsE2E = {
+  runShow,
+  runBundle,
+  runV0,
+  runFlip,
+  runVoice,
+  runFrameParity,
+  peekFixture,
+  runTrailRate,
+  runCamera,
+  runLook,
+  runFold,
+  runBands,
+  runGlParity,
+  runSurface,
+  runVideo,
+  pickVideo,
+  runVideoRead,
+};

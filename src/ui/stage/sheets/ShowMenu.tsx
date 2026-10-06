@@ -4,6 +4,7 @@
 
 import { Sheet } from '../../../kit/Sheet';
 import { Segmented } from '../../../kit/Controls';
+import { harmony, PAPER_PRESETS, type Palette, type Paper } from '../../../engine/grade';
 import { IconButton } from '../../../kit/IconButton';
 import { levelOf, WIRE_AMOUNT, type WireLevel } from './MoreSheet';
 
@@ -24,9 +25,47 @@ export interface ShowMenuProps {
   canPerform: boolean;
   onSound: () => void;
   onStageWire: (target: 'trails' | 'foley', amount: number) => void;
+  /** Opens the Wires room for the stage: camera, fog, trails. */
+  onStageWires: () => void;
+  /** Opens the Shots room: the cuts, as shots to frame and time. */
+  onShots: () => void;
+  /** The stage's look, 0..1 each. */
+  shadow: number;
+  fog: number;
+  onLook: (patch: { shadow?: number; fog?: number; palette?: Palette | null; paper?: Paper | null }) => void;
+  palette: Palette | null;
+  paper: Paper | null;
   onCorpse: (on: boolean) => void;
   onClose: () => void;
 }
+
+/** Palettes as named harmonies: a mood to pick, not five colours to mix. */
+const PALETTES: { name: string; colors: string[] }[] = [
+  { name: 'dusk', colors: harmony('analogous', 285) },
+  { name: 'tropic', colors: harmony('complement', 195) },
+  { name: 'candy', colors: harmony('triad', 330) },
+  { name: 'blueprint', colors: harmony('duotone', 250) },
+];
+const PAPERS = [
+  { value: 'off' as const, label: 'off' },
+  ...Object.keys(PAPER_PRESETS).map((k) => ({ value: k, label: k })),
+];
+const paperName = (p: Paper | null): string =>
+  p ? (Object.entries(PAPER_PRESETS).find(([, v]) => JSON.stringify(v) === JSON.stringify(p))?.[0] ?? 'off') : 'off';
+
+/** Three steps each: a look you can name beats a number you have to judge. */
+const SHADOWS = [
+  { value: 'off' as const, label: 'off', amount: 0 },
+  { value: 'soft' as const, label: 'soft', amount: 0.5 },
+  { value: 'deep' as const, label: 'deep', amount: 1 },
+];
+const FOGS = [
+  { value: 'off' as const, label: 'off', amount: 0 },
+  { value: 'haze' as const, label: 'haze', amount: 0.45 },
+  { value: 'thick' as const, label: 'thick', amount: 0.85 },
+];
+const nearest = <T extends { amount: number }>(steps: T[], v: number): T =>
+  steps.reduce((best, s) => (Math.abs(s.amount - v) < Math.abs(best.amount - v) ? s : best));
 
 const LEVELS: { value: WireLevel; label: string }[] = [
   { value: 'off', label: 'off' },
@@ -84,6 +123,65 @@ export function ShowMenu(props: ShowMenuProps) {
         />
       </div>
 
+      {/* Both come from depth: a flat stage casts shadows on the floor
+          and fogs evenly; push sheets back to see them separate. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">shadows</span>
+        <Segmented
+          label="paper shadows"
+          value={nearest(SHADOWS, props.shadow).value}
+          options={SHADOWS}
+          onChange={(v) => props.onLook({ shadow: SHADOWS.find((s) => s.value === v)!.amount })}
+        />
+      </div>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">fog</span>
+        <Segmented
+          label="fog with distance"
+          value={nearest(FOGS, props.fog).value}
+          options={FOGS}
+          onChange={(v) => props.onLook({ fog: FOGS.find((s) => s.value === v)!.amount })}
+        />
+      </div>
+
+      {/* The palette and the paper grade the whole picture, as print. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">palette</span>
+        <span className="palette-row" role="group" aria-label="palette">
+          <button
+            className={`palette-chip${props.palette ? '' : ' on'}`}
+            aria-pressed={!props.palette}
+            onClick={() => props.onLook({ palette: null })}
+          >
+            off
+          </button>
+          {PALETTES.map((p) => {
+            const on = props.palette?.colors.join() === p.colors.join();
+            return (
+              <button
+                key={p.name}
+                className={`palette-chip${on ? ' on' : ''}`}
+                aria-pressed={on}
+                aria-label={p.name}
+                style={{ background: `linear-gradient(90deg, ${p.colors.join(', ')})` }}
+                onClick={() => props.onLook({ palette: { colors: p.colors, mix: 0.85 } })}
+              />
+            );
+          })}
+        </span>
+      </div>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">paper</span>
+        <Segmented
+          label="what it is printed on"
+          value={paperName(props.paper)}
+          options={PAPERS}
+          onChange={(v) => props.onLook({ paper: v === 'off' ? null : PAPER_PRESETS[v]! })}
+        />
+      </div>
+
       <div className="sheet-row">
         <span className="sheet-row-label">impact foley</span>
         <Segmented
@@ -93,6 +191,11 @@ export function ShowMenu(props: ShowMenuProps) {
           onChange={(level) => props.onStageWire('foley', WIRE_AMOUNT[level])}
         />
       </div>
+
+      {/* Everything else on the stage a sound can move: the camera, the
+          fog, the trails. */}
+      <button onClick={props.onStageWires}>stage wires</button>
+      <button onClick={props.onShots}>shots</button>
 
       <div className="sheet-row">
         <span className="sheet-row-label">record blind</span>

@@ -12,13 +12,19 @@ import {
   type PuppetTarget,
 } from './puppet';
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
+import { CAMERA_ID, CAMERA_PROPS, REST_CAMERA, type CameraPose, type CameraProp } from './camera';
+import type { Genome } from './ink';
+import type { Palette, Paper } from './grade';
 import type {
+  CutEvent,
   EyesEvent,
+  LookEvent,
   MouthEvent,
   PassEvent,
   PinEvent,
   Project,
   PuppetSpec,
+  RecipeEvent,
   SnipEvent,
   SpringPreset,
   VoiceEvent,
@@ -32,6 +38,10 @@ export interface ShowPuppet {
   /** Mirrors the local frame; see localToWorld. */
   flip: boolean;
   spring: SpringPreset;
+  /** Behind the stage plane, in focal units; see engine/camera. */
+  depth: number;
+  /** The sheet it rides, and where on that sheet; null when free. */
+  attach: { to: string; x: number; y: number } | null;
 }
 
 export interface DangleState {
@@ -56,7 +66,20 @@ const PIECE_MAX = 2.2;
 
 /** Cast in draw order: backdrops first, then puppets, newest CAST in front.
  *  A DROP removes; a later CAST revives (and fronts). */
+/** Read-only by contract: callers map or filter it, never change it in
+ *  place, so one cast per event list can be shared by every caller. */
+const castMemo = new WeakMap<RecipeEvent[], ShowPuppet[]>();
+
 export function castOf(project: Project): ShowPuppet[] {
+  let hit = castMemo.get(project.events);
+  if (!hit) {
+    hit = computeCast(project);
+    castMemo.set(project.events, hit);
+  }
+  return hit;
+}
+
+function computeCast(project: Project): ShowPuppet[] {
   const map = new Map<string, ShowPuppet>();
   let order: string[] | null = null;
   for (const e of project.events) {
@@ -71,6 +94,8 @@ export function castOf(project: Project): ShowPuppet[] {
         back: e.back === true,
         flip: e.flip === true,
         spring: e.puppet.spring ?? 'felt',
+        depth: e.depth ?? 0,
+        attach: e.attach ?? null,
       });
     } else if (e.kind === 'DROP') {
       map.delete(e.puppetId);
@@ -113,6 +138,16 @@ export function snipsOf(project: Project, puppetId: string): (SnipEvent | null)[
   return slots;
 }
 
+/** Each snip slot's fold angle, or null where the snip is a swinging cut.
+ *  Latest FOLD per slot wins. */
+export function foldsOf(project: Project, puppetId: string): (number | null)[] {
+  const folds: (number | null)[] = snipsOf(project, puppetId).map(() => null);
+  for (const e of project.events) {
+    if (e.kind === 'FOLD' && e.puppetId === puppetId && e.snip < folds.length) folds[e.snip] = e.angle;
+  }
+  return folds;
+}
+
 /** Pins apply only to uncut puppets: cut paper or bend it, not both. The
  *  exclusivity counts LIVE snips, so removing the last one makes a puppet
  *  pinnable again and brings back the pins it had before the cut.
@@ -141,6 +176,87 @@ export function voiceOf(project: Project, puppetId: string): VoiceEvent | null {
   for (const e of project.events) {
     if (e.kind === 'VOICE' && e.puppetId === puppetId) out = e;
     else if (e.kind === 'REMOVE' && e.puppetId === puppetId && 'voice' in e.target) out = null;
+  }
+  return out;
+}
+
+/** The ink a sheet is dressed in: latest INK wins, null takes it off. */
+export function inkOf(project: Project, puppetId: string): Genome | null {
+  let out: Genome | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'INK' && e.puppetId === puppetId) out = e.genome;
+  }
+  return out;
+}
+
+/** The stage's look: latest wins per field, absent is off. */
+export interface Look {
+  shadow: number;
+  fog: number;
+  fogColor: string;
+  palette: Palette | null;
+  paper: Paper | null;
+}
+
+export const DEFAULT_FOG = '#8a93a6';
+
+/** Per event list: a project is immutable, so its look and cuts are too,
+ *  and the stage asks for them every frame. */
+const lookMemo = new WeakMap<RecipeEvent[], Look | null>();
+const cutsMemo = new WeakMap<RecipeEvent[], CutEvent[]>();
+
+export function lookOf(project: Project): Look | null {
+  if (lookMemo.has(project.events)) return lookMemo.get(project.events)!;
+  const out = computeLook(project);
+  lookMemo.set(project.events, out);
+  return out;
+}
+
+function computeLook(project: Project): Look | null {
+  let found = false;
+  const look: Look = { shadow: 0, fog: 0, fogColor: DEFAULT_FOG, palette: null, paper: null };
+  for (const e of project.events) {
+    if (e.kind !== 'LOOK') continue;
+    found = true;
+    const l: LookEvent = e;
+    if (l.shadow !== undefined) look.shadow = l.shadow;
+    if (l.fog !== undefined) look.fog = l.fog;
+    if (l.fogColor !== undefined) look.fogColor = l.fogColor;
+    if (l.palette !== undefined) look.palette = l.palette;
+    if (l.paper !== undefined) look.paper = l.paper;
+  }
+  // A look that is all off is no look: the plain drawing path.
+  return found && (look.shadow > 0 || look.fog > 0 || look.palette !== null || look.paper !== null)
+    ? look
+    : null;
+}
+
+/** The camera's cuts in time order, without the ones taken out. */
+export function cutsOf(project: Project): CutEvent[] {
+  let hit = cutsMemo.get(project.events);
+  if (!hit) {
+    hit = computeCuts(project);
+    cutsMemo.set(project.events, hit);
+  }
+  return hit;
+}
+
+function computeCuts(project: Project): CutEvent[] {
+  const removed = new Set<string>();
+  for (const e of project.events) {
+    if (e.kind === 'REMOVE' && 'cut' in e.target) removed.add(e.target.cut);
+  }
+  return project.events
+    .filter((e): e is CutEvent => e.kind === 'CUT' && !removed.has(e.id))
+    .sort((a, b) => a.at - b.at);
+}
+
+/** The latest cut at or before t, in show seconds; null before the first. */
+export function cutBefore(cuts: CutEvent[], t: number): number | null {
+  let out: number | null = null;
+  for (const c of cuts) {
+    if (c.at <= t) out = c.at;
+    else break;
   }
   return out;
 }
@@ -273,7 +389,9 @@ function newestCovering(passes: EffectivePass[], t: number): PuppetTarget | null
 /** The newest ROOT pass covering t owns the body; older passes fill gaps. */
 export function targetForPuppet(project: Project, puppetId: string, t: number): PuppetTarget | null {
   return newestCovering(
-    effectivePasses(project, puppetId).filter((p) => p.event.piece === undefined),
+    effectivePasses(project, puppetId).filter(
+      (p) => p.event.piece === undefined && p.event.prop === undefined,
+    ),
     t,
   );
 }
@@ -289,15 +407,20 @@ export function talkOpenFor(project: Project, puppetId: string, envOpen: number,
 export interface ShowSim {
   advanceTo(t: number): Map<string, PuppetPose>;
   states(): Map<string, PuppetPose>;
+  /** Where the camera is after the last advance; null when this show has
+   *  no camera to move (nothing to record it and no passes for it). */
+  camera(): CameraPose | null;
 }
 
-/** Which part of a puppet a target drives. */
-export type Channel = null | { piece: number } | { pin: number };
+/** Which part of a puppet a target drives. A prop is one number, carried
+ *  in the target's x. */
+export type Channel = null | { piece: number } | { pin: number } | { prop: CameraProp };
 
 export const sameChannel = (a: Channel, b: Channel): boolean => {
   if (a === null || b === null) return a === b;
   if ('piece' in a) return 'piece' in b && a.piece === b.piece;
-  return 'pin' in b && a.pin === b.pin;
+  if ('pin' in a) return 'pin' in b && a.pin === b.pin;
+  return 'prop' in b && a.prop === b.prop;
 };
 
 /** Live-override targets: null channel is the body. */
@@ -308,12 +431,73 @@ interface PieceGeom {
   joint: { x: number; y: number };
 }
 
+/** Watches every step of the sim: `k` is the step index, so the step ends
+ *  at (k + 1) · PUPPET_DT. Called puppet by puppet, each in time order. */
+export type StepObserver = (puppetId: string, k: number, root: PuppetState) => void;
+
+/** The camera as the sim carries it: a body for pan, and one spring per
+ *  prop, each riding in a PuppetState's x so it moves with the same weight
+ *  as everything else on the stage (handheld for free). */
+interface CameraBody {
+  pan: PuppetState;
+  props: Record<CameraProp, PuppetState>;
+}
+
+const restingCamera = (): CameraBody => ({
+  pan: restingPuppet(REST_CAMERA.x, REST_CAMERA.y),
+  props: {
+    z: restingPuppet(REST_CAMERA.z, 0),
+    rot: restingPuppet(REST_CAMERA.rot, 0),
+    scale: restingPuppet(REST_CAMERA.scale, 0),
+  },
+});
+
+/** Every second of sim time, everyone's state, so a seek steps at most a
+ *  second instead of the whole show. Keyed by the event list itself: a
+ *  project is immutable, so the same array always simulates the same way,
+ *  and an edit makes a new array whose checkpoints start empty. */
+const CHECKPOINT_STEPS = 120;
+interface Checkpoint {
+  poses: Map<string, PuppetPose>;
+  /** What was on show: differs from the physics only for sheets on twos. */
+  shown: Map<string, PuppetPose>;
+  camera: CameraBody | null;
+}
+
+/** On twos: a sheet animated on twos shows a new pose every twelfth of a
+ *  second (every ten sim steps) and holds it in between, the way cutout
+ *  animation shot on film moves. The spring underneath runs as felt. */
+const TWOS_STEPS = 10;
+const checkpoints = new WeakMap<RecipeEvent[], Map<number, Checkpoint>>();
+
+const copyPose = (pose: PuppetPose): PuppetPose => ({
+  root: pose.root,
+  dangles: pose.dangles.map((d) => ({ ...d })),
+  pins: pose.pins.slice(),
+});
+
+const copyCamera = (c: CameraBody | null): CameraBody | null =>
+  c && { pan: c.pan, props: { ...c.props } };
+
+export interface ShowSimOptions {
+  /** Start from the latest checkpoint at or before this time instead of
+   *  from rest at `fromT`. Only for callers whose live targets cannot have
+   *  acted before it; the caller still advances to the time it wants. */
+  resumeAt?: number;
+}
+
 /** Incremental simulator on the global fixed-step grid: whole steps only, so
  *  every advance schedule runs the identical sequence and replay stays
  *  bit-exact. Seek backward by rebuilding and fast-forwarding. */
-export function createShowSim(project: Project, fromT = 0, targets?: TargetProvider): ShowSim {
+export function createShowSim(
+  project: Project,
+  fromT = 0,
+  targets?: TargetProvider,
+  onStep?: StepObserver,
+  options: ShowSimOptions = {},
+): ShowSim {
   const cast = castOf(project);
-  const poses = new Map<string, PuppetPose>();
+  let poses = new Map<string, PuppetPose>();
 
   // Precomputed per puppet: pass tables (root and per-piece) and piece
   // geometry, so the hot loop never rescans the event log.
@@ -392,12 +576,129 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
 
   let stepIndex = Math.floor(fromT / PUPPET_DT);
 
+  // The camera only exists when something can move it: passes recorded for
+  // it, or a live stage that might record one. Otherwise there is nothing
+  // to step and the frame says "no camera", which draws as it always did.
+  const cameraPasses = effectivePasses(project, CAMERA_ID);
+  const panPasses = cameraPasses.filter((e) => e.event.prop === undefined);
+  const propPasses = new Map<CameraProp, EffectivePass[]>(
+    CAMERA_PROPS.map((prop) => [prop, cameraPasses.filter((e) => e.event.prop === prop)]),
+  );
+  const cuts = cutsOf(project);
+  let cam: CameraBody | null =
+    cameraPasses.length > 0 || cuts.length > 0 || targets !== undefined ? restingCamera() : null;
+  /** Cuts by the step boundary they land on: the first boundary at or
+   *  after the cut's time, so a frame drawn at the cut already sees it.
+   *  Several on one boundary: the last wins. */
+  const cutAtBoundary = new Map<number, CutEvent>();
+  for (const c of cuts) cutAtBoundary.set(Math.ceil(c.at / PUPPET_DT - 1e-9), c);
+  const snapTo = (body: CameraBody, cut: CutEvent): CameraBody => ({
+    // Somewhere else, still: the pose snaps and every spring stops.
+    pan: restingPuppet(cut.x, cut.y),
+    props: {
+      z: restingPuppet(cut.z, 0),
+      rot: restingPuppet(cut.rot, 0),
+      scale: restingPuppet(cut.scale, 0),
+    },
+  });
+  const opening = cutAtBoundary.get(stepIndex);
+  if (cam && opening && options.resumeAt === undefined) cam = snapTo(cam, opening);
+
+  // Checkpoints are written only by sims nobody is steering live, from the
+  // start of the show, so every one of them is the recipe's own truth.
+  const book = (() => {
+    let b = checkpoints.get(project.events);
+    if (!b) {
+      b = new Map();
+      checkpoints.set(project.events, b);
+    }
+    return b;
+  })();
+  const writes = targets === undefined && stepIndex === 0;
+  let shownCp: Map<string, PuppetPose> | null = null;
+  if (options.resumeAt !== undefined && stepIndex === 0) {
+    const want = Math.floor(options.resumeAt / PUPPET_DT);
+    let best = 0;
+    for (const k of book.keys()) if (k <= want && k > best) best = k;
+    const cp = book.get(best);
+    if (cp) {
+      poses = new Map([...cp.poses].map(([id, pose]) => [id, copyPose(pose)]));
+      shownCp = new Map([...cp.shown].map(([id, pose]) => [id, copyPose(pose)]));
+      // A checkpoint written without a camera (no passes for it) is still
+      // valid for a live stage: its camera just has not moved yet.
+      cam = copyCamera(cp.camera) ?? (cam && restingCamera());
+      stepIndex = best;
+    }
+  }
+  /** What the frame shows; the physics in `poses` runs underneath. */
+  const shown: Map<string, PuppetPose> = shownCp ?? new Map(poses);
+
+  const camTarget = (channel: Channel, passes: EffectivePass[], t: number) => {
+    if (targets) {
+      const live = targets(CAMERA_ID, channel, t);
+      if (live) return live;
+    }
+    return newestCovering(passes, t);
+  };
+
+  const stepCamera = (from: number, to: number) => {
+    if (!cam) return;
+    let { pan } = cam;
+    const props = { ...cam.props };
+    for (let k = from; k < to; k++) {
+      const tt = k * PUPPET_DT;
+      pan = stepPuppet(pan, camTarget(null, panPasses, tt), PUPPET_DT);
+      for (const prop of CAMERA_PROPS) {
+        const want = camTarget({ prop }, propPasses.get(prop)!, tt);
+        props[prop] = stepPuppet(props[prop], want && { x: want.x, y: 0 }, PUPPET_DT);
+      }
+      const cut = cutAtBoundary.get(k + 1);
+      if (cut) {
+        const snapped = snapTo({ pan, props }, cut);
+        pan = snapped.pan;
+        Object.assign(props, snapped.props);
+      }
+    }
+    cam = { pan, props };
+  };
+
   const rootTarget = (p: ShowPuppet, t: number): PuppetTarget | null => {
     if (targets) {
       const live = targets(p.id, null, t);
       if (live) return live;
     }
     return newestCovering(rootPasses.get(p.id) ?? [], t);
+  };
+
+  // Kits: a riding sheet steps after the sheet it rides, and springs toward
+  // its anchor on that sheet as it was at the same step. Parents first,
+  // otherwise the cast's own order, so a show without kits steps as it
+  // always did.
+  const byId = new Map(cast.map((p) => [p.id, p]));
+  const simOrder: ShowPuppet[] = [];
+  {
+    const placed = new Set<string>();
+    const place = (p: ShowPuppet, depth: number) => {
+      if (placed.has(p.id) || depth > cast.length) return;
+      const parent = p.attach ? byId.get(p.attach.to) : undefined;
+      if (parent) place(parent, depth + 1);
+      if (!placed.has(p.id)) {
+        placed.add(p.id);
+        simOrder.push(p);
+      }
+    };
+    for (const p of cast) place(p, 0);
+  }
+  /** Sheets something rides: only their roots are kept per step. */
+  const ridden = new Set(cast.flatMap((p) => (p.attach && byId.has(p.attach.to) ? [p.attach.to] : [])));
+  /** Each ridden sheet's root after every step of the chunk being stepped. */
+  const chunkRoots = new Map<string, PuppetState[]>();
+  const anchorTarget = (p: ShowPuppet, step: number, chunkStart: number): PuppetTarget | null => {
+    if (!p.attach) return null;
+    const parent = byId.get(p.attach.to);
+    const roots = parent && chunkRoots.get(parent.id);
+    const root = roots?.[step - chunkStart];
+    return parent && root ? localToWorld(root, parent, p.attach.x, p.attach.y) : null;
   };
 
   const pieceTarget = (p: ShowPuppet, piece: number, t: number): PuppetTarget | null => {
@@ -418,19 +719,34 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
 
   return {
     advanceTo(t: number) {
-      const targetStep = Math.floor(t / PUPPET_DT);
-      if (targetStep > stepIndex) {
-        for (const p of cast) {
-          if (p.back) continue;
+      const finalStep = Math.floor(t / PUPPET_DT);
+      // In chunks that end on checkpoint boundaries. Each sheet steps on
+      // its own, so where the chunks fall changes nothing it computes.
+      while (finalStep > stepIndex) {
+        const targetStep = Math.min(
+          finalStep,
+          (Math.floor(stepIndex / CHECKPOINT_STEPS) + 1) * CHECKPOINT_STEPS,
+        );
+        for (const p of simOrder) {
           const pose = poses.get(p.id)!;
+          const rootsHere: PuppetState[] | null = ridden.has(p.id) ? [] : null;
+          if (rootsHere) chunkRoots.set(p.id, rootsHere);
           let root = pose.root;
           const dangles = pose.dangles.map((d) => ({ ...d }));
           let pins = pose.pins;
           const geoms = pieceGeoms.get(p.id)!;
           const locals = pinLocals.get(p.id)!;
+          const onTwos = p.spring === 'twos';
+          let held: PuppetPose | null = null;
           for (let k = stepIndex; k < targetStep; k++) {
             const tt = k * PUPPET_DT;
-            const next = stepPuppet(root, rootTarget(p, tt), PUPPET_DT, p.spring);
+            const next = stepPuppet(
+              root,
+              rootTarget(p, tt) ?? (p.attach ? anchorTarget(p, k, stepIndex) : null),
+              PUPPET_DT,
+              p.spring,
+            );
+            rootsHere?.push(next);
             // A mirrored puppet's local rotation runs the other way, so the
             // sideways acceleration that makes a piece swing flips with it.
             const ax = ((next.vx - root.vx) / PUPPET_DT) * (p.flip ? -1 : 1);
@@ -473,15 +789,39 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
               }
             }
             root = next;
+            onStep?.(p.id, k, root);
+            if (onTwos && (k + 1) % TWOS_STEPS === 0) {
+              held = { root, dangles: dangles.map((d) => ({ ...d })), pins };
+            }
           }
-          poses.set(p.id, { root, dangles, pins });
+          const live = { root, dangles, pins };
+          poses.set(p.id, live);
+          shown.set(p.id, onTwos ? (held ?? shown.get(p.id) ?? live) : live);
         }
+        stepCamera(stepIndex, targetStep);
         stepIndex = targetStep;
+        if (writes && stepIndex % CHECKPOINT_STEPS === 0 && !book.has(stepIndex)) {
+          book.set(stepIndex, {
+            poses: new Map([...poses].map(([id, pose]) => [id, copyPose(pose)])),
+            shown: new Map([...shown].map(([id, pose]) => [id, copyPose(pose)])),
+            camera: copyCamera(cam),
+          });
+        }
       }
-      return poses;
+      return shown;
     },
     states() {
-      return poses;
+      return shown;
+    },
+    camera() {
+      if (!cam) return null;
+      return {
+        x: cam.pan.x,
+        y: cam.pan.y,
+        z: cam.props.z.x,
+        rot: cam.props.rot.x,
+        scale: cam.props.scale.x,
+      };
     },
   };
 }
@@ -510,6 +850,12 @@ export function localToWorld(
   const c = Math.cos(a);
   const s = Math.sin(a);
   return { x: root.x + lx * c - ly * s, y: root.y + lx * s + ly * c };
+}
+
+/** Where on `parent` a sheet at stage point (x, y) rides: the point in
+ *  the parent's own box, as the parent sits at home. */
+export function anchorOn(parent: ShowPuppet, x: number, y: number): { x: number; y: number } {
+  return worldToLocal(restingPuppet(parent.home.x, parent.home.y), parent, x, y);
 }
 
 /** Stage coords back to puppet-local box coords under the current root frame. */

@@ -2,15 +2,17 @@
 // floppy, what the sound does to it, where it sits in the stack, and how
 // to get rid of it.
 //
-// Wires used to be tap-to-cycle with one or two dots for a level, which
-// gave no clue there were three states. They are named now.
+// Its wires open the Wires room (ui/rooms/Wires.tsx), where any signal can
+// drive any of its targets.
 
 import { useState } from 'react';
 import { Sheet } from '../../../kit/Sheet';
 import { Segmented, Slider } from '../../../kit/Controls';
 import { IconButton } from '../../../kit/IconButton';
-import type { SpringPreset, WireSource, WireTarget } from '../../../engine/recipe';
+import type { SpringPreset } from '../../../engine/recipe';
 import type { ShowPuppet } from '../../../engine/show';
+import type { Joint } from '../../../engine/video';
+import { ProgressRing } from '../../../kit/Controls';
 
 export type WireLevel = 'off' | 'gentle' | 'wild';
 
@@ -18,38 +20,82 @@ export const WIRE_AMOUNT: Record<WireLevel, number> = { off: 0, gentle: 0.5, wil
 export const levelOf = (amount: number): WireLevel =>
   amount === 0 ? 'off' : amount <= 0.5 ? 'gentle' : 'wild';
 
-const LEVELS = [
-  { value: 'off' as const, label: 'off' },
-  { value: 'gentle' as const, label: 'gentle' },
-  { value: 'wild' as const, label: 'wild' },
-];
-
 const SPRINGS = [
   { value: 'paper' as const, label: 'paper' },
   { value: 'felt' as const, label: 'felt' },
   { value: 'rubber' as const, label: 'rubber' },
+  { value: 'jelly' as const, label: 'jelly' },
+  { value: 'stiff' as const, label: 'stiff' },
+  // Moves on twos, like cutouts shot a frame at a time.
+  { value: 'twos' as const, label: 'on twos' },
 ];
 
-const WIRES: { source: WireSource; target: WireTarget; label: string }[] = [
-  { source: 'voice', target: 'bounce', label: 'voice makes it bounce' },
-  { source: 'voice', target: 'shake', label: 'voice makes it shake' },
-  { source: 'voice', target: 'lean', label: 'voice makes it lean' },
-  { source: 'beat', target: 'bounce', label: 'beat makes it bounce' },
-  { source: 'beat', target: 'shake', label: 'beat makes it shake' },
+/** How far back a sheet sits. Named stops rather than a slider: depth only
+ *  shows once the camera moves, so a number would be a guess, and a few
+ *  places a puppeteer would name are easier to choose between. */
+const DEPTHS = [
+  { value: 'near' as const, label: 'near', depth: -0.6 },
+  { value: 'stage' as const, label: 'stage', depth: 0 },
+  { value: 'back' as const, label: 'back', depth: 1 },
+  { value: 'far' as const, label: 'far', depth: 3 },
+  { value: 'horizon' as const, label: 'horizon', depth: 10 },
 ];
+type DepthStop = (typeof DEPTHS)[number]['value'];
+const stopOf = (depth: number): DepthStop =>
+  DEPTHS.reduce((best, d) =>
+    Math.abs(d.depth - depth) < Math.abs(best.depth - depth) ? d : best,
+  ).value;
+
+/** How a cut moves: the three folds the more panel offers. */
+const FOLDS = [
+  { value: 'swing' as const, label: 'swings', angle: null },
+  { value: 'bent' as const, label: 'bent', angle: 1 },
+  { value: 'over' as const, label: 'folded over', angle: Math.PI },
+];
+
+const foldStop = (angle: number | null) =>
+  angle === null ? 'swing' : Math.abs(angle) > Math.PI / 2 ? 'over' : 'bent';
 
 export interface MoreSheetProps {
   puppet: ShowPuppet;
   name: string;
-  wireAmount: (source: WireSource, target: WireTarget) => number;
   hand: 'left' | 'right' | 'none';
   /** Its own take, if it has one, in seconds. */
   voiceS: number | null;
   onVoice: () => void;
   onDropVoice: () => void;
   onRename: (name: string) => void;
-  onWire: (source: WireSource, target: WireTarget, amount: number) => void;
+  /** Opens the Wires room for this sheet. */
+  onWires: () => void;
   onScale: (scale: number) => void;
+  onDepth: (depth: number) => void;
+  /** Opens the side view of the whole stage. */
+  onSideView: () => void;
+  /** Opens the Seed tray to dress this sheet in an ink. */
+  onInk: () => void;
+  /** True when it is dressed; offers taking it off. */
+  inked: boolean;
+  onInkOff: () => void;
+  /** The name of the sheet it rides, or null when free. */
+  riding: string | null;
+  /** Sheets it could ride without making a circle. */
+  rideable: { id: string; name: string }[];
+  onRide: (parentId: string | null) => void;
+  /** Its cuts, by snip slot: a fold angle, or null where the piece swings. */
+  cuts: { snip: number; angle: number | null }[];
+  onFold: (snip: number, angle: number | null) => void;
+  /** Only for a video sheet: what its read knows and what can use it. */
+  clip?: {
+    read: boolean;
+    /** 0..1 while reading, null otherwise. */
+    reading: number | null;
+    masked: boolean;
+    hasPose: boolean;
+    others: { id: string; name: string }[];
+  };
+  onRead?: () => void;
+  onMasked?: (masked: boolean) => void;
+  onLead?: (joint: Joint, targetId: string) => void;
   onSpring: (spring: SpringPreset) => void;
   onHand: (hand: 'left' | 'right' | 'none') => void;
   onDuplicate: () => void;
@@ -63,25 +109,6 @@ export function MoreSheet(props: MoreSheetProps) {
   const { puppet, name } = props;
   const [draft, setDraft] = useState(name);
   const [scale, setScale] = useState(puppet.home.scale);
-  const [showWires, setShowWires] = useState(false);
-
-  if (showWires) {
-    return (
-      <Sheet title={`${name} · wires`} onClose={() => setShowWires(false)}>
-        {WIRES.map((w) => (
-          <div key={`${w.source}-${w.target}`} className="sheet-row">
-            <span className="sheet-row-label">{w.label}</span>
-            <Segmented
-              label={w.label}
-              value={levelOf(props.wireAmount(w.source, w.target))}
-              options={LEVELS}
-              onChange={(level) => props.onWire(w.source, w.target, WIRE_AMOUNT[level])}
-            />
-          </div>
-        ))}
-      </Sheet>
-    );
-  }
 
   return (
     <Sheet title={name} onClose={props.onClose}>
@@ -118,7 +145,66 @@ export function MoreSheet(props: MoreSheetProps) {
         />
       </div>
 
-      <button onClick={() => setShowWires(true)}>wires</button>
+      {/* Free at rest: nothing moves until the camera does. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">how far back</span>
+        <Segmented
+          label="how far back it sits"
+          value={stopOf(puppet.depth)}
+          options={DEPTHS}
+          onChange={(stop) => props.onDepth(DEPTHS.find((d) => d.value === stop)!.depth)}
+        />
+      </div>
+
+      {/* A cut can swing, or stay joined along its line and fold: bent
+          out of the paper, or right over to show its back. */}
+      {props.cuts.map((c, i) => (
+        <div className="sheet-row" key={c.snip}>
+          <span className="sheet-row-label">{props.cuts.length > 1 ? `cut ${i + 1}` : 'the cut'}</span>
+          <Segmented
+            label={`how cut ${i + 1} moves`}
+            value={foldStop(c.angle)}
+            options={FOLDS}
+            onChange={(stop) => props.onFold(c.snip, FOLDS.find((f) => f.value === stop)!.angle)}
+          />
+        </div>
+      ))}
+
+      {props.clip && <ClipRows {...props} clip={props.clip} />}
+
+      {/* A kit: sheets riding sheets on springs, a hat on a head. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">{props.riding ? `rides ${props.riding}` : 'rides on'}</span>
+        <span className="sheet-icons">
+          {props.riding ? (
+            <button className="pill" onClick={() => props.onRide(null)}>
+              let go
+            </button>
+          ) : (
+            props.rideable.map((o) => (
+              <button key={o.id} className="pill" onClick={() => props.onRide(o.id)}>
+                {o.name}
+              </button>
+            ))
+          )}
+        </span>
+      </div>
+
+      <button onClick={props.onSideView}>see the stage from the side</button>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">ink</span>
+        <span className="sheet-icons">
+          <IconButton
+            icon="ink"
+            label={props.inked ? 'breed its ink' : 'dress it in an ink'}
+            onClick={props.onInk}
+          />
+          {props.inked && <IconButton icon="trash" label="take the ink off" onClick={props.onInkOff} />}
+        </span>
+      </div>
+
+      <button onClick={props.onWires}>wires</button>
 
       {/* A puppet with a take of its own flaps to that take, so two people
           can record their halves separately and the right mouth moves. */}
@@ -156,22 +242,80 @@ export function MoreSheet(props: MoreSheetProps) {
 
       <div className="sheet-icons">
         <IconButton icon="duplicate" label="duplicate" showLabel onClick={props.onDuplicate} />
-        <IconButton
-          icon="layerUp"
-          label="to the front"
-          showLabel
-          onClick={() => props.onLayer('front')}
-        />
-        <IconButton
-          icon="layerDown"
-          label="to the back"
-          showLabel
-          onClick={() => props.onLayer('back')}
-        />
-        <IconButton icon="center" label="centre it" showLabel onClick={props.onCenter} />
+        {/* The back layer has no order to change and its middle is the
+            stage's, so a backdrop gets neither. */}
+        {!props.puppet.back && (
+          <>
+            <IconButton
+              icon="layerUp"
+              label="to the front"
+              showLabel
+              onClick={() => props.onLayer('front')}
+            />
+            <IconButton
+              icon="layerDown"
+              label="to the back"
+              showLabel
+              onClick={() => props.onLayer('back')}
+            />
+            <IconButton icon="center" label="centre it" showLabel onClick={props.onCenter} />
+          </>
+        )}
       </div>
 
       <button onClick={props.onDrop}>drop from the cast</button>
     </Sheet>
+  );
+}
+
+const JOINT_NAMES: { value: Joint; label: string }[] = [
+  { value: 'head', label: 'head' },
+  { value: 'leftHand', label: 'left hand' },
+  { value: 'rightHand', label: 'right hand' },
+];
+
+/** A clip's own rows: read it once, then show just the person, and let
+ *  their head or a hand lead another sheet as an ordinary pass. */
+function ClipRows(props: MoreSheetProps & { clip: NonNullable<MoreSheetProps['clip']> }) {
+  const { clip } = props;
+  const [joint, setJoint] = useState<Joint>('rightHand');
+  if (clip.reading !== null) {
+    return <ProgressRing value={clip.reading} label="reading the clip" />;
+  }
+  if (!clip.read) {
+    return (
+      <button onClick={props.onRead}>read the clip: find the person, how it moves</button>
+    );
+  }
+  return (
+    <>
+      <div className="sheet-row">
+        <span className="sheet-row-label">show</span>
+        <Segmented
+          label="what of the clip shows"
+          value={clip.masked ? 'person' : 'all'}
+          options={[
+            { value: 'all' as const, label: 'all of it' },
+            { value: 'person' as const, label: 'the person' },
+          ]}
+          onChange={(v) => props.onMasked?.(v === 'person')}
+        />
+      </div>
+      {clip.hasPose && clip.others.length > 0 && (
+        <>
+          <div className="sheet-row">
+            <span className="sheet-row-label">their</span>
+            <Segmented label="which part leads" value={joint} options={JOINT_NAMES} onChange={setJoint} />
+          </div>
+          <div className="sheet-icons">
+            {clip.others.map((o) => (
+              <button key={o.id} className="pill" onClick={() => props.onLead?.(joint, o.id)}>
+                leads {o.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
   );
 }
