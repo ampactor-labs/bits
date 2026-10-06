@@ -4,6 +4,7 @@
 // resamples each sheet's sprite once more), so the proof bounds how many
 // pixels differ visibly and by how much on average.
 
+import { foldProject } from './fold';
 import { CAMERA_ID } from '../engine/camera';
 import { createFramer } from '../engine/frame';
 import type { Project, RecipeEvent } from '../engine/recipe';
@@ -154,6 +155,7 @@ export async function runGlParity(): Promise<GlParityResult> {
       scene('camera and look', lookedFixture()),
       scene('inks', inkedFixture()),
       scene('palette and paper', gradedFixture()),
+      scene('folds', foldProject(1, true)),
     ],
   };
 }

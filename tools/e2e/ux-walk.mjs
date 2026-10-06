@@ -1783,6 +1783,41 @@ try {
         check('a-backdrop-can-be-snipped', kinds.join(',') === 'SNIP', kinds.join(',') || 'nothing');
       });
 
+      // The cut just made can fold instead of swing, and back again.
+      await phase('a-cut-can-fold', async () => {
+        if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
+        await label('more');
+        await sleep(350);
+        const pick = async (text) => {
+          const h = await tab.evaluateHandle(
+            (t) =>
+              Array.from(document.querySelectorAll('[aria-label="how cut 1 moves"] button')).find(
+                (b) => b.textContent?.trim() === t,
+              ),
+            text,
+          );
+          if (!h.asElement()) throw new Error(`no "${text}" for the cut`);
+          await h.asElement().evaluate((e) => e.scrollIntoView({ block: 'center' }));
+          await h.asElement().tap();
+        };
+        const before = await kindsNow();
+        await pick('folded over');
+        await sleep(400);
+        await label('close');
+        await sleep(400);
+        await tabShot('a-cut-folded-over');
+        const angle = await tab.evaluate(() => window.__bits.project().events.filter((e) => e.kind === 'FOLD').pop()?.angle);
+        // Back to a swinging cut: the later phases expect the whole backdrop.
+        await label('more');
+        await sleep(350);
+        await pick('swings');
+        await sleep(300);
+        await label('close');
+        await sleep(300);
+        const kinds = await kindsSince(before);
+        check('a-cut-can-fold', kinds.join(',') === 'FOLD,FOLD' && angle > 3, `${kinds.join(',') || 'nothing'}, angle ${angle}`);
+      });
+
       await phase('a-backdrop-can-be-wired', async () => {
         if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
         await label('more');

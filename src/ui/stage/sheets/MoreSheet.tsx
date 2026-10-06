@@ -46,6 +46,16 @@ const stopOf = (depth: number): DepthStop =>
     Math.abs(d.depth - depth) < Math.abs(best.depth - depth) ? d : best,
   ).value;
 
+/** How a cut moves: the three folds the more panel offers. */
+const FOLDS = [
+  { value: 'swing' as const, label: 'swings', angle: null },
+  { value: 'bent' as const, label: 'bent', angle: 1 },
+  { value: 'over' as const, label: 'folded over', angle: Math.PI },
+];
+
+const foldStop = (angle: number | null) =>
+  angle === null ? 'swing' : Math.abs(angle) > Math.PI / 2 ? 'over' : 'bent';
+
 export interface MoreSheetProps {
   puppet: ShowPuppet;
   name: string;
@@ -71,6 +81,9 @@ export interface MoreSheetProps {
   /** Sheets it could ride without making a circle. */
   rideable: { id: string; name: string }[];
   onRide: (parentId: string | null) => void;
+  /** Its cuts, by snip slot: a fold angle, or null where the piece swings. */
+  cuts: { snip: number; angle: number | null }[];
+  onFold: (snip: number, angle: number | null) => void;
   /** Only for a video sheet: what its read knows and what can use it. */
   clip?: {
     read: boolean;
@@ -142,6 +155,20 @@ export function MoreSheet(props: MoreSheetProps) {
           onChange={(stop) => props.onDepth(DEPTHS.find((d) => d.value === stop)!.depth)}
         />
       </div>
+
+      {/* A cut can swing, or stay joined along its line and fold: bent
+          out of the paper, or right over to show its back. */}
+      {props.cuts.map((c, i) => (
+        <div className="sheet-row" key={c.snip}>
+          <span className="sheet-row-label">{props.cuts.length > 1 ? `cut ${i + 1}` : 'the cut'}</span>
+          <Segmented
+            label={`how cut ${i + 1} moves`}
+            value={foldStop(c.angle)}
+            options={FOLDS}
+            onChange={(stop) => props.onFold(c.snip, FOLDS.find((f) => f.value === stop)!.angle)}
+          />
+        </div>
+      ))}
 
       {props.clip && <ClipRows {...props} clip={props.clip} />}
 

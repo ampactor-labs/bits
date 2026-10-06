@@ -47,6 +47,7 @@ import {
   pinsOf,
   sameChannel,
   snipsOf,
+  foldsOf,
   voiceOf,
   type Channel,
   type PuppetPose,
@@ -63,6 +64,7 @@ import {
 import { getAsset, saveAsset } from '../media/assets';
 import { exportBundle } from '../media/bundle';
 import { makeCutout } from '../media/cutout';
+import { splitPieces } from '../engine/pieces';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
 import { PoseDriver } from '../media/pose';
@@ -2720,6 +2722,15 @@ export function Stage({
             .filter((p) => p.id !== selected.id && !p.back && !ridesOn(projectSnap, p.id, selected.id))
             .map((p) => ({ id: p.id, name: puppetLabel(p, castOf(projectSnap).indexOf(p)) }))}
           onRide={(parentId) => ride(selected, parentId)}
+          cuts={splitPieces(snipsOf(projectSnap, selected.id)).children.map((c) => ({
+            snip: c.snipIndex,
+            angle: foldsOf(projectSnap, selected.id)[c.snipIndex] ?? null,
+          }))}
+          onFold={(snip, angle) =>
+            commit((p) =>
+              appendEvent(p, { kind: 'FOLD', id: newId(), at: 0, puppetId: selected.id, snip, angle }),
+            )
+          }
           {...(selected.spec.type === 'video'
             ? {
                 clip: {
