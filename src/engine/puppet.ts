@@ -23,12 +23,18 @@ export const PUPPET_DT = 1 / 120;
 /** How floppy a puppet feels. 'felt' is the original pair, so an unset
  *  spring and 'felt' simulate identically and every v0 recipe replays
  *  frame for frame. */
-export type SpringPreset = 'paper' | 'felt' | 'rubber';
+export type SpringPreset = 'paper' | 'felt' | 'rubber' | 'jelly' | 'stiff' | 'twos';
 
 const SPRINGS: Record<SpringPreset, { k: number; damp: number }> = {
   paper: { k: 320, damp: 30 },
   felt: { k: 180, damp: 22 },
   rubber: { k: 110, damp: 12 },
+  /** Wobbles long after it lands. */
+  jelly: { k: 70, damp: 4.5 },
+  /** Goes where it is put. */
+  stiff: { k: 700, damp: 52 },
+  /** Felt underneath; the sim shows it on twos (see show.ts). */
+  twos: { k: 180, damp: 22 },
 };
 
 const FREE_DRAG = 3.2;

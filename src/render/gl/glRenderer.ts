@@ -15,6 +15,7 @@
 import { viewOf, magnification, type View } from '../../engine/camera';
 import type { Frame, LayerFrame } from '../../engine/frame';
 import { fogAmount, shadowGap, shadowOffset } from '../../engine/look';
+import { GRAIN_TILE, gradeParams, grainTile } from '../../engine/grade';
 import {
   STAGE_BG,
   drawSheetContent,
@@ -70,6 +71,60 @@ void main() {
   vec3 rgb = clamp(u_hue * c.rgb, 0.0, c.a);
   rgb = mix(rgb, u_fog.rgb * c.a, u_fog.a);
   outColor = vec4(rgb, c.a) * u_alpha;
+}`;
+
+/** The grade, as engine/grade.ts's gradePixels does it, pixel for pixel:
+ *  misregistered inks, the palette by brightness, a lift toward paper,
+ *  grain, darkened edges. Rows are counted from the top, as there. */
+const GRADE_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D u_src;
+uniform sampler2D u_lut;
+uniform sampler2D u_grain;
+uniform float u_mix;
+uniform float u_lift;
+uniform float u_grainAmt;
+uniform float u_edge;
+uniform int u_shift;
+uniform ivec2 u_grainAt;
+uniform ivec2 u_size;
+out vec4 outColor;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  int W = u_size.x;
+  int H = u_size.y;
+  int yTop = H - 1 - p.y;
+  float r = texelFetch(u_src, ivec2(min(W - 1, p.x + u_shift), p.y), 0).r;
+  float g = texelFetch(u_src, p, 0).g;
+  float b = texelFetch(u_src, ivec2(max(0, p.x - u_shift), H - 1 - max(0, yTop - u_shift)), 0).b;
+  if (u_mix > 0.0) {
+    int L = min(255, int(floor((0.2126 * r + 0.7152 * g + 0.0722 * b) * 255.0 + 0.5)));
+    vec3 c = texelFetch(u_lut, ivec2(L, 0), 0).rgb;
+    r += (c.r - r) * u_mix;
+    g += (c.g - g) * u_mix;
+    b += (c.b - b) * u_mix;
+  }
+  if (u_lift > 0.0) {
+    r += (0.93 - r) * u_lift * (1.0 - r);
+    g += (0.89 - g) * u_lift * (1.0 - g);
+    b += (0.81 - b) * u_lift * (1.0 - b);
+  }
+  if (u_grainAmt > 0.0) {
+    float n = texelFetch(u_grain, ivec2((p.x + u_grainAt.x) % 128, (yTop + u_grainAt.y) % 128), 0).r - 0.5;
+    r += n * u_grainAmt;
+    g += n * u_grainAmt;
+    b += n * u_grainAmt;
+  }
+  if (u_edge > 0.0) {
+    float nx = (float(p.x) + 0.5) / float(W) - 0.5;
+    float ny = (float(yTop) + 0.5) / float(H) - 0.5;
+    float d = sqrt(nx * nx + ny * ny) * 2.0;
+    float v = 1.0 - u_edge * 0.55 * clamp((d - 0.55) / 0.75, 0.0, 1.0);
+    r *= v;
+    g *= v;
+    b *= v;
+  }
+  outColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);
 }`;
 
 const IDENTITY_HUE = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -184,6 +239,69 @@ export function createGlRenderer(canvas: Canvasish): GlRenderer | null {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+
+  // The grade: a second program, run over the finished frame when a
+  // palette or paper is on. The stage is then drawn into a multisampled
+  // buffer that keeps the trails, resolved into a texture, and graded
+  // onto the screen.
+  const gradeProg = gl.createProgram()!;
+  gl.attachShader(gradeProg, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(gradeProg, compile(gl.FRAGMENT_SHADER, GRADE_FRAG));
+  gl.bindAttribLocation(gradeProg, loc.pos, 'a_pos');
+  gl.bindAttribLocation(gradeProg, loc.uv, 'a_uv');
+  gl.linkProgram(gradeProg);
+  if (!gl.getProgramParameter(gradeProg, gl.LINK_STATUS)) {
+    throw new Error(`gl link: ${gl.getProgramInfoLog(gradeProg) ?? '?'}`);
+  }
+  const gloc = (name: string) => gl.getUniformLocation(gradeProg, name);
+  const gu = {
+    src: gloc('u_src'),
+    lut: gloc('u_lut'),
+    grain: gloc('u_grain'),
+    mix: gloc('u_mix'),
+    lift: gloc('u_lift'),
+    grainAmt: gloc('u_grainAmt'),
+    edge: gloc('u_edge'),
+    shift: gloc('u_shift'),
+    grainAt: gloc('u_grainAt'),
+    size: gloc('u_size'),
+  };
+  const lutTex = gl.createTexture()!;
+  const grainTex = gl.createTexture()!;
+  let grainSeed: number | null = null;
+  let stageBuf: { w: number; h: number; ms: WebGLFramebuffer; rb: WebGLRenderbuffer; resolve: WebGLFramebuffer; tex: WebGLTexture } | null = null;
+  const nearest = () => {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  };
+  const ensureStageBuf = (w: number, h: number) => {
+    if (stageBuf && stageBuf.w === w && stageBuf.h === h) return false;
+    if (stageBuf) {
+      gl.deleteFramebuffer(stageBuf.ms);
+      gl.deleteRenderbuffer(stageBuf.rb);
+      gl.deleteFramebuffer(stageBuf.resolve);
+      gl.deleteTexture(stageBuf.tex);
+    }
+    const rb = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, Math.min(4, gl.getParameter(gl.MAX_SAMPLES) as number), gl.RGBA8, w, h);
+    const ms = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, ms);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    nearest();
+    const resolve = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    stageBuf = { w, h, ms, rb, resolve, tex };
+    return true;
+  };
+  let graded = false;
 
   // Sprites drawn by Canvas2D. A cached one per content key; a scratch one
   // per sheet for content that changes every frame.
@@ -337,6 +455,16 @@ export function createGlRenderer(canvas: Canvasish): GlRenderer | null {
         cacheBytes = 0;
         lastImages = images;
       }
+      const grade = frame.look && (frame.look.palette || frame.look.paper) ? frame.look : null;
+      if (!!grade !== graded) {
+        graded = !!grade;
+        lastT = null;
+      }
+      if (grade) {
+        if (ensureStageBuf(W, H)) lastT = null;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, stageBuf!.ms);
+      }
+      gl.useProgram(prog);
       gl.viewport(0, 0, W, H);
       const keep = trailFor(frame, lastT);
       lastT = frame.t;
@@ -394,6 +522,47 @@ export function createGlRenderer(canvas: Canvasish): GlRenderer | null {
         gl.uniform4f(loc.fog, fog[0], fog[1], fog[2], haze);
         quad(W, H, place, view, corners, uvs, [0, 0]);
       });
+      if (grade && stageBuf) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, stageBuf.ms);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, stageBuf.resolve);
+        gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const params = gradeParams({ palette: grade.palette, paper: grade.paper, seed: frame.seed }, W, frame.t);
+        gl.useProgram(gradeProg);
+        gl.disable(gl.BLEND);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, lutTex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, params.lut);
+        nearest();
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, grainTex);
+        if (grainSeed !== frame.seed) {
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, GRAIN_TILE, GRAIN_TILE, 0, gl.RED, gl.UNSIGNED_BYTE, grainTile(frame.seed));
+          nearest();
+          grainSeed = frame.seed;
+        }
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, stageBuf.tex);
+        gl.uniform1i(gu.src, 0);
+        gl.uniform1i(gu.lut, 1);
+        gl.uniform1i(gu.grain, 2);
+        gl.uniform1f(gu.mix, params.mix);
+        gl.uniform1f(gu.lift, params.fade * 0.4);
+        gl.uniform1f(gu.grainAmt, params.grain * 0.18);
+        gl.uniform1f(gu.edge, params.edge);
+        gl.uniform1i(gu.shift, params.shift);
+        gl.uniform2i(gu.grainAt, params.grainAt[0], params.grainAt[1]);
+        gl.uniform2i(gu.size, W, H);
+        gl.viewport(0, 0, W, H);
+        verts.set([-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1]);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.enable(gl.BLEND);
+        gl.useProgram(prog);
+      }
     },
     readPixels(W, H) {
       const out = new Uint8Array(W * H * 4);

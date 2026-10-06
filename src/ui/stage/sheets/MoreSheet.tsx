@@ -22,6 +22,10 @@ const SPRINGS = [
   { value: 'paper' as const, label: 'paper' },
   { value: 'felt' as const, label: 'felt' },
   { value: 'rubber' as const, label: 'rubber' },
+  { value: 'jelly' as const, label: 'jelly' },
+  { value: 'stiff' as const, label: 'stiff' },
+  // Moves on twos, like cutouts shot a frame at a time.
+  { value: 'twos' as const, label: 'on twos' },
 ];
 
 /** How far back a sheet sits. Named stops rather than a slider: depth only

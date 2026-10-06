@@ -11,10 +11,14 @@ import { createRenderer2d } from '../media/stageDraw';
 import { createGlRenderer } from '../render/gl/glRenderer';
 import { fixtureAnalysis, fixtureImages, fixtureProject } from './fixtures';
 import { dice } from '../engine/ink';
+import { harmony, PAPER_PRESETS } from '../engine/grade';
 
 export interface GlParityResult {
   available: boolean;
   renderer: string;
+  /** Mean channel difference a palette and paper make to a frame: the
+   *  grade is really on, not skipped by both renderers alike. */
+  gradeEffect: number;
   scenes: { name: string; frames: number; worstVisible: number; worstMean: number }[];
 }
 
@@ -37,6 +41,25 @@ function lookedFixture(): Project {
       { kind: 'PASS', id: 'cam-pan', at: 0.3, puppetId: CAMERA_ID, samples } as RecipeEvent,
       { kind: 'PASS', id: 'cam-z', at: 0.3, puppetId: CAMERA_ID, samples: dolly, prop: 'z' } as RecipeEvent,
       { kind: 'LOOK', id: 'look', at: 0, puppetId: '', shadow: 0.5, fog: 0.4 } as RecipeEvent,
+    ],
+  };
+}
+
+/** The fixture printed: a palette and newsprint paper. */
+function gradedFixture(): Project {
+  const base = fixtureProject();
+  return {
+    ...base,
+    events: [
+      ...base.events,
+      {
+        kind: 'LOOK',
+        id: 'graded',
+        at: 0,
+        puppetId: '',
+        palette: { colors: harmony('complement', 200), mix: 0.85 },
+        paper: PAPER_PRESETS.newsprint,
+      } as RecipeEvent,
     ],
   };
 }
@@ -68,7 +91,7 @@ export async function runGlParity(): Promise<GlParityResult> {
   const images = await fixtureImages();
   const probe = new OffscreenCanvas(W, H);
   const first = createGlRenderer(probe);
-  if (!first) return { available: false, renderer: 'none', scenes: [] };
+  if (!first) return { available: false, renderer: 'none', gradeEffect: 0, scenes: [] };
   const glCtx = probe.getContext('webgl2')!;
   const info = glCtx.getExtension('WEBGL_debug_renderer_info');
   const renderer = info ? String(glCtx.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'unknown';
@@ -111,13 +134,26 @@ export async function runGlParity(): Promise<GlParityResult> {
     return { name, frames, worstVisible, worstMean };
   };
 
+  const still = (project: Project) => {
+    const ctx = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+    createRenderer2d().draw(ctx, W, H, createFramer(project, fixtureAnalysis(), { trails: false }).frameAt(2), images);
+    return ctx.getImageData(0, 0, W, H).data;
+  };
+  const plain = still(fixtureProject());
+  const graded = still(gradedFixture());
+  let gradeSum = 0;
+  for (let p = 0; p < plain.length; p += 4) gradeSum += Math.abs(plain[p]! - graded[p]!);
+  const gradeEffect = gradeSum / (W * H);
+
   return {
     available: true,
     renderer,
+    gradeEffect,
     scenes: [
       scene('fixture', fixtureProject()),
       scene('camera and look', lookedFixture()),
       scene('inks', inkedFixture()),
+      scene('palette and paper', gradedFixture()),
     ],
   };
 }

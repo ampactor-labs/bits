@@ -26,7 +26,7 @@ describe('the look', () => {
         ev({ kind: 'LOOK', puppetId: '', fog: 0.8, fogColor: '#334455' }),
       ),
     );
-    expect(look).toEqual({ shadow: 0.5, fog: 0.8, fogColor: '#334455' });
+    expect(look).toEqual({ shadow: 0.5, fog: 0.8, fogColor: '#334455', palette: null, paper: null });
   });
 
   it('fogs far sheets more than near ones, and nothing with fog off', () => {

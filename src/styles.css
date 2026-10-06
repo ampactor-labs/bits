@@ -894,6 +894,24 @@ body {
   border-color: var(--accent);
 }
 
+.palette-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.palette-chip {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+.palette-chip.on {
+  border-color: var(--accent-2);
+}
+
 .stagepills {
   position: absolute;
   bottom: 12px;

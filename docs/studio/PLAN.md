@@ -192,7 +192,19 @@ Original notes:
 - Genome → GLSL is a pure string; programs cached by op sequence, parameters are uniforms. Feedback ticks at 30 Hz; a seek warms up from t − 2 s.
 - `ui/rooms/Tray.tsx` and `ui/seed/DiceGrid.tsx` (one GL canvas, six DOM buttons over it): tap breeds, long-press two to cross, keep commits.
 
-### S4c — palettes, paper, motion styles
+### S4c — palettes, paper, motion styles (v7) — *done*
+What shipped:
+- **Grading.** `LOOK.palette {colors[5], mix}` and `LOOK.paper {edge, grain, fade, misreg}`, latest per field, null to take off. `engine/grade.ts` holds:
+  - the OKLCH harmonies (analogous, complement, triad, duotone) behind the menu's named palettes;
+  - four paper presets in the London film's spirit;
+  - the grade itself: `gradePixels`, with the lookup table and seeded grain tile it uses.
+- **The grade in both renderers.** The canvas renderer runs `gradePixels` on a copy. GL draws into a multisampled buffer, resolves it, and grades in a shader fed the same table and tile. Neither grades its trail buffer, so ghosts are never graded twice. The render proof holds GL to canvas on a graded scene (0.19% of pixels visibly off) and checks that the grade really changes the picture.
+- **Springs.** `jelly`, `stiff`, and `twos`: felt physics, shown on twos. The sim keeps the physics and the shown pose apart and holds the shown one for ten steps (1/12 s); checkpoints carry both.
+- **Memoisation.** `castOf`, `lookOf` and `cutsOf` are memoised per event array (projects are immutable), which takes three event-log scans out of every preview frame.
+
+Watch: the frame gate's "over 50 ms" share sits near its 10% limit because frame times quantise to vsync (33.3 / 50.0 ms). It passed every run after the memoisation, but S5 should not add per-frame work on the Canvas2D path without measuring.
+
+Original notes:
 - `LOOK.palette {colors[5], mix}` (OKLCH harmonies, gradient map in the sheet shader), `LOOK.paper {edge, grain, fade, misreg, seed}` with the London film's looks as presets, springs `jelly | stiff | twos` (twos holds poses on 1/12 s boundaries).
 
 ### S5a/b — video in
