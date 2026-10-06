@@ -9,7 +9,7 @@ import { pointInPoly } from '../../engine/pieces';
 import { restingPuppet } from '../../engine/puppet';
 import { castOf, worldToLocal, type Channel, type PuppetPose, type ShowPuppet } from '../../engine/show';
 import type { Project } from '../../engine/recipe';
-import type { PuppetVisual } from '../../media/stageDraw';
+import type { PuppetVisual } from '../../engine/frame';
 
 /** A tap is a release that never travelled this far. In CSS pixels, not a
  *  fraction of the stage: the old normalised measure gave nearly twice the
@@ -47,15 +47,47 @@ export function toLocal(
 /** Hit a puppet and which handle: a warp pin, a snipped-off piece
  *  (accounting for its swing), or the body. Front to back, so what is on
  *  top is what you grab. */
+export interface HitOptions {
+  /** Which backdrops can be hit. A backdrop sits under everything and
+   *  fills the stage, so if every press could grab it, a drag on "nothing"
+   *  would move the scenery. By default none can; the stage lets the
+   *  selected one through. */
+  back?: (p: ShowPuppet) => boolean;
+}
+
 export function hitTest(
   scene: StageScene,
   x: number,
   y: number,
+  options: HitOptions = {},
 ): { puppet: ShowPuppet; channel: Channel } | null {
   const cast = castOf(scene.project);
+  // Front sheets first, front to back; the back layer only after all of
+  // them, so a puppet standing on a backdrop is always the one you get.
   for (let i = cast.length - 1; i >= 0; i--) {
     const p = cast[i]!;
     if (p.back) continue;
+    const hit = hitOne(scene, p, x, y);
+    if (hit) return hit;
+  }
+  const back = options.back;
+  if (!back) return null;
+  for (let i = cast.length - 1; i >= 0; i--) {
+    const p = cast[i]!;
+    if (!p.back || !back(p)) continue;
+    const hit = hitOne(scene, p, x, y);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function hitOne(
+  scene: StageScene,
+  p: ShowPuppet,
+  x: number,
+  y: number,
+): { puppet: ShowPuppet; channel: Channel } | null {
+  {
     const local = toLocal(scene.poses, p, x, y);
     const visual = scene.visuals.get(p.id);
     const pose = scene.poses.get(p.id);

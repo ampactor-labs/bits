@@ -276,7 +276,7 @@ function events(catW: number, catH: number): RecipeEvent[] {
       id: id(),
       at: 0,
       puppetId: 'backdrop',
-      puppet: { type: 'cutout', assetId: DEMO_BACKDROP_ID, w: 1, h: 1 },
+      puppet: { type: 'cutout', assetId: DEMO_BACKDROP_ID, w: 1, h: 1, fit: 'cover' },
       x: 0.5,
       y: 0.5,
       scale: 1,

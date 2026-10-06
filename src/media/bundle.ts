@@ -7,6 +7,7 @@
 // Duplicating a bit on this phone is the one case that does share, and
 // collection checks who else is using an asset before dropping it.
 
+import { assetRefs, mapAssetRefs } from '../engine/assetRefs';
 import { parseProject, serializeProject, type Project } from '../engine/recipe';
 import { getAsset, saveAsset } from './assets';
 
@@ -23,34 +24,13 @@ interface Bundle {
 
 /** Every asset id the recipe can reach: the audio spine and cutout casts. */
 export function referencedAssets(project: Project): Set<string> {
-  const ids = new Set<string>();
-  if (project.audio) ids.add(project.audio.assetId);
-  for (const e of project.events) {
-    if (e.kind === 'CAST' && e.puppet.type === 'cutout') ids.add(e.puppet.assetId);
-    // A puppet's own take travels with the bit, or the file arrives mute
-    // for whoever recorded it.
-    if (e.kind === 'VOICE') ids.add(e.assetId);
-  }
-  return ids;
+  return assetRefs(project);
 }
 
 /** Rewrite every asset reference through the mapping. Unmapped ids stay:
  *  their assets were absent from the bundle and stay absent on device. */
 export function remapAssetIds(project: Project, map: Map<string, string>): Project {
-  const events = project.events.map((e) => {
-    if (e.kind === 'CAST' && e.puppet.type === 'cutout' && map.has(e.puppet.assetId)) {
-      return { ...e, puppet: { ...e.puppet, assetId: map.get(e.puppet.assetId)! } };
-    }
-    if (e.kind === 'VOICE' && map.has(e.assetId)) {
-      return { ...e, assetId: map.get(e.assetId)! };
-    }
-    return e;
-  });
-  const out: Project = { ...project, events };
-  if (project.audio && map.has(project.audio.assetId)) {
-    out.audio = { ...project.audio, assetId: map.get(project.audio.assetId)! };
-  }
-  return out;
+  return mapAssetRefs(project, (id) => map.get(id) ?? id);
 }
 
 const blobToDataUrl = (blob: Blob): Promise<string> =>

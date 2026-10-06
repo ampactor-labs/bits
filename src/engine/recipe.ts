@@ -2,9 +2,9 @@
 // performed passes, scissor cuts, mouths, drops. Same recipe simulates to the
 // same frames, always. Undo is popping the last event.
 
-export const RECIPE_VERSION = 1 as const;
-/** Every version this app can open. v0 files migrate on load. */
-export const READABLE_VERSIONS = [0, 1] as const;
+export const RECIPE_VERSION = 2 as const;
+/** Every version this app can open. Older files migrate on load. */
+export const READABLE_VERSIONS = [0, 1, 2] as const;
 
 interface EventBase {
   id: string;
@@ -32,7 +32,13 @@ interface SpecCommon {
 
 /** What a puppet is made of. rect exists for tests and fixtures. */
 export type PuppetSpec =
-  | ({ type: 'cutout'; assetId: string } & SpecCommon)
+  | ({
+      type: 'cutout';
+      assetId: string;
+      /** 'cover' fills the box the way a backdrop fills the stage, cropping
+       *  rather than stretching. Absent stretches the image to the box. */
+      fit?: 'cover';
+    } & SpecCommon)
   | ({
       type: 'doodle';
       strokes: number[][];
@@ -44,7 +50,9 @@ export type PuppetSpec =
   | ({ type: 'rect'; color: string } & SpecCommon);
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
- *  wins and moves it to the front; `back` pins backdrops behind everyone. */
+ *  wins and moves it to the front; `back` puts it in the back layer, behind
+ *  everyone. Since v2 a backdrop is an ordinary sheet there: it moves, cuts,
+ *  bends, talks and takes wires like any other. */
 export interface CastEvent extends EventBase {
   kind: 'CAST';
   puppetId: string;
@@ -270,16 +278,81 @@ export function createProject(title: string, now = new Date()): Project {
   };
 }
 
-/** v0 to v1. v0's grammar is a subset of v1's, so the events are already
- *  valid; only the header moves. Kept separate from parseProject so the
- *  migration can be tested directly on a stored v0 fixture. */
-export function migrateProject(raw: Record<string, unknown>): Record<string, unknown> {
-  if (raw.version === RECIPE_VERSION) return raw;
-  return {
+type Raw = Record<string, unknown>;
+
+/** Each step takes a file of version v to v + 1. Old files are rewritten
+ *  into today's shapes on load, so the engine only ever knows the latest
+ *  meaning of every event. */
+const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
+  /** v0's grammar is a subset of v1's, so the events are already valid;
+   *  only the header moves. */
+  0: (raw) => ({
     ...raw,
-    version: RECIPE_VERSION,
+    version: 1,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : raw.createdAt,
-  };
+  }),
+  /** v1 drew a backdrop cover-fit to the whole stage and ignored its
+   *  transform and everything attached to it. v2 makes it an ordinary sheet,
+   *  so a v1 backdrop becomes one that looks the same: a cover-fit image the
+   *  size of the stage, at rest in the middle. Whatever v1 ignored is
+   *  dropped rather than suddenly obeyed. */
+  1: (raw) => {
+    const events = Array.isArray(raw.events) ? (raw.events as Raw[]) : [];
+    const latestBack = new Map<string, boolean>();
+    for (const e of events) {
+      if (e.kind === 'CAST' && typeof e.puppetId === 'string') {
+        latestBack.set(e.puppetId, e.back === true);
+      }
+    }
+    const backdrops = new Set([...latestBack].filter(([, back]) => back).map(([id]) => id));
+    const IGNORED = new Set(['WIRE', 'MOUTH', 'EYES', 'PIN', 'SNIP', 'PASS']);
+    const dropped = new Set<string>();
+    const kept: Raw[] = [];
+    for (const e of events) {
+      if (IGNORED.has(e.kind as string) && backdrops.has(e.puppetId as string)) {
+        dropped.add(e.id as string);
+        continue;
+      }
+      const target = e.target as Raw | undefined;
+      const names =
+        e.kind === 'MUTE' || e.kind === 'TRIM'
+          ? e.passId
+          : e.kind === 'REMOVE' && target && 'pass' in target
+            ? target.pass
+            : e.kind === 'REMOVE' && backdrops.has(e.puppetId as string)
+              ? '*'
+              : undefined;
+      if (names === '*' || (typeof names === 'string' && dropped.has(names))) continue;
+      if (e.kind === 'CAST' && e.back === true) {
+        const { flip: _flip, ...rest } = e;
+        void _flip;
+        kept.push({
+          ...rest,
+          puppet: { ...(e.puppet as Raw), fit: 'cover' },
+          x: 0.5,
+          y: 0.5,
+          scale: 1,
+          rot: 0,
+        });
+        continue;
+      }
+      kept.push(e);
+    }
+    return { ...raw, version: 2, events: kept };
+  },
+};
+
+/** Bring a stored recipe up to today's version, one step at a time. Kept
+ *  separate from parseProject so each migration can be tested directly on
+ *  a stored fixture. */
+export function migrateProject(raw: Raw): Raw {
+  let out = raw;
+  while (typeof out.version === 'number' && out.version < RECIPE_VERSION) {
+    const step = MIGRATIONS[out.version];
+    if (!step) break;
+    out = step(out);
+  }
+  return out;
 }
 
 /** Append-only: returns a new project, never mutates. */
@@ -303,6 +376,9 @@ export function parseProject(text: string): Project {
   if (typeof parsed !== 'object' || parsed === null) throw new Error('recipe: not an object');
   const incoming = parsed as Record<string, unknown>;
   const version = incoming.version;
+  if (typeof version === 'number' && version > RECIPE_VERSION) {
+    throw new Error('recipe: made with a newer bits, reload to update');
+  }
   if (!READABLE_VERSIONS.includes(version as (typeof READABLE_VERSIONS)[number])) {
     throw new Error(`recipe: unsupported version ${String(version)}`);
   }
@@ -383,6 +459,9 @@ export function parseProject(text: string): Project {
         const spec = ev.puppet as Record<string, unknown>;
         if (spec.spring !== undefined && !SPRING_PRESETS.includes(spec.spring as SpringPreset)) {
           throw new Error('recipe: unknown spring preset');
+        }
+        if (spec.fit !== undefined && !(spec.type === 'cutout' && spec.fit === 'cover')) {
+          throw new Error('recipe: fit is cover, on photos only');
         }
         if (spec.name !== undefined && typeof spec.name !== 'string') {
           throw new Error('recipe: puppet name must be a string');

@@ -27,8 +27,9 @@ export type HaloAction =
 export interface HaloProps {
   /** What the selected puppet is called, for the toolbar's own name. */
   name: string;
-  /** Backdrops get a much shorter halo: they fill the stage and are never
-   *  hit-tested, so they are selected from the cast sheet instead. */
+  /** A backdrop is a sheet like any other, so it gets the same tools, with
+   *  replace in place of flip (a mirrored backdrop is rarely the point, and
+   *  the bar has room for six). */
   backdrop: boolean;
   /** False when the puppet is snipped: cut paper or bend it, not both. */
   canPin: boolean;
@@ -49,8 +50,12 @@ const PUPPET_ACTIONS: { action: HaloAction; icon: IconName; label: string }[] = 
 ];
 
 const BACKDROP_ACTIONS: { action: HaloAction; icon: IconName; label: string }[] = [
+  { action: 'mouth', icon: 'mouth', label: 'mouth' },
+  { action: 'eyes', icon: 'eyes', label: 'eyes' },
+  { action: 'snip', icon: 'scissors', label: 'snip' },
+  { action: 'pin', icon: 'pin', label: 'pin' },
   { action: 'replace', icon: 'backdrop', label: 'replace the backdrop' },
-  { action: 'drop', icon: 'trash', label: 'remove the backdrop' },
+  { action: 'more', icon: 'more', label: 'more' },
 ];
 
 export function Halo({

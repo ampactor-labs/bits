@@ -7,9 +7,15 @@ import { createFramer, visualsOf, voiceMap, type Analysis } from '../engine/fram
 import type { Project } from '../engine/recipe';
 import { castOf, createShowSim } from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
-import { renderFrame2d, STAGE_BG } from '../media/stageDraw';
+import { createRenderer2d, renderFrame2d, STAGE_BG } from '../media/stageDraw';
 import { drawStage } from './legacy/stageDraw';
-import { fixtureAnalysis, fixtureImages, fixtureProject, FIXTURE_DURATION_S } from './fixtures';
+import {
+  fixtureAnalysis,
+  fixtureImages,
+  fixtureProject,
+  fixtureV1,
+  FIXTURE_DURATION_S,
+} from './fixtures';
 
 export interface ParityResult {
   frames: number;
@@ -39,7 +45,8 @@ function legacyDraw(
   const wires = effectiveWires(project);
   const poses = sim.advanceTo(t);
   const mods = new Map<string, WireMods>();
-  for (const p of cast) mods.set(p.id, wireModsFor(wires, p.id, analysis.voice, analysis.onsets, t, project.seed));
+  for (const p of cast)
+    mods.set(p.id, wireModsFor(wires, p.id, analysis.voice, analysis.onsets, t, project.seed));
   drawStage(
     ctx,
     W,
@@ -60,6 +67,9 @@ export async function runFrameParity(): Promise<ParityResult> {
   const W = 180;
   const H = 320;
   const fps = 30;
+  // The legacy side reads the file as v1 saved it; today's side reads it
+  // migrated, as the app would open it.
+  const legacy = fixtureV1();
   const project = fixtureProject();
   const analysis = fixtureAnalysis();
   const images = await fixtureImages();
@@ -70,8 +80,11 @@ export async function runFrameParity(): Promise<ParityResult> {
     c.fillStyle = STAGE_BG;
     c.fillRect(0, 0, W, H);
   }
-  const sim = createShowSim(project);
+  const sim = createShowSim(legacy);
   const framer = createFramer(project, analysis);
+  // The renderer the export uses, frame-rate-aware trails and all: at the
+  // film's 30 fps it must draw exactly what the old path drew.
+  const renderer = createRenderer2d();
 
   let mismatched = 0;
   let maxDiff = 0;
@@ -81,9 +94,9 @@ export async function runFrameParity(): Promise<ParityResult> {
   const frames = Math.round(FIXTURE_DURATION_S * fps);
   for (let i = 0; i < frames; i++) {
     const t = (i + 0.5) / fps;
-    legacyDraw(a, W, H, project, analysis, sim, images, t);
+    legacyDraw(a, W, H, legacy, analysis, sim, images, t);
     const frame = framer.frameAt(t);
-    renderFrame2d(b, W, H, frame, images);
+    renderer.draw(b, W, H, frame, images);
     if (voiceAt(analysis.voice, t).open > 0 && frame.layers.some((l) => l.voice.open > 0)) {
       mouthOpenFrames += 1;
     }
@@ -119,11 +132,95 @@ export async function peekFixture(times: number[], W = 360, H = 640): Promise<st
     for (; t < want; t += 1 / 30) renderFrame2d(ctx, W, H, framer.frameAt(t), images);
     renderFrame2d(ctx, W, H, framer.frameAt(want), images);
     const blob = await canvas.convertToBlob({ type: 'image/png' });
-    out.push(await new Promise<string>((res) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result as string);
-      r.readAsDataURL(blob);
-    }));
+    out.push(
+      await new Promise<string>((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.readAsDataURL(blob);
+      }),
+    );
   }
   return out;
+}
+
+export interface TrailRateResult {
+  /** How much of a ghost is left 0.3 s after its sheet vanished, at 30 and
+   *  at 60 fps, with trails that fade by elapsed time. */
+  byTime: [number, number];
+  /** The same with the old per-frame fade. */
+  byFrame: [number, number];
+}
+
+/** A white card sits on the stage with trails on, then vanishes; how much
+ *  of its ghost is left 0.3 s later should not depend on the frame rate. */
+export async function runTrailRate(): Promise<TrailRateResult> {
+  const W = 64;
+  const H = 64;
+  const project = fixtureProject();
+  const card = castOf({
+    ...project,
+    events: [
+      {
+        kind: 'CAST',
+        id: 'card',
+        at: 0,
+        puppetId: 'card',
+        puppet: { type: 'rect', color: '#ffffff', w: 0.5, h: 0.5 },
+        x: 0.5,
+        y: 0.5,
+        scale: 1,
+        rot: 0,
+      },
+    ],
+  })[0]!;
+  const visual = {
+    pieces: {
+      root: {
+        poly: [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 1],
+        ] as [number, number][],
+        joint: null,
+        snipIndex: -1,
+      },
+      children: [],
+    },
+    mouth: null,
+    eyes: null,
+    pins: [],
+  };
+  const still = {
+    root: { x: 0.5, y: 0.5, vx: 0, vy: 0, angle: 0, squash: 0 },
+    dangles: [],
+    pins: [],
+  };
+  const ident = { scaleMul: 1, dx: 0, dy: 0, dAngle: 0 };
+  const run = (fps: number, byTime: boolean) => {
+    const ctx = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+    ctx.fillStyle = STAGE_BG;
+    ctx.fillRect(0, 0, W, H);
+    const renderer = createRenderer2d();
+    let t = 0.5;
+    const draw = (shown: boolean) => {
+      const frame = {
+        t,
+        seed: 1,
+        trail: 0.8,
+        layers: shown
+          ? [{ puppet: card, pose: still, visual, voice: { open: 0, shape: 0 }, mods: ident }]
+          : [],
+      };
+      if (byTime) renderer.draw(ctx, W, H, frame, new Map());
+      else renderFrame2d(ctx, W, H, frame, new Map());
+    };
+    for (; t < 1; t += 1 / fps) draw(true);
+    for (; t < 1.3; t += 1 / fps) draw(false);
+    return ctx.getImageData(W / 2, H / 2, 1, 1).data[0]! - 16;
+  };
+  return {
+    byTime: [run(30, true), run(60, true)],
+    byFrame: [run(30, false), run(60, false)],
+  };
 }

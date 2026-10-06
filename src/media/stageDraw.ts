@@ -53,6 +53,40 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
   for (const layer of frame.layers) drawLayer(ctx, W, H, layer, images, tS, seed);
 }
 
+/** A canvas renderer that remembers the frame before. Trails are a ghost
+ *  of the previous frame, so how much of it survives has to depend on how
+ *  long ago that frame was: a 60 fps preview used to fade twice as fast as
+ *  the 30 fps film. `keep` is defined per thirtieth of a second, so a film
+ *  at 30 fps draws exactly what it always did. */
+export interface Renderer2d {
+  draw(ctx: Ctx2D, W: number, H: number, frame: Frame, images: StageImages): void;
+  /** Forget the previous frame: the next one wipes clean. */
+  reset(): void;
+}
+
+export function createRenderer2d(): Renderer2d {
+  let lastT: number | null = null;
+  return {
+    draw(ctx, W, H, frame, images) {
+      let trail = Math.min(0.92, frame.trail);
+      if (lastT !== null && trail > 0) {
+        const dt = frame.t - lastT;
+        // Going back, or a jump the eye reads as a cut: start clean.
+        if (dt < 0 || dt > 0.25) trail = 0;
+        else {
+          const thirtieths = dt * 30;
+          if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
+        }
+      }
+      lastT = frame.t;
+      renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
+    },
+    reset() {
+      lastT = null;
+    },
+  };
+}
+
 function drawLayer(
   ctx: Ctx2D,
   W: number,
@@ -63,10 +97,6 @@ function drawLayer(
   seed: number,
 ): void {
   const { puppet, pose, visual, mods: mod } = layer;
-  if (puppet.back) {
-    drawBackdrop(ctx, W, H, images.get(puppet.id));
-    return;
-  }
   if (!pose || !visual) return;
   const s = pose.root;
   const pw = puppet.spec.w * W * puppet.home.scale;
@@ -91,7 +121,8 @@ function drawLayer(
   if (puppet.flip) ctx.scale(-1, 1);
 
   if (warp && img) {
-    drawWarpedMesh(ctx, img, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
+    const crop = cropOf(puppet.spec, img, pw, ph);
+    drawWarpedMesh(ctx, img, crop, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
   } else {
     drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
     for (const child of visual.pieces.children) {
@@ -179,9 +210,27 @@ function warpControls(
 
 /** Textured triangle mesh: each grid cell maps rest→deformed with an affine
  *  per triangle, slightly inflated to hide seams. */
+/** The part of the image a box shows: all of it, or for a cover-fit image
+ *  the centred crop that fills the box. */
+interface Crop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function cropOf(spec: PuppetSpec, img: ImageBitmap, pw: number, ph: number): Crop {
+  if (spec.type !== 'cutout' || spec.fit !== 'cover') return { x: 0, y: 0, w: img.width, h: img.height };
+  const scale = Math.max(pw / img.width, ph / img.height);
+  const w = pw / scale;
+  const h = ph / scale;
+  return { x: (img.width - w) / 2, y: (img.height - h) / 2, w, h };
+}
+
 function drawWarpedMesh(
   ctx: Ctx2D,
   img: ImageBitmap,
+  crop: Crop,
   pw: number,
   ph: number,
   deformed: Float32Array,
@@ -196,8 +245,8 @@ function drawWarpedMesh(
       const i10 = i00 + 2;
       const i01 = i00 + stride;
       const i11 = i01 + 2;
-      drawTri(ctx, img, rest, deformed, i00, i10, i01, img.width, img.height, lx, ly);
-      drawTri(ctx, img, rest, deformed, i10, i11, i01, img.width, img.height, lx, ly);
+      drawTri(ctx, img, rest, deformed, i00, i10, i01, crop, lx, ly);
+      drawTri(ctx, img, rest, deformed, i10, i11, i01, crop, lx, ly);
     }
   }
 }
@@ -210,17 +259,16 @@ function drawTri(
   ia: number,
   ib: number,
   ic: number,
-  iw: number,
-  ih: number,
+  crop: Crop,
   lx: (v: number) => number,
   ly: (v: number) => number,
 ): void {
-  const sx0 = rest[ia]! * iw;
-  const sy0 = rest[ia + 1]! * ih;
-  const sx1 = rest[ib]! * iw;
-  const sy1 = rest[ib + 1]! * ih;
-  const sx2 = rest[ic]! * iw;
-  const sy2 = rest[ic + 1]! * ih;
+  const sx0 = crop.x + rest[ia]! * crop.w;
+  const sy0 = crop.y + rest[ia + 1]! * crop.h;
+  const sx1 = crop.x + rest[ib]! * crop.w;
+  const sy1 = crop.y + rest[ib + 1]! * crop.h;
+  const sx2 = crop.x + rest[ic]! * crop.w;
+  const sy2 = crop.y + rest[ic + 1]! * crop.h;
   let dx0 = lx(def[ia]!);
   let dy0 = ly(def[ia + 1]!);
   let dx1 = lx(def[ib]!);
@@ -328,14 +376,6 @@ function applyCarrierTransform(
   }
 }
 
-function drawBackdrop(ctx: Ctx2D, W: number, H: number, img: ImageBitmap | undefined): void {
-  if (!img) return;
-  const scale = Math.max(W / img.width, H / img.height);
-  const dw = img.width * scale;
-  const dh = img.height * scale;
-  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-}
-
 function drawPiece(
   ctx: Ctx2D,
   puppet: ShowPuppet,
@@ -385,7 +425,17 @@ function drawContent(
   switch (spec.type) {
     case 'cutout': {
       const img = images.get(puppetId);
-      if (img) ctx.drawImage(img, -pw / 2, -ph / 2, pw, ph);
+      if (!img) break;
+      if (spec.fit === 'cover') {
+        // Cropped to the box, never stretched: a backdrop fills the stage
+        // the way it always has.
+        const scale = Math.max(pw / img.width, ph / img.height);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      } else {
+        ctx.drawImage(img, -pw / 2, -ph / 2, pw, ph);
+      }
       break;
     }
     case 'rect':

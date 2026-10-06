@@ -12,6 +12,7 @@ import {
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
 import {
+  RECIPE_VERSION,
   createProject,
   parseProject,
   type CastEvent,
@@ -29,7 +30,13 @@ import { deleteAsset, getAsset, saveAsset } from '../media/assets';
 import { exportBundle, importBundle } from '../media/bundle';
 import { collectVoices, mixVoicesInto, renderShow } from '../media/render';
 import { VideoSourceHandle } from '../media/source';
-import { peekFixture, runFrameParity, type ParityResult } from './parity';
+import {
+  peekFixture,
+  runFrameParity,
+  runTrailRate,
+  type ParityResult,
+  type TrailRateResult,
+} from './parity';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -291,6 +298,8 @@ const V0_RECIPE = JSON.stringify({
 
 interface V0E2EResult {
   parsedVersion: number;
+  /** What this app writes, so the proof follows version bumps. */
+  currentVersion: number;
   updatedAt: string;
   castCount: number;
   renderedDurationS: number;
@@ -315,6 +324,7 @@ async function runV0(): Promise<V0E2EResult> {
   const probe = await VideoSourceHandle.open(rendered);
   const out: V0E2EResult = {
     parsedVersion: project.version,
+    currentVersion: RECIPE_VERSION,
     updatedAt: project.updatedAt ?? '',
     castCount: castOfProject(project).length,
     renderedDurationS: probe.durationS,
@@ -561,8 +571,9 @@ declare global {
       runVoice: () => Promise<VoiceE2EResult>;
       runFrameParity: () => Promise<ParityResult>;
       peekFixture: (times: number[], w?: number, h?: number) => Promise<string[]>;
+      runTrailRate: () => Promise<TrailRateResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture };
+window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture, runTrailRate };

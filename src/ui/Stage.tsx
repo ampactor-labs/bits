@@ -108,13 +108,17 @@ import { RenderCancelled, renderShow, type RenderProgress } from '../media/rende
 import {
   composeFrame,
   foleyOn,
-  impactsOf,
+  impactListener,
   visualsOf,
   type OwnVoice,
   type PuppetVisual,
 } from '../engine/frame';
 import { shareOrDownload } from '../media/shareFile';
-import { loadStageImages, renderFrame2d, type StageImages } from '../media/stageDraw';
+import {
+  createRenderer2d,
+  loadStageImages,
+  type StageImages,
+} from '../media/stageDraw';
 
 interface Grab {
   puppetId: string;
@@ -324,7 +328,10 @@ export function Stage({
   const meterRef = useRef<HTMLDivElement>(null);
   const meterFillRef = useRef<HTMLDivElement>(null);
   const elapsedRef = useRef<HTMLSpanElement>(null);
-  const prevSquashRef = useRef<Map<string, number>>(new Map());
+  /** Draws the stage and remembers the frame before, for trails. */
+  const rendererRef = useRef(createRenderer2d());
+  /** Hears landings from the live sim; rebuilt with it. */
+  const liveImpactsRef = useRef<ReturnType<typeof impactListener> | null>(null);
   const liveImpactCountRef = useRef(0);
 
   const audioBlobRef = useRef<Blob | null>(null);
@@ -629,10 +636,10 @@ export function Stage({
             home: { x: staging.x, y: staging.y, scale: staging.scale, rot: staging.rot },
           }
         : puppet;
-    const cx = (puppet.back ? 0.5 : pose.root.x) * W;
-    const cy = (puppet.back ? 0.5 : pose.root.y) * H;
-    const bw = puppet.back ? W : live.spec.w * live.home.scale * W;
-    const bh = puppet.back ? H : live.spec.h * live.home.scale * H;
+    const cx = pose.root.x * W;
+    const cy = pose.root.y * H;
+    const bw = live.spec.w * live.home.scale * W;
+    const bh = live.spec.h * live.home.scale * H;
 
     if (outline) {
       outline.style.display = '';
@@ -656,7 +663,7 @@ export function Stage({
     }
 
     // Feature handles ride the puppet, so they track a drag frame by frame.
-    if (!visual || puppet.back) return;
+    if (!visual) return;
     const drag = handleDragRef.current;
     const place = (key: string, lx: number, ly: number) => {
       const world =
@@ -764,6 +771,11 @@ export function Stage({
 
   const buildSim = useCallback(
     (recording: boolean, from: number): ShowSim => {
+      // Landings are heard at the sim's own resolution, so the stage plays
+      // the same impacts the film will. The fast-forward to `from` is not
+      // something anyone hears.
+      const ears = impactListener();
+      liveImpactsRef.current = ears;
       const sim = createShowSim(simProjectFor(recording), 0, (id, channel, tt) => {
         for (const finger of grabsRef.current.values()) {
           if (
@@ -780,8 +792,9 @@ export function Stage({
           }
         }
         return null;
-      });
+      }, ears.onStep);
       sim.advanceTo(from);
+      ears.drain();
       return sim;
     },
     [simProjectFor],
@@ -861,7 +874,6 @@ export function Stage({
     let from = playheadRef.current;
     if (from >= high - 0.05 || from < low) from = low;
     playheadRef.current = from;
-    prevSquashRef.current = new Map();
     liveImpactCountRef.current = 0;
 
     if (recording && jamRef.current) {
@@ -890,7 +902,6 @@ export function Stage({
     const from = region.from;
     playheadRef.current = from;
     prevClockRef.current = from;
-    prevSquashRef.current = new Map();
     simRef.current = buildSimRef.current(modeRef.current === 'recording', from);
     clockFromRef.current = from;
     wallStartRef.current = performance.now();
@@ -1067,12 +1078,13 @@ export function Stage({
         if (sim) {
           const poses = sim.advanceTo(clock);
           lastPosesRef.current = poses;
+          const landed = liveImpactsRef.current?.drain() ?? [];
           if (foleyOn(wiresRef.current)) {
-            for (let n = impactsOf(prevSquashRef.current, poses).length; n > 0; n--) {
+            for (let n = landed.length; n > 0; n--) {
               void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
             }
           }
-          renderFrame2d(
+          rendererRef.current.draw(
             ctx,
             W,
             H,
@@ -1124,7 +1136,7 @@ export function Stage({
         const sim = createShowSim({ ...project, events: applyStagingCast(project, staging) });
         const poses = sim.advanceTo(playheadRef.current);
         lastPosesRef.current = poses;
-        renderFrame2d(
+        rendererRef.current.draw(
           ctx,
           W,
           H,
@@ -1195,6 +1207,8 @@ export function Stage({
     >();
     /** Set when a press lands on bare stage, so the release can deselect. */
     let downOnNothing = false;
+    /** When the current press began, to tell a tap from a long press. */
+    let pressedAt = 0;
 
     /** What the finger is aiming at, this frame. */
     const scene = (): StageScene => ({
@@ -1206,7 +1220,12 @@ export function Stage({
       normPoint(frame.getBoundingClientRect(), e.clientX, e.clientY);
     const toLocal = (p: ShowPuppet, x: number, y: number) =>
       localOf(lastPosesRef.current, p, x, y);
-    const hitTest = (x: number, y: number) => hitScene(scene(), x, y);
+    // The selected backdrop can be grabbed like anything else; an
+    // unselected one is the floor, and a press on it is a press on nothing.
+    const hitTest = (x: number, y: number) =>
+      hitScene(scene(), x, y, { back: (p) => p.id === selectedIdRef.current });
+    const backdropAt = (x: number, y: number) =>
+      hitScene(scene(), x, y, { back: () => true })?.puppet ?? null;
     const handleAt = (e: PointerEvent): HandleKey | null => {
       if (!selectedIdRef.current) return null;
       const r = frame.getBoundingClientRect();
@@ -1441,11 +1460,23 @@ export function Stage({
 
         const hit = hitTest(x, y);
         if (!hit) {
-          // A press on bare stage puts the tools away on release.
+          // A press on bare stage puts the tools away on release. Held
+          // long, it picks up the backdrop under it, if there is one.
           downOnNothing = pointers.size === 1;
+          const under = backdropAt(x, y);
+          if (under && downOnNothing) {
+            clearLongPress();
+            longPressRef.current = setTimeout(() => {
+              downOnNothing = false;
+              setSelectedId(under.id);
+              vibrate(10);
+              dirtyRef.current = true;
+            }, LONG_PRESS_MS);
+          }
           return;
         }
         downOnNothing = false;
+        pressedAt = performance.now();
         stagingRef.current = {
           puppetId: hit.puppet.id,
           x: hit.puppet.home.x,
@@ -1552,7 +1583,14 @@ export function Stage({
       clearLongPress();
       if (pointers.size === 0) {
         pointerDownRef.current = false;
-        setPointerDown(false);
+        // Wake the halo only after this release's click has gone by. A
+        // long press can raise the halo under the very finger that is
+        // still down (a backdrop's halo docks where the finger often is),
+        // and the click that follows the lift would fire whatever button
+        // it lands on.
+        setTimeout(() => {
+          if (!pointerDownRef.current) setPointerDown(false);
+        }, 0);
       }
       const m = modeRef.current;
 
@@ -1613,7 +1651,11 @@ export function Stage({
         if (tapped) {
           // Tap selects. It used to move the puppet to the fingertip and
           // record it, which made choosing a puppet a destructive act.
-          if (existing) setSelectedId(existing.id);
+          // A selected backdrop covers the whole stage, so there is no bare
+          // stage left to tap: a quick tap on it puts it down instead.
+          const quick = performance.now() - pressedAt < LONG_PRESS_MS;
+          if (existing?.back && quick) setSelectedId(null);
+          else if (existing) setSelectedId(existing.id);
           dirtyRef.current = true;
           return;
         }
@@ -1856,7 +1898,7 @@ export function Stage({
           id: newId(),
           at: 0,
           puppetId: id,
-          puppet: { type: 'cutout', assetId, w: 1, h: 1 },
+          puppet: { type: 'cutout', assetId, w: 1, h: 1, fit: 'cover' },
           x: 0.5,
           y: 0.5,
           scale: 1,
@@ -2301,7 +2343,7 @@ export function Stage({
   // Every live feature of the selected puppet is something to take hold
   // of. The frame loop puts them where the puppet is, frame by frame.
   const handles: HandleSpec[] = [];
-  if (selected && !selected.back && mode === 'idle') {
+  if (selected && mode === 'idle') {
     if (mouthOf(projectSnap, selected.id)) handles.push({ key: 'mouth', kind: 'mouth' });
     if (eyesOf(projectSnap, selected.id)) handles.push({ key: 'eyes', kind: 'eyes' });
     pinsOf(projectSnap, selected.id).forEach((pin, i) => {
@@ -2806,6 +2848,7 @@ export function Stage({
       />
       <input
         ref={backdropInputRef}
+        data-pick="backdrop"
         type="file"
         accept="image/*"
         hidden

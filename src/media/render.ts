@@ -18,7 +18,7 @@ import type { Project } from '../engine/recipe';
 import { createFramer } from '../engine/frame';
 import { AudioSourceHandle, mixPcmInto } from './audio';
 import { analyzeShow, type VoicePcm } from './analyze';
-import { STAGE_BG, loadStageImages, renderFrame2d } from './stageDraw';
+import { STAGE_BG, createRenderer2d, loadStageImages } from './stageDraw';
 
 export interface RenderProgress {
   phase: 'video' | 'audio' | 'finalize';
@@ -117,6 +117,7 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     options.getAssetBlob,
   );
   const framer = createFramer(project, analysis);
+  const renderer = createRenderer2d();
   const images = await loadStageImages(framer.cast, options.getAssetBlob);
 
   const target = new BufferTarget();
@@ -152,10 +153,10 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     for (let i = 0; i < frameCount; i++) {
       const t = fromS + (i + 0.5) / fps;
       const frame = framer.frameAt(t);
-      for (let n = framer.impacts().length; n > 0; n--) {
-        sounds.push({ at: t, sfx: impactSfx(impactCount++) });
+      for (const hit of framer.impacts()) {
+        sounds.push({ at: hit.at, sfx: impactSfx(impactCount++) });
       }
-      renderFrame2d(ctx, outW, outH, frame, images);
+      renderer.draw(ctx, outW, outH, frame, images);
       await videoSource.add(i / fps, 1 / fps);
       if (i % 10 === 0) {
         progress({ phase: 'video', fraction: i / frameCount });

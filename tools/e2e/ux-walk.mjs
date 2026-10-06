@@ -1671,6 +1671,125 @@ try {
     await closeTools();
   });
 
+  // A backdrop is a sheet like any other (studio S1): it can be cut and
+  // wired. It is picked up by a long press on bare stage, so an ordinary
+  // drag on "nothing" never moves the scenery, and a quick tap puts it
+  // down. These run in a fresh tab: late in the walk, after the window has
+  // been resized and the page reloaded, the original tab stops receiving
+  // synthetic touches at all (even puppeteer's own element taps), for
+  // reasons in the test harness rather than the app.
+  {
+    const tab = await browser.newPage();
+    await tab.emulate(puppeteer.KnownDevices['iPhone 14']);
+    tab.on('pageerror', (err) => pageErrors.push(err.message));
+    const box = () =>
+      tab.$eval('.stagebox', (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height };
+      });
+    const finger = async (path, { holdMs = 0, stepMs = 60 } = {}) => {
+      const b = await box();
+      const at = ([fx, fy]) => [b.x + fx * b.w, b.y + fy * b.h];
+      await tab.touchscreen.touchStart(...at(path[0]));
+      if (holdMs) await sleep(holdMs);
+      for (const pt of path.slice(1)) {
+        await tab.touchscreen.touchMove(...at(pt));
+        await sleep(stepMs);
+      }
+      await tab.touchscreen.touchEnd();
+    };
+    const label = async (name) => {
+      const h = await tab.$(`[aria-label="${name}"]`);
+      if (!h) throw new Error(`no control labelled "${name}"`);
+      await h.tap();
+    };
+    const kindsNow = () => tab.evaluate(() => window.__bits.eventKinds().length);
+    const kindsSince = (n) => tab.evaluate((k) => window.__bits.eventKinds().slice(k), n);
+    const selected = () => tab.evaluate(() => window.__bits.selectedId());
+    const tabShot = (name) => {
+      shotN += 1;
+      return tab.screenshot({ path: join(SHOTS, `${String(shotN).padStart(2, '0')}-${name}.png`) });
+    };
+    try {
+      await tab.goto(`${BASE}?e2e`, { waitUntil: 'networkidle0' });
+      await sleep(800);
+      const withSound = await tab.evaluateHandle(() =>
+        Array.from(document.querySelectorAll('.source-row')).find((r) =>
+          /\d:\d\d/.test(r.querySelector('.size')?.textContent ?? ''),
+        )?.querySelector('.row-open'),
+      );
+      const row = withSound.asElement();
+      if (!row) throw new Error('no bit with sound to open');
+      await row.tap();
+      await tab.waitForFunction(() => window.__bits?.project?.(), { timeout: 20000 });
+      await sleep(1200);
+
+      await phase('a-backdrop-can-be-snipped', async () => {
+        const png = makePng(join(SHOTS, 'backdrop-fixture.png'), 96);
+        const input = await tab.$('input[data-pick="backdrop"]');
+        if (!input) throw new Error('no backdrop input');
+        const casts = await tab.evaluate(
+          () => window.__bits.project().events.filter((e) => e.kind === 'CAST').length,
+        );
+        await input.uploadFile(png);
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.filter((e) => e.kind === 'CAST').length > n,
+          { timeout: 20000 },
+          casts,
+        );
+        await sleep(500);
+        const fresh = await tab.$('[aria-label="replace the backdrop"]');
+        check('a-new-backdrop-arrives-selected', !!fresh, fresh ? 'backdrop tools shown' : 'no backdrop tools');
+        // It covers the stage, so a quick tap on it is how it goes back down.
+        await finger([[0.6, 0.3]]);
+        await sleep(400);
+        check('a-tap-puts-the-backdrop-down', (await selected()) === null, `selected ${await selected()}`);
+        // And a long press on open stage picks it up again.
+        await finger([[0.6, 0.3]], { holdMs: 800 });
+        await sleep(400);
+        await tabShot('backdrop-picked');
+        const picked = await tab.$('[aria-label="replace the backdrop"]');
+        check('a-long-press-picks-up-the-backdrop', !!picked, picked ? 'backdrop tools shown' : `selected ${await selected()}`);
+        const before = await kindsNow();
+        await label('snip');
+        await tab.waitForFunction(() => document.querySelector('.stagebox')?.classList.contains('mode-snipping'), { timeout: 5000 });
+        await finger([
+          [0.1, 0.42],
+          [0.4, 0.43],
+          [0.7, 0.45],
+          [0.9, 0.46],
+        ]);
+        await sleep(500);
+        await tabShot('backdrop-snipped');
+        const kinds = await kindsSince(before);
+        check('a-backdrop-can-be-snipped', kinds.join(',') === 'SNIP', kinds.join(',') || 'nothing');
+      });
+
+      await phase('a-backdrop-can-be-wired', async () => {
+        if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
+        await label('more');
+        await sleep(350);
+        for (const h of await tab.$$('.sheet button')) {
+          if ((await h.evaluate((e) => (e.textContent || '').trim())) === 'wires') {
+            await h.tap();
+            break;
+          }
+        }
+        await sleep(300);
+        const before = await kindsNow();
+        const levels = await tab.$$('[aria-label="beat makes it shake"] button');
+        const wild = levels[levels.length - 1];
+        if (!wild) throw new Error('no beat-shake control');
+        await wild.tap();
+        await sleep(300);
+        const kinds = await kindsSince(before);
+        check('a-backdrop-can-be-wired', kinds.join(',') === 'WIRE', kinds.join(',') || 'nothing');
+      });
+    } finally {
+      await tab.close();
+    }
+  }
+
   // The audit's table, re-taken. Written as markdown so it can go
   // straight into docs/ux-audit/README.md rather than being retyped.
   const measPath = join(SHOTS, 'measurements.md');
