@@ -9,7 +9,13 @@ import { castOf, createShowSim } from '../engine/show';
 import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
 import { renderFrame2d, STAGE_BG } from '../media/stageDraw';
 import { drawStage } from './legacy/stageDraw';
-import { fixtureAnalysis, fixtureImages, fixtureProject, FIXTURE_DURATION_S } from './fixtures';
+import {
+  fixtureAnalysis,
+  fixtureImages,
+  fixtureProject,
+  fixtureV1,
+  FIXTURE_DURATION_S,
+} from './fixtures';
 
 export interface ParityResult {
   frames: number;
@@ -39,7 +45,8 @@ function legacyDraw(
   const wires = effectiveWires(project);
   const poses = sim.advanceTo(t);
   const mods = new Map<string, WireMods>();
-  for (const p of cast) mods.set(p.id, wireModsFor(wires, p.id, analysis.voice, analysis.onsets, t, project.seed));
+  for (const p of cast)
+    mods.set(p.id, wireModsFor(wires, p.id, analysis.voice, analysis.onsets, t, project.seed));
   drawStage(
     ctx,
     W,
@@ -60,6 +67,9 @@ export async function runFrameParity(): Promise<ParityResult> {
   const W = 180;
   const H = 320;
   const fps = 30;
+  // The legacy side reads the file as v1 saved it; today's side reads it
+  // migrated, as the app would open it.
+  const legacy = fixtureV1();
   const project = fixtureProject();
   const analysis = fixtureAnalysis();
   const images = await fixtureImages();
@@ -70,7 +80,7 @@ export async function runFrameParity(): Promise<ParityResult> {
     c.fillStyle = STAGE_BG;
     c.fillRect(0, 0, W, H);
   }
-  const sim = createShowSim(project);
+  const sim = createShowSim(legacy);
   const framer = createFramer(project, analysis);
 
   let mismatched = 0;
@@ -81,7 +91,7 @@ export async function runFrameParity(): Promise<ParityResult> {
   const frames = Math.round(FIXTURE_DURATION_S * fps);
   for (let i = 0; i < frames; i++) {
     const t = (i + 0.5) / fps;
-    legacyDraw(a, W, H, project, analysis, sim, images, t);
+    legacyDraw(a, W, H, legacy, analysis, sim, images, t);
     const frame = framer.frameAt(t);
     renderFrame2d(b, W, H, frame, images);
     if (voiceAt(analysis.voice, t).open > 0 && frame.layers.some((l) => l.voice.open > 0)) {
@@ -119,11 +129,13 @@ export async function peekFixture(times: number[], W = 360, H = 640): Promise<st
     for (; t < want; t += 1 / 30) renderFrame2d(ctx, W, H, framer.frameAt(t), images);
     renderFrame2d(ctx, W, H, framer.frameAt(want), images);
     const blob = await canvas.convertToBlob({ type: 'image/png' });
-    out.push(await new Promise<string>((res) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result as string);
-      r.readAsDataURL(blob);
-    }));
+    out.push(
+      await new Promise<string>((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.readAsDataURL(blob);
+      }),
+    );
   }
   return out;
 }

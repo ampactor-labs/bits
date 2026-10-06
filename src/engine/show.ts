@@ -421,7 +421,6 @@ export function createShowSim(project: Project, fromT = 0, targets?: TargetProvi
       const targetStep = Math.floor(t / PUPPET_DT);
       if (targetStep > stepIndex) {
         for (const p of cast) {
-          if (p.back) continue;
           const pose = poses.get(p.id)!;
           let root = pose.root;
           const dangles = pose.dangles.map((d) => ({ ...d }));

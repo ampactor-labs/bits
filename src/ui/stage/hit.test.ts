@@ -55,9 +55,20 @@ describe('hitTest', () => {
     expect(hitTest(s, 0.5, 0.5)?.puppet.id).toBe('over');
   });
 
-  it('never hands back a backdrop', () => {
+  it('never hands back a backdrop unless asked', () => {
     const s = scene([cast('sky', 0.5, 0.5, { back: true, puppet: { type: 'rect', color: '#111', w: 1, h: 1 } })]);
     expect(hitTest(s, 0.5, 0.5)).toBeNull();
+    expect(hitTest(s, 0.5, 0.5, { back: () => true })?.puppet.id).toBe('sky');
+    expect(hitTest(s, 0.5, 0.5, { back: (p) => p.id === 'other' })).toBeNull();
+  });
+
+  it('puts the back layer last: a puppet on a backdrop is what you get', () => {
+    const sky = cast('sky', 0.5, 0.5, { back: true, puppet: { type: 'rect', color: '#111', w: 1, h: 1 } });
+    // Cast after the puppet, so a plain draw-order scan would meet it first.
+    const s = scene([cast('cat', 0.5, 0.5), sky]);
+    const any = { back: () => true };
+    expect(hitTest(s, 0.5, 0.5, any)?.puppet.id).toBe('cat');
+    expect(hitTest(s, 0.1, 0.1, any)?.puppet.id).toBe('sky');
   });
 
   it('takes a pin over the body it is pinned to', () => {

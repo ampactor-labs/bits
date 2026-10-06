@@ -12,6 +12,7 @@ import {
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
 import {
+  RECIPE_VERSION,
   createProject,
   parseProject,
   type CastEvent,
@@ -291,6 +292,8 @@ const V0_RECIPE = JSON.stringify({
 
 interface V0E2EResult {
   parsedVersion: number;
+  /** What this app writes, so the proof follows version bumps. */
+  currentVersion: number;
   updatedAt: string;
   castCount: number;
   renderedDurationS: number;
@@ -315,6 +318,7 @@ async function runV0(): Promise<V0E2EResult> {
   const probe = await VideoSourceHandle.open(rendered);
   const out: V0E2EResult = {
     parsedVersion: project.version,
+    currentVersion: RECIPE_VERSION,
     updatedAt: project.updatedAt ?? '',
     castCount: castOfProject(project).length,
     renderedDurationS: probe.durationS,

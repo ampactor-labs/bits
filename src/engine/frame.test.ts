@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { fixtureAnalysis, fixtureProject } from '../e2e/fixtures';
-import { createFramer, composeFrame, EMPTY_ANALYSIS, impactsOf, visualsOf, voiceMap } from './frame';
+import {
+  createFramer,
+  composeFrame,
+  EMPTY_ANALYSIS,
+  impactsOf,
+  visualsOf,
+  voiceMap,
+} from './frame';
 import { castOf, createShowSim } from './show';
 import { effectiveWires, trailStrength, wireModsFor } from './wires';
 
@@ -55,7 +62,9 @@ describe('frame builder', () => {
   it('hears a landing once, on the way up through the line', () => {
     const prev = new Map<string, number>();
     const pose = (squash: number) =>
-      new Map([['a', { root: { x: 0, y: 0, vx: 0, vy: 0, angle: 0, squash }, dangles: [], pins: [] }]]);
+      new Map([
+        ['a', { root: { x: 0, y: 0, vx: 0, vy: 0, angle: 0, squash }, dangles: [], pins: [] }],
+      ]);
     expect(impactsOf(prev, pose(0.05))).toEqual([]);
     expect(impactsOf(prev, pose(0.3))).toEqual(['a']);
     expect(impactsOf(prev, pose(0.31))).toEqual([]);

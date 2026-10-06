@@ -135,7 +135,11 @@ try {
 
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
-  check('a v0 bit still opens', v0.parsedVersion === 1 && v0.castCount === 1, `version ${v0.parsedVersion}`);
+  check(
+    'a v0 bit still opens, migrated to today',
+    v0.parsedVersion === v0.currentVersion && v0.castCount === 1,
+    `version ${v0.parsedVersion}`,
+  );
   check('migration fills updatedAt from createdAt', v0.updatedAt === '2026-07-31T12:00:00.000Z', v0.updatedAt);
   check(
     'a v0 bit still renders to its audio spine',

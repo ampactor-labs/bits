@@ -50,7 +50,14 @@ Two passes went into it: a plan written against an exploration of the code, then
 - Overlay canvas for tool marks; frozen legacy renderer; fixed-seed fixture (`src/e2e/fixtures.ts`) with every sheet kind, a cut, a warp, mouths, eyes, wires and trails; render proof checks 120 frames pixel-for-pixel against the legacy path.
 - `CLAUDE.md`; `.gitignore` admits `.claude/skills/`.
 
-### S1 — sheets everywhere (v2)
+### S1a — backdrops become sheets (v2) — *done*
+What shipped: the migration chain (`MIGRATIONS` in `recipe.ts`); v1 backdrops become `fit: 'cover'` sheets at rest with whatever v1 ignored dropped; the renderer draws `fit: 'cover'` through the normal piece/warp path (the warp samples the cover crop); the sim moves backdrops; `hitTest` takes a `back` option and tests the back layer last; `engine/assetRefs.ts`; backdrops get mouth, eyes, snip, pin, replace and more.
+
+How a backdrop is picked up, settled while building it: a press on an unselected backdrop is a press on bare stage (so a stray drag never moves the scenery); a long press there selects it; a selected backdrop can be dragged like any sheet; a quick tap on a selected backdrop puts it down (it covers the stage, so there is no bare stage left to tap). The halo stays inert until the click that follows a lift has passed, because a long press can raise a docked halo under the finger.
+
+Harness note: late in `ux-walk.mjs`, after the window-shape phases, the original tab stops receiving synthetic touches at all; the backdrop phases run in a fresh tab. Put new touch-driven phases there too, or before the window-shape phases.
+
+### S1 (remaining, as S1b) — sheets everywhere
 - Migration chain. Backdrop CASTs become `fit:'cover'` with a reset transform; stray WIRE/MOUTH/EYES/PIN/SNIP/PASS events on backdrop ids drop, with MUTE/TRIM/REMOVE that point at dropped passes. `back` then means only "back layer": transform, sim, hit-testing, snip, pin, wires, mouth and eyes all apply.
 - Trails into renderer state with Δt-correct fade; impacts on the 30 Hz grid.
 - `engine/assetRefs.ts`.

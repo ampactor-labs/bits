@@ -5,7 +5,7 @@
 
 import { computeVoiceTrack } from '../engine/envelope';
 import type { Analysis } from '../engine/frame';
-import { RECIPE_VERSION, type Project, type RecipeEvent } from '../engine/recipe';
+import { parseProject, type Project, type RecipeEvent } from '../engine/recipe';
 
 export const FIXTURE_SEED = 424242;
 export const FIXTURE_DURATION_S = 4;
@@ -14,31 +14,116 @@ let n = 0;
 const id = () => `fx${(n++).toString(16).padStart(6, '0')}`;
 
 /** A pass that walks from one point to another over [t0, t1]. */
-function walk(puppetId: string, t0: number, t1: number, from: [number, number], to: [number, number], extra: Partial<RecipeEvent> = {}): RecipeEvent {
+function walk(
+  puppetId: string,
+  t0: number,
+  t1: number,
+  from: [number, number],
+  to: [number, number],
+  extra: Partial<RecipeEvent> = {},
+): RecipeEvent {
   const samples: number[] = [];
   for (let i = 0; i <= 20; i++) {
     const u = i / 20;
     const wob = Math.sin(u * Math.PI * 4) * 0.03;
-    samples.push(t0 + (t1 - t0) * u, from[0] + (to[0] - from[0]) * u, from[1] + (to[1] - from[1]) * u + wob);
+    samples.push(
+      t0 + (t1 - t0) * u,
+      from[0] + (to[0] - from[0]) * u,
+      from[1] + (to[1] - from[1]) * u + wob,
+    );
   }
   return { kind: 'PASS', id: id(), at: t0, puppetId, samples, ...extra } as RecipeEvent;
 }
 
-export function fixtureProject(): Project {
+/** The fixture as a v1 app saved it: what a phone already holds. The
+ *  legacy renderer reads this one directly. */
+export function fixtureV1(): Project {
   n = 0;
   const events: RecipeEvent[] = [
-    { kind: 'CAST', id: id(), at: 0, puppetId: 'sky', puppet: { type: 'cutout', assetId: 'fixture-sky.png', w: 1, h: 1 }, x: 0.5, y: 0.5, scale: 1, rot: 0, back: true },
-    { kind: 'CAST', id: id(), at: 0, puppetId: 'bg', puppet: { type: 'rect', color: '#2b3a55', w: 0.9, h: 0.25 }, x: 0.5, y: 0.88, scale: 1, rot: 0 },
-    { kind: 'CAST', id: id(), at: 0, puppetId: 'guy', puppet: { type: 'doodle', strokes: [[0.2, 0.1, 0.8, 0.1, 0.8, 0.9, 0.2, 0.9, 0.2, 0.1], [0.3, 0.6, 0.5, 0.75, 0.7, 0.6]], strokeStyle: [{ color: '#f0883e', width: 1.4 }, { color: '#ece5db', width: 1 }], w: 0.32, h: 0.22 }, x: 0.3, y: 0.6, scale: 1, rot: 0.1 },
-    { kind: 'CAST', id: id(), at: 0, puppetId: 'cat', puppet: { type: 'cutout', assetId: 'fixture-cat.png', w: 0.3, h: 0.18 }, x: 0.65, y: 0.35, scale: 1.1, rot: -0.15, flip: true },
-    { kind: 'CAST', id: id(), at: 0, puppetId: 'word', puppet: { type: 'text', text: 'bits!', w: 0.4, h: 0.08 }, x: 0.5, y: 0.15, scale: 1, rot: 0 },
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'sky',
+      puppet: { type: 'cutout', assetId: 'fixture-sky.png', w: 1, h: 1 },
+      x: 0.5,
+      y: 0.5,
+      scale: 1,
+      rot: 0,
+      back: true,
+    },
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'bg',
+      puppet: { type: 'rect', color: '#2b3a55', w: 0.9, h: 0.25 },
+      x: 0.5,
+      y: 0.88,
+      scale: 1,
+      rot: 0,
+    },
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'guy',
+      puppet: {
+        type: 'doodle',
+        strokes: [
+          [0.2, 0.1, 0.8, 0.1, 0.8, 0.9, 0.2, 0.9, 0.2, 0.1],
+          [0.3, 0.6, 0.5, 0.75, 0.7, 0.6],
+        ],
+        strokeStyle: [
+          { color: '#f0883e', width: 1.4 },
+          { color: '#ece5db', width: 1 },
+        ],
+        w: 0.32,
+        h: 0.22,
+      },
+      x: 0.3,
+      y: 0.6,
+      scale: 1,
+      rot: 0.1,
+    },
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'cat',
+      puppet: { type: 'cutout', assetId: 'fixture-cat.png', w: 0.3, h: 0.18 },
+      x: 0.65,
+      y: 0.35,
+      scale: 1.1,
+      rot: -0.15,
+      flip: true,
+    },
+    {
+      kind: 'CAST',
+      id: id(),
+      at: 0,
+      puppetId: 'word',
+      puppet: { type: 'text', text: 'bits!', w: 0.4, h: 0.08 },
+      x: 0.5,
+      y: 0.15,
+      scale: 1,
+      rot: 0,
+    },
     { kind: 'SNIP', id: id(), at: 0, puppetId: 'guy', x0: 0.0, y0: 0.35, x1: 1.0, y1: 0.3 },
     { kind: 'MOUTH', id: id(), at: 0, puppetId: 'guy', mx: 0.5, my: 0.7, size: 0.35 },
     { kind: 'EYES', id: id(), at: 0, puppetId: 'guy', ex: 0.5, ey: 0.45, size: 0.4 },
     { kind: 'PIN', id: id(), at: 0, puppetId: 'cat', px: 0.2, py: 0.3 },
     { kind: 'PIN', id: id(), at: 0, puppetId: 'cat', px: 0.8, py: 0.7 },
     { kind: 'MOUTH', id: id(), at: 0, puppetId: 'cat', mx: 0.6, my: 0.6, size: 0.3 },
-    { kind: 'WIRE', id: id(), at: 0, puppetId: 'guy', source: 'voice', target: 'bounce', amount: 0.5 },
+    {
+      kind: 'WIRE',
+      id: id(),
+      at: 0,
+      puppetId: 'guy',
+      source: 'voice',
+      target: 'bounce',
+      amount: 0.5,
+    },
     { kind: 'WIRE', id: id(), at: 0, puppetId: 'cat', source: 'beat', target: 'shake', amount: 1 },
     { kind: 'WIRE', id: id(), at: 0, puppetId: 'word', source: 'on', target: 'lean', amount: 0.5 },
     { kind: 'WIRE', id: id(), at: 0, puppetId: '', source: 'on', target: 'trails', amount: 0.5 },
@@ -48,7 +133,9 @@ export function fixtureProject(): Project {
     walk('cat', 1.5, 3.2, [0.55, 0.32], [0.6, 0.22], { pin: 1 } as Partial<RecipeEvent>),
   ];
   return {
-    version: RECIPE_VERSION,
+    // A v1 file; typed as today's Project only so the frozen renderer can
+    // read it.
+    version: 1 as unknown as Project['version'],
     id: 'fixture',
     title: 'fixture',
     createdAt: '2026-10-01T00:00:00.000Z',
@@ -56,6 +143,11 @@ export function fixtureProject(): Project {
     seed: FIXTURE_SEED,
     events,
   };
+}
+
+/** The same fixture as today's app opens it: migrated. */
+export function fixtureProject(): Project {
+  return parseProject(JSON.stringify(fixtureV1()));
 }
 
 /** A talky, beaty analysis to go with it. */

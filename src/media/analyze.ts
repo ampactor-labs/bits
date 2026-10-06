@@ -10,9 +10,7 @@ import { castOf, voiceOf } from '../engine/show';
 import { decodeMono, mixdownMono } from './audio';
 
 /** The bit's own track: loudness, visemes and the beat grid. */
-export async function analyzeBed(
-  blob: Blob | null,
-): Promise<Pick<Analysis, 'voice' | 'onsets'>> {
+export async function analyzeBed(blob: Blob | null): Promise<Pick<Analysis, 'voice' | 'onsets'>> {
   const mix = blob ? await mixdownMono(blob) : null;
   if (!mix) return { voice: EMPTY_VOICE, onsets: [] };
   return {

@@ -156,19 +156,25 @@ export function MoreSheet(props: MoreSheetProps) {
 
       <div className="sheet-icons">
         <IconButton icon="duplicate" label="duplicate" showLabel onClick={props.onDuplicate} />
-        <IconButton
-          icon="layerUp"
-          label="to the front"
-          showLabel
-          onClick={() => props.onLayer('front')}
-        />
-        <IconButton
-          icon="layerDown"
-          label="to the back"
-          showLabel
-          onClick={() => props.onLayer('back')}
-        />
-        <IconButton icon="center" label="centre it" showLabel onClick={props.onCenter} />
+        {/* The back layer has no order to change and its middle is the
+            stage's, so a backdrop gets neither. */}
+        {!props.puppet.back && (
+          <>
+            <IconButton
+              icon="layerUp"
+              label="to the front"
+              showLabel
+              onClick={() => props.onLayer('front')}
+            />
+            <IconButton
+              icon="layerDown"
+              label="to the back"
+              showLabel
+              onClick={() => props.onLayer('back')}
+            />
+            <IconButton icon="center" label="centre it" showLabel onClick={props.onCenter} />
+          </>
+        )}
       </div>
 
       <button onClick={props.onDrop}>drop from the cast</button>
