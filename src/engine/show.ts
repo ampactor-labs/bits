@@ -138,6 +138,16 @@ export function snipsOf(project: Project, puppetId: string): (SnipEvent | null)[
   return slots;
 }
 
+/** Each snip slot's fold angle, or null where the snip is a swinging cut.
+ *  Latest FOLD per slot wins. */
+export function foldsOf(project: Project, puppetId: string): (number | null)[] {
+  const folds: (number | null)[] = snipsOf(project, puppetId).map(() => null);
+  for (const e of project.events) {
+    if (e.kind === 'FOLD' && e.puppetId === puppetId && e.snip < folds.length) folds[e.snip] = e.angle;
+  }
+  return folds;
+}
+
 /** Pins apply only to uncut puppets: cut paper or bend it, not both. The
  *  exclusivity counts LIVE snips, so removing the last one makes a puppet
  *  pinnable again and brings back the pins it had before the cut.

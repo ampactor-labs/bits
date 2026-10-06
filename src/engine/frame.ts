@@ -26,6 +26,7 @@ import {
   cutsOf,
   lookOf,
   eyesOf,
+  foldsOf,
   inkOf,
   mouthOf,
   pinsOf,
@@ -58,6 +59,9 @@ export interface PuppetVisual {
   pins: (PinEvent | null)[];
   /** The ink it is dressed in, if any. */
   ink: Genome | null;
+  /** Per snip slot: the fold angle, or null for a swinging cut. Absent
+   *  draws every cut as a swing. */
+  folds?: (number | null)[];
 }
 
 export function visualsOf(project: Project): Map<string, PuppetVisual> {
@@ -69,6 +73,7 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
       eyes: eyesOf(project, p.id),
       pins: pinsOf(project, p.id),
       ink: inkOf(project, p.id),
+      folds: foldsOf(project, p.id),
     });
   }
   return visuals;

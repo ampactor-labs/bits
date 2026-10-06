@@ -14,7 +14,8 @@ export type SheetTarget =
   | 'rot'
   | 'opacity'
   | 'hue'
-  | 'depth';
+  | 'depth'
+  | 'fold';
 
 export type StageTarget =
   | 'trails'
@@ -47,6 +48,7 @@ export const SHEET_TARGETS: readonly TargetInfo[] = [
   { id: 'opacity', label: 'fade' },
   { id: 'hue', label: 'colour' },
   { id: 'depth', label: 'depth' },
+  { id: 'fold', label: 'folds' },
 ];
 
 export const STAGE_TARGETS: readonly TargetInfo[] = [
@@ -76,6 +78,7 @@ export const REACH = {
   rot: Math.PI / 2,
   hue: 180,
   depth: 4,
+  fold: Math.PI / 2,
   fog: 1,
   'cam.x': 0.25,
   'cam.y': 0.25,

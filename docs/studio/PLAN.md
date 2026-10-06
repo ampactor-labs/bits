@@ -259,11 +259,38 @@ What shipped:
 Not done here:
 - **`EYES.look`** (eyes that follow something). It waits for a signal-driven target; a wire to an eye prop is the likely shape.
 
-### S6b — shots
-- Shots: CUTs as cards in `rooms/Time.tsx` alongside Lanes and the timeline.
+### S6b — shots — *done*
+What shipped, with no new grammar: a shot is the stretch after a CUT, so old players see the same film and the recipe stays at v10.
+- **`engine/shots.ts`** derives the shots from the cuts (`shotsOf`) and works out framings from where the sheets stand when a shot opens:
+  - **wide** is the rest camera;
+  - **close on a sheet** centres it and fills about half the frame, allowing for its depth;
+  - **everyone** fits every sheet in, and offers nothing when they already need the whole stage.
+- **The Shots room** (`ui/rooms/Shots.tsx`, from the show menu, as "shots") is a strip of cards, one per shot, each with a still of how it opens (`stillsAt`, through the same frame builder as the poster).
+  - Pick a card to frame its shot, slide its cut a beat earlier or later (the onset grid; half a second without beats), or take the cut out with the five-second undo.
+  - "cut here" starts a new shot at the playhead, on the beat when one lands within 0.3 s. Out of a wide shot it goes close on the first sheet, otherwise wide, so a new cut is always a visible cut.
+  - Every change is one commit: a moved or reframed cut is a REMOVE plus a CUT, undone together.
+- The logic lives in `ui/stage/useShots.ts`, not Stage.tsx.
 
-### S7 — folds
-- `SNIP.hinge?`/`fold?` and prop `fold.<i>`: a hinge piece rotates in 3D about the snip line (GL mat4; Canvas2D scales perpendicular to the hinge by cos θ). A strip with N hinges is a tunnel to fly through, with near-plane culling.
+It is `rooms/Shots.tsx` rather than the planned `rooms/Time.tsx`: the lanes and the timeline already are the time view, and what was missing was a place to think in shots.
+
+### S7 — folds (v11) — *done*
+What shipped:
+- **`FOLD {puppetId, snip, angle}`** turns a cut into a fold: the piece stays joined along its snip line and turns out of the paper by `angle` radians (within ±π). The latest FOLD per snip slot wins, and a null angle makes it a swinging cut again.
+  - It is an event of its own rather than `SNIP.hinge`, because the recipe is append-only. A cut made yesterday can become a fold today without rewriting the SNIP, and back again.
+- **Drawing** happens in the shared rasteriser (`drawSheetContent`), so Canvas2D and GL agree by construction. The GL parity scene "folds" is 0.08% visibly off at worst.
+  - Seen square-on, a fold squashes the piece across its line by cos θ, in pixel space so it stays square to its line on any aspect.
+  - It darkens the further it turns from the light.
+  - Past a right angle it lies over the other side showing the paper's plain back.
+  - The shading is laid only where the piece has paper, so a cutout keeps its silhouette. Mouths and eyes on a folded piece fold with it.
+  - A sheet without folds draws exactly as before.
+- **A fold is part of the sheet:** grabbing it grabs the sheet, and its swing physics is ignored while it is folded.
+- **The `fold` wire target** ("folds" in the Wires room) turns every fold of a sheet by up to a right angle, so a beat or a slow wave can flap them.
+- **The more panel** has a row per cut: swings, bent, or folded over.
+
+Not done here, and why:
+- **Perspective and tunnels.** True 3D (a GL mat4 per hinge, a strip of N hinges as a tunnel to fly through, near-plane culling) cannot be matched by Canvas2D, whose transforms are affine. It would split the two renderers, which parity rules out. It wants a GL-only "deep" mode with its own proof.
+- **Per-fold wire targets (`fold.<i>`).** One `fold` target turns all of a sheet's folds together. Separate targets are a small step once a sheet with several folds needs them.
+- **Performing a fold as a pass,** with a finger on the flap during a take.
 
 ## Performance
 

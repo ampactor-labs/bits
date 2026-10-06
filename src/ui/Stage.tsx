@@ -47,6 +47,7 @@ import {
   pinsOf,
   sameChannel,
   snipsOf,
+  foldsOf,
   voiceOf,
   type Channel,
   type PuppetPose,
@@ -63,6 +64,7 @@ import {
 import { getAsset, saveAsset } from '../media/assets';
 import { exportBundle } from '../media/bundle';
 import { makeCutout } from '../media/cutout';
+import { splitPieces } from '../engine/pieces';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
 import { PoseDriver } from '../media/pose';
@@ -125,6 +127,8 @@ import {
 } from '../render/surface';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { Tray, type KeepAs } from './rooms/Tray';
+import { ShotsRoom } from './rooms/Shots';
+import { useShots } from './stage/useShots';
 import type { Genome } from '../engine/ink';
 import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
@@ -245,6 +249,7 @@ export function Stage({
     | { kind: 'more' }
     | { kind: 'show' }
     | { kind: 'wires'; pid: string }
+    | { kind: 'shots' }
     | { kind: 'ink'; target: string | null }
   >(null);
   const [textDraft, setTextDraft] = useState('');
@@ -2057,6 +2062,19 @@ export function Stage({
     paintClock(clamped);
   };
 
+  const shotsRoom = useShots({
+    open: sheet?.kind === 'shots',
+    project: projectSnap,
+    durationS,
+    onsets,
+    images: () => imagesRef.current,
+    clock: () => playheadRef.current,
+    commit,
+    seek,
+    undoable: (message) => toast.undoable(message, undoRef.current),
+    name: (p) => puppetLabel(p, castOf(projectRef.current).indexOf(p)),
+  });
+
   const passCount = projectSnap.events.filter((e) => e.kind === 'PASS').length;
   const puppets = castOf(projectSnap).filter((p) => !p.back);
   const busy = isBusy(mode);
@@ -2704,6 +2722,15 @@ export function Stage({
             .filter((p) => p.id !== selected.id && !p.back && !ridesOn(projectSnap, p.id, selected.id))
             .map((p) => ({ id: p.id, name: puppetLabel(p, castOf(projectSnap).indexOf(p)) }))}
           onRide={(parentId) => ride(selected, parentId)}
+          cuts={splitPieces(snipsOf(projectSnap, selected.id)).children.map((c) => ({
+            snip: c.snipIndex,
+            angle: foldsOf(projectSnap, selected.id)[c.snipIndex] ?? null,
+          }))}
+          onFold={(snip, angle) =>
+            commit((p) =>
+              appendEvent(p, { kind: 'FOLD', id: newId(), at: 0, puppetId: selected.id, snip, angle }),
+            )
+          }
           {...(selected.spec.type === 'video'
             ? {
                 clip: {
@@ -2762,6 +2789,8 @@ export function Stage({
           onClose={() => setSheet(null)}
         />
       )}
+
+      {sheet?.kind === 'shots' && <ShotsRoom {...shotsRoom} onClose={() => setSheet(null)} />}
 
       {sheet?.kind === 'wires' && (
         <WiresRoom
@@ -2857,6 +2886,7 @@ export function Stage({
           onSound={() => setSheet({ kind: 'sound' })}
           onStageWire={(target, amount) => setWire('', 'const', target, { amount })}
           onStageWires={() => setSheet({ kind: 'wires', pid: '' })}
+          onShots={() => setSheet({ kind: 'shots' })}
           shadow={lookOf(projectSnap)?.shadow ?? 0}
           fog={lookOf(projectSnap)?.fog ?? 0}
           palette={lookOf(projectSnap)?.palette ?? null}

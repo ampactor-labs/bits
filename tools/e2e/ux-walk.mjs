@@ -1783,6 +1783,41 @@ try {
         check('a-backdrop-can-be-snipped', kinds.join(',') === 'SNIP', kinds.join(',') || 'nothing');
       });
 
+      // The cut just made can fold instead of swing, and back again.
+      await phase('a-cut-can-fold', async () => {
+        if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
+        await label('more');
+        await sleep(350);
+        const pick = async (text) => {
+          const h = await tab.evaluateHandle(
+            (t) =>
+              Array.from(document.querySelectorAll('[aria-label="how cut 1 moves"] button')).find(
+                (b) => b.textContent?.trim() === t,
+              ),
+            text,
+          );
+          if (!h.asElement()) throw new Error(`no "${text}" for the cut`);
+          await h.asElement().evaluate((e) => e.scrollIntoView({ block: 'center' }));
+          await h.asElement().tap();
+        };
+        const before = await kindsNow();
+        await pick('folded over');
+        await sleep(400);
+        await label('close');
+        await sleep(400);
+        await tabShot('a-cut-folded-over');
+        const angle = await tab.evaluate(() => window.__bits.project().events.filter((e) => e.kind === 'FOLD').pop()?.angle);
+        // Back to a swinging cut: the later phases expect the whole backdrop.
+        await label('more');
+        await sleep(350);
+        await pick('swings');
+        await sleep(300);
+        await label('close');
+        await sleep(300);
+        const kinds = await kindsSince(before);
+        check('a-cut-can-fold', kinds.join(',') === 'FOLD,FOLD' && angle > 3, `${kinds.join(',') || 'nothing'}, angle ${angle}`);
+      });
+
       await phase('a-backdrop-can-be-wired', async () => {
         if (!(await tab.$('[aria-label="replace the backdrop"]'))) throw new Error('the backdrop is not selected');
         await label('more');
@@ -2228,6 +2263,56 @@ try {
           before,
         );
         check('a-kit-without-a-person-is-one-piece', casts.join(',') === 'cutout', casts.join(',') || 'nothing');
+      });
+
+      // Shots: a cut dropped at the playhead from the shots room, reframed,
+      // then taken out again with an undo on offer.
+      await phase('shots-are-cards-to-frame-and-time', async () => {
+        const bar = await tab.evaluate(() => {
+          const r = document.querySelector('.timeline .seek')?.getBoundingClientRect();
+          return r ? { x: r.left + r.width * 0.72, y: r.top + r.height / 2 } : null;
+        });
+        if (!bar) throw new Error('no timeline');
+        await tab.touchscreen.tap(bar.x, bar.y);
+        await sleep(300);
+        await label('this bit');
+        await sleep(350);
+        await label('shots');
+        await sleep(300);
+        // Every card gets a still of how its shot opens.
+        await tab.waitForFunction(
+          () => {
+            const cards = document.querySelectorAll('.shot-card');
+            return cards.length > 0 && document.querySelectorAll('.shot-card img').length === cards.length;
+          },
+          { timeout: 15000 },
+        );
+        const cardsBefore = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        const before = await kindsNow();
+        const cutHere = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) => b.textContent?.startsWith('cut here,')),
+        );
+        if (!cutHere.asElement()) throw new Error('no cut here');
+        await cutHere.asElement().tap();
+        await sleep(400);
+        const cardsAfter = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        // Reframe the new shot with any framing it does not have.
+        const other = await tab.$('.shot-framings button[aria-pressed="false"]');
+        if (!other) throw new Error('no other framing');
+        await other.tap();
+        await sleep(400);
+        await tabShot('shots-room');
+        await label('take the cut out');
+        await sleep(400);
+        const toast = await tab.evaluate(() => document.body.textContent?.includes('took that cut out') ?? false);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check(
+          'shots-are-cards-to-frame-and-time',
+          cardsAfter === cardsBefore + 1 && kinds.join(',') === 'CUT,REMOVE,CUT,REMOVE' && toast,
+          `${cardsBefore}→${cardsAfter} cards, ${kinds.join(',') || 'nothing'}, toast ${toast}`,
+        );
       });
     } finally {
       await tab.close();
