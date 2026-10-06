@@ -165,7 +165,28 @@ Original notes:
 - Camera `prop 'yaw'|'pitch'` (orbit) — projective, so WebGL only.
 - Harness `runParity`: fixtures through both renderers at 360×640 within frozen tolerances; e2e Chrome flags `--use-angle=swiftshader --enable-unsafe-swiftshader`.
 
-### S4b — Ink and Seed
+### S4b — Ink and Seed (v6) — *done*
+What shipped:
+- **Genomes** (`engine/ink.ts`) are 2–6 steps from `noise stripes cells warp kaleido posterize halftone palette feedback`, every parameter in 0..1, run coordinate steps first and colour last, with exactly one palette.
+- **Making them.** `dice` rolls from weighted templates. `mutate` nudges parameters (σ 0.12), swaps a step for another of its kind 15% of the time, and inserts or deletes one 10% of the time. `cross` combines two genomes slot by slot. Children's seeds come from `childSeed(seed, gen, i)`.
+- **Recipe v6.**
+  - An `ink` sheet type: `{type: 'ink', genome}`.
+  - `INK {puppetId, genome | null}` dresses any sheet. Its content keeps its silhouette and takes the ink's colours, like paper cut from patterned stock.
+  - Genomes are stored whole.
+- **The Seed tray** (`ui/rooms/Tray.tsx`) is six live inks in one row (the sheet stays within a third of the stage):
+  - tap one to breed from it (it moves to the front with five children);
+  - hold two to cross them;
+  - roll for six new ones;
+  - keep: dress the sheet it was opened for, or cast a new ink sheet or backdrop.
+
+  It opens from the cast sheet ("grow an ink") and a sheet's more panel; taking an ink off has an undo.
+
+Differs from the notes below, deliberately: **inks are computed on the CPU, not in GLSL.**
+- **Why.** Export and the software-GL fallback are Canvas2D, and two implementations of every op would drift apart. One deterministic implementation means preview, film, Canvas2D and GL all show the same ink.
+- **How.** An ink is a 96² field, shaded every quarter second and cross-faded on the 30 Hz grid, with feedback stepped per tick. That is about 0.3 ms per tick plus about 12 ms per slice on a desktop. A seek warms up from 2 s back, and feedback forgets the difference (the unit test bounds it at 3/255).
+- **Drawing.** The field is drawn smoothly scaled, which suits the printed look. A GLSL path can come later for live inks larger than this, with the CPU version as its reference.
+
+Original notes:
 - Genome `{seed, ops:[{op, p:number[]}]}`, 2–6 ops from `noise stripes cells warp feedback kaleido posterize halftone palette` (later `src`), every parameter normalized 0..1.
 - Dice from weighted templates; breed `mutate(parent, rng(hash(seed, gen, i)))` (σ 0.12 nudges, 15 % op swap, 10 % insert/delete); cross per op slot.
 - Genome → GLSL is a pure string; programs cached by op sequence, parameters are uniforms. Feedback ticks at 30 Hz; a seek warms up from t − 2 s.

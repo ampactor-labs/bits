@@ -12,6 +12,7 @@
 
 import { inFront, isRestCamera, type CameraPose } from './camera';
 import type { Bands } from './signals';
+import type { Genome } from './ink';
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
 import { PUPPET_DT } from './puppet';
@@ -24,6 +25,7 @@ import {
   cutsOf,
   lookOf,
   eyesOf,
+  inkOf,
   mouthOf,
   pinsOf,
   snipsOf,
@@ -53,6 +55,8 @@ export interface PuppetVisual {
   /** Pin slots; a null slot was removed and keeps its index so the passes
    *  that name later pins still find them. */
   pins: (PinEvent | null)[];
+  /** The ink it is dressed in, if any. */
+  ink: Genome | null;
 }
 
 export function visualsOf(project: Project): Map<string, PuppetVisual> {
@@ -63,6 +67,7 @@ export function visualsOf(project: Project): Map<string, PuppetVisual> {
       mouth: mouthOf(project, p.id),
       eyes: eyesOf(project, p.id),
       pins: pinsOf(project, p.id),
+      ink: inkOf(project, p.id),
     });
   }
   return visuals;

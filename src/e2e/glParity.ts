@@ -10,6 +10,7 @@ import type { Project, RecipeEvent } from '../engine/recipe';
 import { createRenderer2d } from '../media/stageDraw';
 import { createGlRenderer } from '../render/gl/glRenderer';
 import { fixtureAnalysis, fixtureImages, fixtureProject } from './fixtures';
+import { dice } from '../engine/ink';
 
 export interface GlParityResult {
   available: boolean;
@@ -36,6 +37,29 @@ function lookedFixture(): Project {
       { kind: 'PASS', id: 'cam-pan', at: 0.3, puppetId: CAMERA_ID, samples } as RecipeEvent,
       { kind: 'PASS', id: 'cam-z', at: 0.3, puppetId: CAMERA_ID, samples: dolly, prop: 'z' } as RecipeEvent,
       { kind: 'LOOK', id: 'look', at: 0, puppetId: '', shadow: 0.5, fog: 0.4 } as RecipeEvent,
+    ],
+  };
+}
+
+/** The fixture with an ink sheet and the floor strip dressed in ink. */
+function inkedFixture(): Project {
+  const base = fixtureProject();
+  return {
+    ...base,
+    events: [
+      ...base.events,
+      {
+        kind: 'CAST',
+        id: 'ink-sheet',
+        at: 0,
+        puppetId: 'swatch',
+        puppet: { type: 'ink', genome: dice(17), w: 0.4, h: 0.22 },
+        x: 0.3,
+        y: 0.3,
+        scale: 1,
+        rot: 0.2,
+      } as RecipeEvent,
+      { kind: 'INK', id: 'dress', at: 0, puppetId: 'bg', genome: dice(23) } as RecipeEvent,
     ],
   };
 }
@@ -90,7 +114,11 @@ export async function runGlParity(): Promise<GlParityResult> {
   return {
     available: true,
     renderer,
-    scenes: [scene('fixture', fixtureProject()), scene('camera and look', lookedFixture())],
+    scenes: [
+      scene('fixture', fixtureProject()),
+      scene('camera and look', lookedFixture()),
+      scene('inks', inkedFixture()),
+    ],
   };
 }
 

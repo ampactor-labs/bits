@@ -38,6 +38,7 @@ import {
   createShowSim,
   eyesOf,
   cutsOf,
+  inkOf,
   lanePasses,
   localToWorld,
   lookOf,
@@ -110,6 +111,8 @@ import {
   type StageSurface,
 } from '../render/surface';
 import { MoreSheet } from './stage/sheets/MoreSheet';
+import { Tray, type KeepAs } from './rooms/Tray';
+import type { Genome } from '../engine/ink';
 import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
 import { RenderSheet } from './stage/sheets/RenderSheet';
@@ -229,6 +232,7 @@ export function Stage({
     | { kind: 'more' }
     | { kind: 'show' }
     | { kind: 'wires'; pid: string }
+    | { kind: 'ink'; target: string | null }
   >(null);
   const [textDraft, setTextDraft] = useState('');
   /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
@@ -1892,6 +1896,37 @@ export function Stage({
     dirtyRef.current = true;
   };
 
+  /** An ink kept from the tray: dressing a sheet, or a sheet of its own. */
+  const keepInk = (genome: Genome, as: KeepAs, target: string | null) => {
+    if (as === 'dress' && target) {
+      commit((p) => appendEvent(p, { kind: 'INK', id: newId(), at: 0, puppetId: target, genome }));
+      setSelectedId(target);
+      return;
+    }
+    const id = newId();
+    const back = as === 'backdrop';
+    // Square on screen whatever the stage's shape.
+    const wide = (projectRef.current.aspect ?? '9:16') === '16:9';
+    const w = back ? 1 : wide ? 0.28 : 0.5;
+    const h = back ? 1 : wide ? 0.5 : 0.28;
+    const spot = back ? { x: 0.5, y: 0.5 } : freeSpot();
+    commit((p) =>
+      appendEvent(p, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: id,
+        puppet: { type: 'ink', genome, w, h },
+        x: spot.x,
+        y: spot.y,
+        scale: 1,
+        rot: 0,
+        ...(back ? { back: true as const } : {}),
+      }),
+    );
+    setSelectedId(id);
+  };
+
   /** A cut back to the wide shot, on the beat when one is about to land:
    *  a cut a hair before the beat reads as late. */
   const dropCut = () => {
@@ -2040,6 +2075,7 @@ export function Stage({
     if (kind === 'photo') return photoInputRef.current?.click();
     if (kind === 'selfie') return snapInputRef.current?.click();
     if (kind === 'backdrop') return backdropInputRef.current?.click();
+    if (kind === 'ink') return setSheet({ kind: 'ink', target: null });
     setSheet(null);
     if (kind === 'sticker') return castSticker();
     if (kind === 'doodle') return enterMode('doodling');
@@ -2401,6 +2437,14 @@ export function Stage({
             setSheet(null);
             setSideView(true);
           }}
+          onInk={() => setSheet({ kind: 'ink', target: selected.id })}
+          inked={!!inkOf(projectSnap, selected.id)}
+          onInkOff={() => {
+            commit((p) =>
+              appendEvent(p, { kind: 'INK', id: newId(), at: 0, puppetId: selected.id, genome: null }),
+            );
+            toast.undoable('took the ink off', undoRef.current);
+          }}
           onSpring={(spring: SpringPreset) => setSpec(selected, { spring })}
           onHand={(hand) => assignHand(selected, hand)}
           onDuplicate={() => {
@@ -2412,6 +2456,27 @@ export function Stage({
           onDrop={() => {
             setSheet(null);
             dropPuppet(selected);
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
+
+      {sheet?.kind === 'ink' && (
+        <Tray
+          target={
+            sheet.target
+              ? {
+                  name: puppetLabel(
+                    castOf(projectSnap).find((p) => p.id === sheet.target) ?? castOf(projectSnap)[0]!,
+                    castOf(projectSnap).findIndex((p) => p.id === sheet.target),
+                  ),
+                }
+              : null
+          }
+          start={sheet.target ? inkOf(projectSnap, sheet.target) : null}
+          onKeep={(genome, as) => {
+            setSheet(null);
+            keepInk(genome, as, sheet.target);
           }}
           onClose={() => setSheet(null)}
         />

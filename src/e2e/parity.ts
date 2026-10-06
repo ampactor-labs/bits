@@ -191,6 +191,7 @@ export async function runTrailRate(): Promise<TrailRateResult> {
     mouth: null,
     eyes: null,
     pins: [],
+    ink: null,
   };
   const still = {
     root: { x: 0.5, y: 0.5, vx: 0, vy: 0, angle: 0, squash: 0 },

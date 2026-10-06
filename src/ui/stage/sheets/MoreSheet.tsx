@@ -55,6 +55,11 @@ export interface MoreSheetProps {
   onDepth: (depth: number) => void;
   /** Opens the side view of the whole stage. */
   onSideView: () => void;
+  /** Opens the Seed tray to dress this sheet in an ink. */
+  onInk: () => void;
+  /** True when it is dressed; offers taking it off. */
+  inked: boolean;
+  onInkOff: () => void;
   onSpring: (spring: SpringPreset) => void;
   onHand: (hand: 'left' | 'right' | 'none') => void;
   onDuplicate: () => void;
@@ -116,6 +121,18 @@ export function MoreSheet(props: MoreSheetProps) {
       </div>
 
       <button onClick={props.onSideView}>see the stage from the side</button>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">ink</span>
+        <span className="sheet-icons">
+          <IconButton
+            icon="ink"
+            label={props.inked ? 'breed its ink' : 'dress it in an ink'}
+            onClick={props.onInk}
+          />
+          {props.inked && <IconButton icon="trash" label="take the ink off" onClick={props.onInkOff} />}
+        </span>
+      </div>
 
       <button onClick={props.onWires}>wires</button>
 

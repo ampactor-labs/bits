@@ -13,6 +13,7 @@ import {
 } from './puppet';
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
 import { CAMERA_ID, CAMERA_PROPS, REST_CAMERA, type CameraPose, type CameraProp } from './camera';
+import type { Genome } from './ink';
 import type {
   CutEvent,
   EyesEvent,
@@ -148,6 +149,15 @@ export function voiceOf(project: Project, puppetId: string): VoiceEvent | null {
   for (const e of project.events) {
     if (e.kind === 'VOICE' && e.puppetId === puppetId) out = e;
     else if (e.kind === 'REMOVE' && e.puppetId === puppetId && 'voice' in e.target) out = null;
+  }
+  return out;
+}
+
+/** The ink a sheet is dressed in: latest INK wins, null takes it off. */
+export function inkOf(project: Project, puppetId: string): Genome | null {
+  let out: Genome | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'INK' && e.puppetId === puppetId) out = e.genome;
   }
   return out;
 }

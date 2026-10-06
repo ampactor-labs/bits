@@ -5,10 +5,11 @@
 import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
 import { isTargetFor } from './props';
 import { parseSignal } from './signals';
+import { genomeProblem, type Genome } from './ink';
 
-export const RECIPE_VERSION = 5 as const;
+export const RECIPE_VERSION = 6 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6] as const;
 
 interface EventBase {
   id: string;
@@ -51,7 +52,9 @@ export type PuppetSpec =
       strokeStyle?: { color: string; width: number }[];
     } & SpecCommon)
   | ({ type: 'text'; text: string } & SpecCommon)
-  | ({ type: 'rect'; color: string } & SpecCommon);
+  | ({ type: 'rect'; color: string } & SpecCommon)
+  /** A sheet grown rather than drawn: an ink genome, stored whole. */
+  | ({ type: 'ink'; genome: Genome } & SpecCommon);
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
  *  wins and moves it to the front; `back` puts it in the back layer, behind
@@ -269,6 +272,15 @@ export interface VoiceEvent extends EventBase {
   gain?: number;
 }
 
+/** Dresses a sheet in an ink: its own content keeps its shape, the ink
+ *  colours it. Latest wins; a null genome takes the ink off. The genome is
+ *  stored whole, so a bit keeps its inks whatever breeding becomes. */
+export interface InkEvent extends EventBase {
+  kind: 'INK';
+  puppetId: string;
+  genome: Genome | null;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
@@ -291,7 +303,8 @@ export type RecipeEvent =
   | VoiceEvent
   | DropEvent
   | LookEvent
-  | CutEvent;
+  | CutEvent
+  | InkEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -409,6 +422,9 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
       }),
     };
   },
+  /** v6 adds inks (an ink sheet, and INK to dress any sheet); nothing
+   *  older changes. */
+  5: (raw) => ({ ...raw, version: 6 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -542,6 +558,9 @@ export function parseProject(text: string): Project {
         }
         if (spec.fit !== undefined && !(spec.type === 'cutout' && spec.fit === 'cover')) {
           throw new Error('recipe: fit is cover, on photos only');
+        }
+        if (spec.type === 'ink' && genomeProblem(spec.genome) !== null) {
+          throw new Error(`recipe: ink genome is malformed (${genomeProblem(spec.genome)})`);
         }
         if (spec.name !== undefined && typeof spec.name !== 'string') {
           throw new Error('recipe: puppet name must be a string');
@@ -722,6 +741,11 @@ export function parseProject(text: string): Project {
         }
         break;
       }
+      case 'INK':
+        if (ev.genome !== null && genomeProblem(ev.genome) !== null) {
+          throw new Error(`recipe: INK genome is malformed (${genomeProblem(ev.genome)})`);
+        }
+        break;
       case 'CUT':
         if (
           ev.puppetId !== CAMERA_ID ||
