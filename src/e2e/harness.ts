@@ -39,6 +39,7 @@ import {
 } from './parity';
 import { runCamera, runLook, type CameraResult, type LookResult } from './camera';
 import { runBands, type BandsResult } from './bands';
+import { runGlParity, runSurface, type GlParityResult, type SurfaceResult } from './glParity';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -577,6 +578,8 @@ declare global {
       runCamera: () => Promise<CameraResult>;
       runLook: () => Promise<LookResult>;
       runBands: () => Promise<BandsResult>;
+      runGlParity: () => Promise<GlParityResult>;
+      runSurface: () => Promise<SurfaceResult>;
     };
   }
 }
@@ -593,4 +596,6 @@ window.__bitsE2E = {
   runCamera,
   runLook,
   runBands,
+  runGlParity,
+  runSurface,
 };

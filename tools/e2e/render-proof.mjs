@@ -45,7 +45,13 @@ try {
   browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: 'new',
-    args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'],
+    // SwiftShader gives headless Chrome a WebGL2 to hold the GL renderer to.
+    args: [
+      '--no-sandbox',
+      '--autoplay-policy=no-user-gesture-required',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
+    ],
   });
   const page = await browser.newPage();
   const pageErrors = [];
@@ -188,6 +194,25 @@ try {
     'bass is heard in the bass band and air in the air band',
     bands.bassLow > 0.8 && bands.bassHigh < 0.3 && bands.airHigh > 0.8 && bands.airLow < 0.3,
     `bass ${bands.bassLow.toFixed(2)} then ${bands.bassHigh.toFixed(2)}, air ${bands.airLow.toFixed(2)} then ${bands.airHigh.toFixed(2)}`,
+  );
+
+  // The WebGL2 renderer draws what the canvas renderer draws, within the
+  // one extra resampling its sprites cost.
+  const glp = await page.evaluate(() => window.__bitsE2E.runGlParity());
+  check('webgl2 is there to test', glp.available, glp.renderer);
+  for (const sc of glp.scenes) {
+    check(
+      `the GL renderer matches the canvas (${sc.name})`,
+      sc.frames >= 12 && sc.worstVisible < 0.02 && sc.worstMean < 3,
+      `${(sc.worstVisible * 100).toFixed(2)}% of pixels visibly off at worst, mean diff ${sc.worstMean.toFixed(2)}`,
+    );
+  }
+
+  const surf = await page.evaluate(() => window.__bitsE2E.runSurface());
+  check(
+    'asked for GL, the stage draws with GL; left to choose on software GL, it picks the canvas',
+    surf.forced === 'gl' && surf.auto === '2d' && surf.colours > 50,
+    `forced ${surf.forced}, auto ${surf.auto}, ${surf.colours} colours drawn`,
   );
 
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
