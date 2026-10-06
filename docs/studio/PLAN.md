@@ -259,8 +259,19 @@ What shipped:
 Not done here:
 - **`EYES.look`** (eyes that follow something). It waits for a signal-driven target; a wire to an eye prop is the likely shape.
 
-### S6b — shots
-- Shots: CUTs as cards in `rooms/Time.tsx` alongside Lanes and the timeline.
+### S6b — shots — *done*
+What shipped, with no new grammar: a shot is the stretch after a CUT, so old players see the same film and the recipe stays at v10.
+- **`engine/shots.ts`** derives the shots from the cuts (`shotsOf`) and works out framings from where the sheets stand when a shot opens:
+  - **wide** is the rest camera;
+  - **close on a sheet** centres it and fills about half the frame, allowing for its depth;
+  - **everyone** fits every sheet in, and offers nothing when they already need the whole stage.
+- **The Shots room** (`ui/rooms/Shots.tsx`, from the show menu, as "shots") is a strip of cards, one per shot, each with a still of how it opens (`stillsAt`, through the same frame builder as the poster).
+  - Pick a card to frame its shot, slide its cut a beat earlier or later (the onset grid; half a second without beats), or take the cut out with the five-second undo.
+  - "cut here" starts a new shot at the playhead, on the beat when one lands within 0.3 s. Out of a wide shot it goes close on the first sheet, otherwise wide, so a new cut is always a visible cut.
+  - Every change is one commit: a moved or reframed cut is a REMOVE plus a CUT, undone together.
+- The logic lives in `ui/stage/useShots.ts`, not Stage.tsx.
+
+It is `rooms/Shots.tsx` rather than the planned `rooms/Time.tsx`: the lanes and the timeline already are the time view, and what was missing was a place to think in shots.
 
 ### S7 — folds
 - `SNIP.hinge?`/`fold?` and prop `fold.<i>`: a hinge piece rotates in 3D about the snip line (GL mat4; Canvas2D scales perpendicular to the hinge by cos θ). A strip with N hinges is a tunnel to fly through, with near-plane culling.

@@ -2215,6 +2215,56 @@ try {
         );
         check('a-kit-without-a-person-is-one-piece', casts.join(',') === 'cutout', casts.join(',') || 'nothing');
       });
+
+      // Shots: a cut dropped at the playhead from the shots room, reframed,
+      // then taken out again with an undo on offer.
+      await phase('shots-are-cards-to-frame-and-time', async () => {
+        const bar = await tab.evaluate(() => {
+          const r = document.querySelector('.timeline .seek')?.getBoundingClientRect();
+          return r ? { x: r.left + r.width * 0.72, y: r.top + r.height / 2 } : null;
+        });
+        if (!bar) throw new Error('no timeline');
+        await tab.touchscreen.tap(bar.x, bar.y);
+        await sleep(300);
+        await label('this bit');
+        await sleep(350);
+        await label('shots');
+        await sleep(300);
+        // Every card gets a still of how its shot opens.
+        await tab.waitForFunction(
+          () => {
+            const cards = document.querySelectorAll('.shot-card');
+            return cards.length > 0 && document.querySelectorAll('.shot-card img').length === cards.length;
+          },
+          { timeout: 15000 },
+        );
+        const cardsBefore = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        const before = await kindsNow();
+        const cutHere = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('.sheet button')).find((b) => b.textContent?.startsWith('cut here,')),
+        );
+        if (!cutHere.asElement()) throw new Error('no cut here');
+        await cutHere.asElement().tap();
+        await sleep(400);
+        const cardsAfter = await tab.evaluate(() => document.querySelectorAll('.shot-card').length);
+        // Reframe the new shot with any framing it does not have.
+        const other = await tab.$('.shot-framings button[aria-pressed="false"]');
+        if (!other) throw new Error('no other framing');
+        await other.tap();
+        await sleep(400);
+        await tabShot('shots-room');
+        await label('take the cut out');
+        await sleep(400);
+        const toast = await tab.evaluate(() => document.body.textContent?.includes('took that cut out') ?? false);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check(
+          'shots-are-cards-to-frame-and-time',
+          cardsAfter === cardsBefore + 1 && kinds.join(',') === 'CUT,REMOVE,CUT,REMOVE' && toast,
+          `${cardsBefore}→${cardsAfter} cards, ${kinds.join(',') || 'nothing'}, toast ${toast}`,
+        );
+      });
     } finally {
       await tab.close();
     }

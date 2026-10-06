@@ -1537,3 +1537,61 @@ body:has(.lanes) {
   display: block;
   background: var(--stage);
 }
+
+/* The shots room: a strip of shot cards, one line, scrolled sideways so
+   the framing pills stay in sight under it. */
+.shot-strip {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  margin-bottom: 4px;
+}
+
+.shot-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  min-height: 0;
+  border-radius: var(--r-1);
+  border: 2px solid transparent;
+}
+
+.shot-card.on {
+  border-color: var(--accent-2);
+}
+
+.shot-card img,
+.shot-still-wait {
+  display: block;
+  height: 88px;
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.shot-strip.tall .shot-card img,
+.shot-strip.tall .shot-still-wait {
+  width: 50px;
+}
+
+.shot-strip.wide .shot-card img,
+.shot-strip.wide .shot-still-wait {
+  width: 156px;
+}
+
+.shot-card-label {
+  font-size: var(--fs-hint);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.shot-framings,
+.shot-timing-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}

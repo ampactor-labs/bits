@@ -125,6 +125,8 @@ import {
 } from '../render/surface';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { Tray, type KeepAs } from './rooms/Tray';
+import { ShotsRoom } from './rooms/Shots';
+import { useShots } from './stage/useShots';
 import type { Genome } from '../engine/ink';
 import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
@@ -245,6 +247,7 @@ export function Stage({
     | { kind: 'more' }
     | { kind: 'show' }
     | { kind: 'wires'; pid: string }
+    | { kind: 'shots' }
     | { kind: 'ink'; target: string | null }
   >(null);
   const [textDraft, setTextDraft] = useState('');
@@ -2057,6 +2060,19 @@ export function Stage({
     paintClock(clamped);
   };
 
+  const shotsRoom = useShots({
+    open: sheet?.kind === 'shots',
+    project: projectSnap,
+    durationS,
+    onsets,
+    images: () => imagesRef.current,
+    clock: () => playheadRef.current,
+    commit,
+    seek,
+    undoable: (message) => toast.undoable(message, undoRef.current),
+    name: (p) => puppetLabel(p, castOf(projectRef.current).indexOf(p)),
+  });
+
   const passCount = projectSnap.events.filter((e) => e.kind === 'PASS').length;
   const puppets = castOf(projectSnap).filter((p) => !p.back);
   const busy = isBusy(mode);
@@ -2763,6 +2779,8 @@ export function Stage({
         />
       )}
 
+      {sheet?.kind === 'shots' && <ShotsRoom {...shotsRoom} onClose={() => setSheet(null)} />}
+
       {sheet?.kind === 'wires' && (
         <WiresRoom
           pid={sheet.pid}
@@ -2857,6 +2875,7 @@ export function Stage({
           onSound={() => setSheet({ kind: 'sound' })}
           onStageWire={(target, amount) => setWire('', 'const', target, { amount })}
           onStageWires={() => setSheet({ kind: 'wires', pid: '' })}
+          onShots={() => setSheet({ kind: 'shots' })}
           shadow={lookOf(projectSnap)?.shadow ?? 0}
           fog={lookOf(projectSnap)?.fog ?? 0}
           palette={lookOf(projectSnap)?.palette ?? null}
