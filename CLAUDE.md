@@ -20,6 +20,7 @@ CI (`.github/workflows/deploy.yml`) runs all of the above on every PR; main depl
 
 - **The recipe is append-only and deterministic.** Every frame is a function of the recipe, its assets and t. No wall clock or `Math.random` in the engine; randomness comes from `project.seed` through `boilNoise`.
 - **One frame builder.** `src/engine/frame.ts` (`createFramer`, `composeFrame`) assembles every frame; preview, export, poster and the harness all go through it and a renderer (`renderFrame2d` in `src/media/stageDraw.ts`). New per-frame features land there once, never in a caller.
+- **One sheet rasteriser.** `drawSheetContent` draws what a sheet is in its own frame; the canvas renderer draws it in place and the WebGL2 renderer (`src/render/gl/`) draws it to a sprite and places that. Sheet features land there once; stage-wide effects land in both renderers, held together by the render proof's GL parity check.
 - **The stage canvas holds only rendered frames.** Tool marks go on the overlay canvas (`overlayRef` in `Stage.tsx`).
 - **Old bits keep opening and look the same.** Any grammar that changes pixels bumps `RECIPE_VERSION` and adds a migration; v0 and v1 fixtures stay pixel-identical (render proof checks this against a frozen legacy renderer).
 - **The sim is forward-only** on a fixed 1/120 s grid; seeking rebuilds it.

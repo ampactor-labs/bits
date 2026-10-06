@@ -693,13 +693,7 @@ body {
 }
 
 .stage-camera {
-  position: absolute;
-  top: 56px;
-  right: 8px;
-  z-index: 3;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 85%, transparent);
-  backdrop-filter: blur(4px);
 }
 
 .stage-camera.on {
@@ -709,7 +703,8 @@ body {
 
 .camera-tools {
   position: absolute;
-  top: 112px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 8px;
   z-index: 3;
   display: flex;
@@ -787,6 +782,83 @@ body {
   position: absolute;
   top: 0;
   right: 0;
+}
+
+.wire-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--raised) 70%, transparent);
+}
+
+.wire-signal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wire-signal-name {
+  min-width: 6.5em;
+  font-size: var(--fs-body);
+}
+
+.wire-meter {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.wire-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-2);
+  transform-origin: left;
+  transform: scaleX(0);
+}
+
+.wire-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.wire-chip {
+  flex: none;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--raised);
+  white-space: nowrap;
+}
+
+.wire-chip.lit {
+  background: color-mix(in srgb, var(--accent-2) 30%, var(--raised));
+  outline: 1.5px solid var(--accent-2);
+}
+
+.wire-chip.on {
+  outline: 2px solid var(--accent);
+}
+
+.wire-chip-amount {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.wire-editor {
+  padding: 8px 0 12px;
+  border-bottom: 2px solid var(--accent-2);
+}
+
+.wire-editor-title {
+  margin: 0 0 6px;
+  font-weight: 700;
 }
 
 .stagepills {

@@ -6,7 +6,7 @@
 // It also gives a bit a name you can see and change. Every bit was called
 // "untitled bit", and renaming was a system prompt on the list.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconButton } from '../../kit/IconButton';
 
 export interface TitleBarProps {
@@ -14,9 +14,11 @@ export interface TitleBarProps {
   onRename: (title: string) => void;
   onBack: () => void;
   onMenu: () => void;
+  /** Stage-wide controls that live in the strip, beside the menu. */
+  extra?: ReactNode;
 }
 
-export function TitleBar({ title, onRename, onBack, onMenu }: TitleBarProps) {
+export function TitleBar({ title, onRename, onBack, onMenu, extra }: TitleBarProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -64,6 +66,7 @@ export function TitleBar({ title, onRename, onBack, onMenu }: TitleBarProps) {
           {title || 'untitled bit'}
         </button>
       )}
+      {extra}
       <IconButton icon="more" label="this bit" onClick={onMenu} />
     </div>
   );

@@ -11,6 +11,7 @@
 // files on phones already say.
 
 import { inFront, isRestCamera, type CameraPose } from './camera';
+import type { Bands } from './signals';
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
 import { PUPPET_DT } from './puppet';
@@ -35,10 +36,12 @@ import {
 } from './show';
 import {
   effectiveWires,
+  stageMods,
   trailStrength,
   wireAmount,
   wireModsFor,
   type WireMap,
+  type WireContext,
   type WireMods,
 } from './wires';
 
@@ -81,6 +84,8 @@ export interface Analysis {
   onsets: number[];
   /** Per-puppet takes. */
   voices: Map<string, OwnVoice>;
+  /** Band loudness and brightness, once decoded; absent reads as silence. */
+  bands?: Bands | null;
 }
 
 export const EMPTY_ANALYSIS: Analysis = { voice: EMPTY_VOICE, onsets: [], voices: new Map() };
@@ -185,27 +190,46 @@ export function paintOrder(cast: ShowPuppet[]): ShowPuppet[] {
 /** The pure half: given poses, everything else about the frame. */
 export function composeFrame(input: ComposeInput): Frame {
   const { project, cast, visuals, wires, analysis, poses, t } = input;
-  const camera = input.camera && !isRestCamera(input.camera) ? input.camera : null;
+  const ctx: WireContext = {
+    voice: analysis.voice,
+    onsets: analysis.onsets,
+    voices: analysis.voices,
+    bands: analysis.bands ?? null,
+    seed: project.seed,
+    poses,
+  };
+  // The stage's wires move the camera and the fog after the sim: wires
+  // never feed physics.
+  const staged = stageMods(
+    wires,
+    ctx,
+    t,
+    input.camera ?? null,
+    input.look === undefined ? lookOf(project) : input.look,
+  );
+  const camera = staged.camera && !isRestCamera(staged.camera) ? staged.camera : null;
   const voices = voiceMap(project, visuals, analysis.voice, t, analysis.voices);
   const layers: LayerFrame[] = [];
   for (const puppet of paintOrder(cast)) {
     // Behind the lens is not drawn at all.
-    if (camera && !inFront(camera, puppet.depth)) continue;
+    const mods = wireModsFor(wires, puppet.id, ctx, t);
+    const depth = puppet.depth + (mods.dDepth ?? 0);
+    if (camera && !inFront(camera, depth)) continue;
     layers.push({
       puppet,
       pose: poses.get(puppet.id),
       visual: visuals.get(puppet.id),
       voice: voices.get(puppet.id) ?? SHUT,
-      mods: wireModsFor(wires, puppet.id, analysis.voice, analysis.onsets, t, project.seed),
-      depth: puppet.depth,
+      mods,
+      depth,
     });
   }
   return {
     t,
     seed: project.seed,
-    trail: input.trails === false ? 0 : trailStrength(wires, analysis.voice, analysis.onsets, t),
+    trail: input.trails === false ? 0 : trailStrength(wires, ctx, t),
     camera,
-    look: input.look === undefined ? lookOf(project) : input.look,
+    look: staged.look,
     cutAt: cutBefore(input.cuts ?? cutsOf(project), t),
     layers,
   };
@@ -242,7 +266,7 @@ export function impactListener(): { onStep: StepObserver; drain(): Impact[] } {
 }
 
 /** Impact foley is a stage wire. */
-export const foleyOn = (wires: WireMap): boolean => wireAmount(wires, '', 'on', 'foley') > 0;
+export const foleyOn = (wires: WireMap): boolean => wireAmount(wires, '', 'const', 'foley') > 0;
 
 export interface Framer {
   /** Forward only, like the sim it drives: seeking back means a new one. */

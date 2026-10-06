@@ -8,6 +8,7 @@ import { detectOnsets } from '../engine/onsets';
 import type { Project } from '../engine/recipe';
 import { castOf, voiceOf } from '../engine/show';
 import { decodeMono, mixdownMono } from './audio';
+import { bandsFor } from './bands';
 
 /** The bit's own track: loudness, visemes and the beat grid. */
 export async function analyzeBed(blob: Blob | null): Promise<Pick<Analysis, 'voice' | 'onsets'>> {
@@ -68,5 +69,16 @@ export async function analyzeShow(
 ): Promise<{ analysis: Analysis; pcm: VoicePcm[] }> {
   const { voice, onsets } = await analyzeBed(bed);
   const { voices, pcm } = await collectVoices(project, getAssetBlob);
-  return { analysis: { voice, onsets, voices }, pcm };
+  // Bands only when a wire listens to them: they cost a decode and a few
+  // thousand FFTs.
+  const bands =
+    bed && project.audio && usesBands(project) ? await bandsFor(project.audio.assetId, bed) : null;
+  return { analysis: { voice, onsets, voices, bands }, pcm };
+}
+
+/** True when some wire reads a band or the brightness. */
+export function usesBands(project: Project): boolean {
+  return project.events.some(
+    (e) => e.kind === 'WIRE' && (e.from.startsWith('band:') || e.from === 'bright'),
+  );
 }

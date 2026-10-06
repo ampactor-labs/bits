@@ -106,7 +106,27 @@ Original notes:
 - `CUT {puppetId:'@camera', at, x, y, scale, rot, depth}`: snaps camera state, zeroes velocity; cut-on-beat snaps in the UI only.
 - Walkthrough: `a-tilt-is-a-camera-pass` (CDP `DeviceOrientation.setDeviceOrientationOverride`), `depth-in-the-director-view`.
 
-### S3 — the signal matrix
+### S3 — the signal matrix (v5) — *done*
+What shipped:
+- **WIRE is `{from, to, amount −1..1, smooth?, threshold?, delay?}`.** v4 `{source, target}` migrates, with `on` becoming `const`.
+- **Signals** (`engine/signals.ts`) share one parser with the recipe:
+  - `const`, `voice`, `voice:<pid>`, `beat`, `band:bass|mid|air`, `bright`, `lfo:<hz>`, `rand:<hz>` and `step:<hz>`.
+  - World signals: `sheet:<pid>.x|y|speed` and `dist:<a>:<b>`.
+- **Shaping.** A shaped time signal is baked causally on the 120 Hz grid: delay, then threshold, then a one-pole attack/release with τ = 0.02·250^smooth and attack τ/4. Any order of questions gets the same answers.
+- **Targets** (`engine/props.ts`):
+  - Sheet: bounce, shake and lean (legacy), plus x, y, scale, rot, opacity, hue and depth.
+  - Stage: trails and foley (legacy), plus fog and cam.x/y/z/rot/scale. The stage targets apply after the sim, in `composeFrame` (`stageMods`).
+- **Legacy wires stay exact.** A legacy wire (const, voice or beat into bounce, shake or lean, unshaped) keeps the exact old arithmetic and summation order. `src/e2e/legacy/wires.ts` is the frozen oracle, checked on 40 random v4 wire sets, and parity stays 0/120.
+- **Bands.** `engine/dsp.ts` (radix-2 FFT, Hann, each band normalised to its own 95th percentile) runs in `media/analysis.worker.ts` from a native-rate decode, memoised by asset and `BANDS_VERSION` (`media/bands.ts`). The render proof checks that the worker returns the same arrays as inline.
+- **The Wires room** (`ui/rooms/Wires.tsx`) is the matrix read by rows: each signal has a live meter and a strip of target chips. Tap a chip to plug it in at 50%. A lit chip opens how much, smooth, above and late by; pulling a wire out is undoable. Sheets reach it from their more panel, the stage from the show menu's "stage wires".
+
+Differs from the notes below:
+- **No pass signals yet** (`pass:<id>.x|y|v|speed`).
+- **World signals are read from the frame's poses and take no shaping.** Shaping would need a filter inside the sim step, so the room offers no smoothing for them.
+- **Rooms are drawers opened from context** rather than a RoomBar, which waits until there are more rooms than one.
+- **The camera controls moved to the stage's bottom-right,** because the camera's own hint banner covered the button that puts the camera down.
+
+Original notes:
 - `engine/dsp.ts` (radix-2 FFT, Hann), bands bass 30–150 Hz, mid 150–2k, air 6–16k, plus `bright` (log centroid), each normalized to its 95th percentile, from a native-rate decode in `media/analysis.worker.ts`, memoized by asset id and an analysis version.
 - WIRE becomes `{from: SignalRef, to: PropRef, amount: -1..1, smooth?, threshold?, delay?}`; migration rewrites `{source,target}`.
 - SignalRef strings, one parser shared by recipe and evaluator: `const | voice | voice:<pid> | beat | band:bass|mid|air | bright | pass:<id>.x|y|v|speed | sheet:<pid>.speed|x|y | cam.speed | dist:<a>:<b> | lfo:<hz> | step:<n> | rand:<hz>`.
@@ -115,7 +135,31 @@ Original notes:
 - Rooms: `ui/rooms/RoomBar.tsx` (Stage | Wires), `rooms/Wires.tsx` — signal rows with live meters, the selected sheet's targets as cells, a cell opens amount/smooth/threshold/delay. Replaces MoreSheet's five fixed rows. Rooms are drawers on phones (within a third of the stage) and side by side on desktop.
 - Checks: FFT bin of a sine, band separation, query order can't change smoothing, legacy oracle, harness `runBands`, walkthrough `bass-makes-the-sky-pulse`, `a-pass-drives-the-camera-at-30`.
 
-### S4a — WebGL2 parity (+ orbit)
+### S4a — WebGL2 parity — *done*
+What shipped, a different shape from the notes below, chosen for parity: **Canvas2D draws a sheet, WebGL2 draws the stage.**
+
+`drawLayer` split into `placementOf` (where the sheet's own frame sits) and `drawSheetContent` (everything the sheet is, drawn in that frame). The canvas renderer composes the two exactly as before, so parity is byte-identical. `src/render/gl/glRenderer.ts` instead rasterises each sheet's content with that same function into a sprite in the sheet's own frame and places it with one textured quad. The GL side handles:
+- placement, squash and lean through the camera;
+- trails, a background quad faded by the shared `trailFor`;
+- shadows, a blurred silhouette pass, and fog, mixed in the shader;
+- fade, and colour through the CSS hue-rotate matrix the canvas filter uses;
+- the moved backdrop's apron, using `MIRRORED_REPEAT` on a three-by-three quad.
+
+Static content (`sheetContentKey`: no mouth, eyes, swinging pieces or warp; doodles keyed by boil step) keeps its sprite in a 48 MB LRU, so a backdrop uploads once. A single rasteriser means the two renderers can differ only in resampling. The render proof bounds that difference: on the fixture, and on the fixture with the camera moving and a look on, at most 0.36% of pixels are visibly off (channel diff over 40), with mean diff under 1.2.
+
+`src/render/surface.ts` picks the renderer per canvas element:
+- GL on a hardware GPU; software GL (SwiftShader, llvmpipe) counts as none and gets Canvas2D.
+- `?renderer=gl|2d` overrides.
+- A lost context gets a fresh canvas element drawn by Canvas2D.
+
+`UX_RENDERER=gl npm run test:ux` walks the whole app on GL (SwiftShader); the frame gate stays a Canvas2D gate.
+
+Not done here:
+- **Export stays Canvas2D,** so films stay byte-identical to before.
+- **Orbit** (yaw/pitch, projective) waits for full GL sheets, because a projective sheet cannot be a canvas sprite.
+- **SDF mouths and eyes, and GL-native pieces,** are left for when Ink (S4b) needs sheets to be shaders anyway.
+
+Original notes:
 - `src/render/gl/`: mat4 per sheet; painter's order; 4× MSAA; convex pieces as fans; warped grid as one dynamic mesh; doodles and text rasterized by the canvas code into textures per boil variant (LRU); SDF mouths and eyes; ping-pong trails.
 - Loaded as a dynamic chunk; `createRenderer('auto')` with `?renderer=` override; repeated context loss falls back to Canvas2D.
 - Camera `prop 'yaw'|'pitch'` (orbit) — projective, so WebGL only.

@@ -3,7 +3,7 @@ import { fixtureProject } from '../e2e/fixtures';
 import { CAMERA_ID, REST_CAMERA } from './camera';
 import { createFramer } from './frame';
 import { fogAmount, shadowGap, shadowOffset } from './look';
-import { parseProject, type Project, type RecipeEvent } from './recipe';
+import { parseProject, RECIPE_VERSION, type Project, type RecipeEvent } from './recipe';
 import { createShowSim, cutBefore, cutsOf, lookOf } from './show';
 
 let n = 0;
@@ -128,7 +128,7 @@ describe('recipe v4', () => {
     parseProject(JSON.stringify({ ...header, version, events }));
 
   it('moves a v3 file up untouched', () => {
-    expect(parse(3, []).version).toBe(4);
+    expect(parse(3, []).version).toBe(RECIPE_VERSION);
   });
 
   it('checks looks and cuts', () => {

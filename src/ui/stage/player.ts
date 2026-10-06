@@ -10,7 +10,8 @@ import { composeFrame, type Analysis, type Frame, type PuppetVisual } from '../.
 import type { Project } from '../../engine/recipe';
 import { castOf, createShowSim, type PuppetPose, type ShowSim } from '../../engine/show';
 import type { WireMap } from '../../engine/wires';
-import { createRenderer2d, type StageImages } from '../../media/stageDraw';
+import type { StageImages } from '../../media/stageDraw';
+import type { StageSurface } from '../../render/surface';
 import type { DoodleInk } from './DoodleBar';
 import type { StagingDrag } from './gestures';
 
@@ -24,12 +25,12 @@ export interface PlayerSources {
 
 export interface StagePlayer {
   /** A playing frame from a running sim, with trails. */
-  playing(ctx: CanvasRenderingContext2D, W: number, H: number, project: Project, sim: ShowSim, t: number): Frame;
+  playing(surface: StageSurface, W: number, H: number, project: Project, sim: ShowSim, t: number): Frame;
   /** A still at the playhead, drawn clean, with a drag in progress applied.
    *  Simulated from the nearest checkpoint, so scrubbing a long bit steps
    *  at most a second of sim rather than everything before the playhead. */
   still(
-    ctx: CanvasRenderingContext2D,
+    surface: StageSurface,
     W: number,
     H: number,
     project: Project,
@@ -42,21 +43,20 @@ export interface StagePlayer {
 }
 
 export function createStagePlayer(sources: PlayerSources): StagePlayer {
-  const renderer = createRenderer2d();
   let last: Frame | null = null;
   let poses = new Map<string, PuppetPose>();
 
-  const draw = (ctx: CanvasRenderingContext2D, W: number, H: number, frame: Frame) => {
-    renderer.draw(ctx, W, H, frame, sources.imagesRef.current);
+  const draw = (surface: StageSurface, W: number, H: number, frame: Frame) => {
+    surface.draw(W, H, frame, sources.imagesRef.current);
     last = frame;
     return frame;
   };
 
   return {
-    playing(ctx, W, H, project, sim, t) {
+    playing(surface, W, H, project, sim, t) {
       poses = sim.advanceTo(t);
       return draw(
-        ctx,
+        surface,
         W,
         H,
         composeFrame({
@@ -71,7 +71,7 @@ export function createStagePlayer(sources: PlayerSources): StagePlayer {
         }),
       );
     },
-    still(ctx, W, H, project, staging, t) {
+    still(surface, W, H, project, staging, t) {
       let cast = castOf(project);
       if (staging) {
         cast = cast.map((p) =>
@@ -89,7 +89,7 @@ export function createStagePlayer(sources: PlayerSources): StagePlayer {
       );
       poses = sim.advanceTo(t);
       return draw(
-        ctx,
+        surface,
         W,
         H,
         composeFrame({

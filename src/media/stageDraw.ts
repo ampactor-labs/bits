@@ -125,21 +125,35 @@ export interface Renderer2d {
   reset(): void;
 }
 
+/** How much of the previous frame survives under this one, given when
+ *  that frame was: per thirtieth of a second, so 30 fps is exact. */
+function trailSince(frame: Frame, lastT: number | null): number {
+  let trail = Math.min(0.92, frame.trail);
+  if (lastT !== null && trail > 0) {
+    const dt = frame.t - lastT;
+    // Going back, a jump the eye reads as a cut, or a real one: start
+    // clean.
+    if (dt < 0 || dt > 0.25 || (frame.cutAt !== null && frame.cutAt > lastT)) trail = 0;
+    else {
+      const thirtieths = dt * 30;
+      if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
+    }
+  }
+  return trail;
+}
+
+/** The fade every renderer applies before drawing a frame: the canvas
+ *  renderer's own rule, for renderers that do not go through it. */
+export function trailFor(frame: Frame, lastT: number | null): number {
+  const trail = trailSince(frame, lastT);
+  return frame.t < 0.08 ? 0 : Math.min(0.92, trail);
+}
+
 export function createRenderer2d(): Renderer2d {
   let lastT: number | null = null;
   return {
     draw(ctx, W, H, frame, images) {
-      let trail = Math.min(0.92, frame.trail);
-      if (lastT !== null && trail > 0) {
-        const dt = frame.t - lastT;
-        // Going back, a jump the eye reads as a cut, or a real one: start
-        // clean.
-        if (dt < 0 || dt > 0.25 || (frame.cutAt !== null && frame.cutAt > lastT)) trail = 0;
-        else {
-          const thirtieths = dt * 30;
-          if (Math.abs(thirtieths - 1) > 1e-9) trail = Math.pow(trail, thirtieths);
-        }
-      }
+      const trail = trailSince(frame, lastT);
       lastT = frame.t;
       renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
     },
@@ -159,17 +173,69 @@ function drawLayer(
   seed: number,
   moved: boolean,
 ): void {
-  const { puppet, pose, visual, mods: mod } = layer;
-  if (!pose || !visual) return;
-  const s = pose.root;
-  const pw = puppet.spec.w * W * puppet.home.scale;
-  const ph = puppet.spec.h * H * puppet.home.scale;
-
+  const place = placementOf(layer, W, H);
+  if (!place) return;
+  const mod = layer.mods;
   ctx.save();
-  ctx.translate((s.x + mod.dx) * W, (s.y + mod.dy) * H);
-  ctx.rotate(s.angle + puppet.home.rot + mod.dAngle);
-  const wireScale = mod.scaleMul;
-  ctx.scale((1 + s.squash) * wireScale, (1 - s.squash) * wireScale);
+  // Wired fade and colour. Absent unless wired, so an unwired sheet never
+  // touches either and draws as it always did.
+  if (mod.alpha !== undefined) ctx.globalAlpha *= mod.alpha;
+  if (mod.hue) ctx.filter = `hue-rotate(${mod.hue.toFixed(1)}deg)`;
+  ctx.translate(place.x, place.y);
+  ctx.rotate(place.rot);
+  ctx.scale(place.sx, place.sy);
+  drawSheetContent(ctx, layer, W, H, images, tS, seed, moved);
+  ctx.restore();
+}
+
+/** Where a sheet's own frame sits on the stage, in pixels: the spring's
+ *  position, lean and squash, plus whatever the wires add. Null when the
+ *  sheet has nothing to draw. */
+export interface Placement {
+  x: number;
+  y: number;
+  rot: number;
+  sx: number;
+  sy: number;
+}
+
+export function placementOf(layer: LayerFrame, W: number, H: number): Placement | null {
+  const { puppet, pose, visual, mods: mod } = layer;
+  if (!pose || !visual) return null;
+  const s = pose.root;
+  return {
+    x: (s.x + mod.dx) * W,
+    y: (s.y + mod.dy) * H,
+    rot: s.angle + puppet.home.rot + mod.dAngle,
+    sx: (1 + s.squash) * mod.scaleMul,
+    sy: (1 - s.squash) * mod.scaleMul,
+  };
+}
+
+/** The sheet's box in pixels, before squash and wires. */
+export function sheetSize(layer: LayerFrame, W: number, H: number): { pw: number; ph: number } {
+  const p = layer.puppet;
+  return { pw: p.spec.w * W * p.home.scale, ph: p.spec.h * H * p.home.scale };
+}
+
+/** Everything a sheet is, drawn in its own frame (origin at its centre,
+ *  unrotated): pieces or the warp, then mouth and eyes. The canvas
+ *  renderer draws it straight onto the stage; the GL renderer draws it
+ *  onto a sprite and places that. One rasteriser for a sheet's content,
+ *  so the two can only differ in how the result is placed. */
+export function drawSheetContent(
+  ctx: Ctx2D,
+  layer: LayerFrame,
+  W: number,
+  H: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  apron: boolean,
+): void {
+  const { puppet, pose, visual } = layer;
+  if (!pose || !visual) return;
+  const { pw, ph } = sheetSize(layer, W, H);
 
   // Pinned cutouts bend through the MLS warp; everything else draws as
   // scissored pieces (a single uncut piece is the trivial case).
@@ -186,7 +252,7 @@ function drawLayer(
   // A backdrop the camera has moved would slide off and show the void
   // behind it, so it carries a mirrored apron: the photo reflected across
   // each edge, which reads as more of the same place rather than a seam.
-  if (moved && puppet.back && img && puppet.spec.type === 'cutout' && puppet.spec.fit === 'cover') {
+  if (apron && puppet.back && img && puppet.spec.type === 'cutout' && puppet.spec.fit === 'cover') {
     drawApron(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
   }
 
@@ -213,7 +279,45 @@ function drawLayer(
       : null;
     drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
   }
-  ctx.restore();
+}
+
+/** When a sheet's drawn content can be reused from an earlier frame: the
+ *  same key draws the same pixels. Null when it changes every frame
+ *  (a mouth, eyes, dangling pieces, a warp). Doodles and words boil, so
+ *  they key on the boil variant. */
+export function sheetContentKey(layer: LayerFrame, W: number, H: number, tS: number): string | null {
+  const { puppet, visual } = layer;
+  if (!visual) return null;
+  if (visual.mouth || visual.eyes) return null;
+  if (visual.pieces.children.length > 0) return null;
+  if (visual.pins.some((pin) => pin !== null)) return null;
+  const { pw, ph } = sheetSize(layer, W, H);
+  const boils = puppet.spec.type === 'doodle' || puppet.spec.type === 'text';
+  const variant = boils ? Math.floor(tS * BOIL_FPS) % BOIL_VARIANTS : 0;
+  return `${puppet.id}#${specId(puppet.spec)}|${pw.toFixed(2)}|${ph.toFixed(2)}|${puppet.flip ? 1 : 0}|${variant}|${visual.pieces.root.poly.length}`;
+}
+
+/** A number per spec object: a recoloured or re-drawn sheet has a new spec,
+ *  so its cached sprite is never reused. Specs are immutable recipe data. */
+const specIds = new WeakMap<PuppetSpec, number>();
+let nextSpecId = 0;
+function specId(spec: PuppetSpec): number {
+  let id = specIds.get(spec);
+  if (id === undefined) {
+    id = nextSpecId++;
+    specIds.set(spec, id);
+  }
+  return id;
+}
+
+/** How far past its box a sheet's content can reach, in pixels: pieces
+ *  swing out on their hinges, eyes and mouths sit near the edge, strokes
+ *  have width. */
+export function sheetMargin(layer: LayerFrame, W: number, H: number): number {
+  const { pw, ph } = sheetSize(layer, W, H);
+  const swings = (layer.visual?.pieces.children.length ?? 0) > 0;
+  const warps = layer.visual?.pins.some((pin) => pin !== null) ?? false;
+  return swings || warps ? Math.hypot(pw, ph) * 0.6 : Math.max(8, Math.min(pw, ph) * 0.12);
 }
 
 /** The eight neighbours of a cover-fit box, each mirrored so its edge

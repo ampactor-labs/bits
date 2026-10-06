@@ -64,8 +64,16 @@ import { makeCutout } from '../media/cutout';
 import { MicRecorder } from '../media/mic';
 import { loadProjectJson, saveProjectJson } from '../media/opfs';
 import { PoseDriver } from '../media/pose';
-import { effectiveWires, wireAmount, type WireMap } from '../engine/wires';
-import type { WireSource, WireTarget } from '../engine/recipe';
+import { effectiveWires, wireAmount, wireAt, type WireMap } from '../engine/wires';
+import {
+  isWorldSignal,
+  parseSignal,
+  timeSignalAt,
+  worldSignalAt,
+  type Bands,
+} from '../engine/signals';
+import { bandsFor } from '../media/bands';
+import { COMMON_SIGNALS, WiresRoom, type WirePatch } from './rooms/Wires';
 import { BannerView, useBanner } from '../kit/Banner';
 import { Sheet } from '../kit/Sheet';
 import { IconButton } from '../kit/IconButton';
@@ -95,6 +103,12 @@ import {
   type StagingDrag,
 } from './stage/gestures';
 import { createStagePlayer, drawMarks, type StagePlayer } from './stage/player';
+import {
+  createSurface,
+  STARTUP_RENDERER,
+  type RendererChoice,
+  type StageSurface,
+} from '../render/surface';
 import { MoreSheet } from './stage/sheets/MoreSheet';
 import { DirectorView } from './stage/DirectorView';
 import { ShowMenu } from './stage/sheets/ShowMenu';
@@ -214,6 +228,7 @@ export function Stage({
     | { kind: 'render' }
     | { kind: 'more' }
     | { kind: 'show' }
+    | { kind: 'wires'; pid: string }
   >(null);
   const [textDraft, setTextDraft] = useState('');
   /** dropPuppet is defined above undo; this keeps the toast's undo honest. */
@@ -309,6 +324,8 @@ export function Stage({
   const visualsRef = useRef<Map<string, PuppetVisual>>(new Map());
   const wiresRef = useRef<WireMap>(new Map());
   const simRef = useRef<ShowSim | null>(null);
+  /** Band analysis of the bit's sound, once the worker has it. */
+  const bandsRef = useRef<Bands | null>(null);
   /** The onsets as of now, for the player, which outlives any render. */
   const onsetsRef = useRef<number[]>([]);
   onsetsRef.current = onsets;
@@ -318,12 +335,22 @@ export function Stage({
       visualsRef,
       wiresRef,
       imagesRef,
-      analysis: () => ({ voice: voiceRef.current, onsets: onsetsRef.current, voices: voicesRef.current }),
+      analysis: () => ({
+        voice: voiceRef.current,
+        onsets: onsetsRef.current,
+        voices: voicesRef.current,
+        bands: bandsRef.current,
+      }),
     });
   }
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
   /** The camera the last frame was drawn through; null at rest. */
   const lastCameraRef = useRef<CameraPose | null>(null);
+  /** What draws the stage canvas, made for the canvas element it draws. */
+  const surfaceRef = useRef<{ canvas: HTMLCanvasElement; surface: StageSurface } | null>(null);
+  const rendererChoiceRef = useRef<RendererChoice>(STARTUP_RENDERER);
+  /** Bumped to give the stage a fresh canvas element after a lost context. */
+  const [canvasKey, setCanvasKey] = useState(0);
   /** The camera in hand: while a take rolls, fingers move it instead of
    *  the sheets. */
   const [cameraArmed, setCameraArmed] = useState(false);
@@ -498,6 +525,14 @@ export function Stage({
       setOnsets(detectOnsets(mix.samples, mix.sampleRate));
       // Enough buckets for a full-width waveform on any phone.
       setPeaks(peaksFromMono(mix.samples, 600));
+    }
+    // Bands come later, from a worker; band wires read silence until then.
+    const assetId = projectRef.current.audio?.assetId;
+    if (assetId) {
+      void bandsFor(assetId, blob).then((bands) => {
+        bandsRef.current = bands;
+        dirtyRef.current = true;
+      });
     }
   }, []);
 
@@ -992,8 +1027,23 @@ export function Stage({
         canvas.height = H;
         dirtyRef.current = true;
       }
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      // One surface per canvas element: GL on a real GPU, canvas otherwise.
+      // A lost GL context gets a fresh canvas element, drawn by Canvas2D.
+      let surf = surfaceRef.current;
+      if (!surf || surf.canvas !== canvas) {
+        surf?.surface.dispose();
+        surf = { canvas, surface: createSurface(canvas, rendererChoiceRef.current) };
+        surfaceRef.current = surf;
+        canvas.dataset.renderer = surf.surface.kind;
+        dirtyRef.current = true;
+      }
+      if (surf.surface.lost) {
+        rendererChoiceRef.current = '2d';
+        surfaceRef.current = null;
+        setCanvasKey((k) => k + 1);
+        return;
+      }
+      const surface = surf.surface;
 
       const m = modeRef.current;
       const project = projectRef.current;
@@ -1083,7 +1133,7 @@ export function Stage({
 
         const sim = simRef.current;
         if (sim) {
-          const frame = playerRef.current.playing(ctx, W, H, project, sim, clock);
+          const frame = playerRef.current.playing(surface, W, H, project, sim, clock);
           lastPosesRef.current = playerRef.current.lastPoses();
           lastCameraRef.current = frame.camera;
           const landed = liveImpactsRef.current?.drain() ?? [];
@@ -1115,7 +1165,7 @@ export function Stage({
         seekSimAtRef.current = playheadRef.current;
         lastSeekDrawRef.current = performance.now();
         const frame = playerRef.current.still(
-          ctx,
+          surface,
           W,
           H,
           project,
@@ -1520,14 +1570,34 @@ export function Stage({
   const setSpec = (p: ShowPuppet, patch: Partial<PuppetSpec>) =>
     recastWith(p, { puppet: { ...p.spec, ...patch } as PuppetSpec });
 
-  const setWire = (pid: string, source: WireSource, target: WireTarget, amount: number) => {
+  const setWire = (pid: string, from: string, to: string, patch: WirePatch) => {
+    const unplugging = patch.amount === 0 && !!wireAt(wiresRef.current, pid, from, to);
     commit((p) =>
-      appendEvent(p, { kind: 'WIRE', id: newId(), at: 0, puppetId: pid, source, target, amount }),
+      appendEvent(p, { kind: 'WIRE', id: newId(), at: 0, puppetId: pid, from, to, ...patch }),
     );
+    if (unplugging) toast.undoable('pulled that wire out', undoRef.current);
   };
 
-  const wireLevel = (pid: string, source: WireSource, target: WireTarget) =>
-    wireAmount(effectiveWires(projectSnap), pid, source, target);
+  const wireLevel = (pid: string, from: string, to: string) =>
+    wireAmount(effectiveWires(projectSnap), pid, from, to);
+
+  /** A signal's value at the playhead, for the Wires room's meters. */
+  const sampleSignal = useCallback((from: string): number => {
+    const signal = parseSignal(from);
+    if (!signal) return 0;
+    if (isWorldSignal(signal)) return worldSignalAt(signal, lastPosesRef.current);
+    return timeSignalAt(
+      signal,
+      {
+        voice: voiceRef.current,
+        onsets: onsetsRef.current,
+        voices: voicesRef.current,
+        bands: bandsRef.current,
+        seed: projectRef.current.seed,
+      },
+      playheadRef.current,
+    );
+  }, []);
 
   /** One REORDER, one undo. Layering used to re-cast every other puppet,
    *  so sending one to the back of a cast of six cost six events, and the
@@ -1994,6 +2064,7 @@ export function Stage({
           {/* The stage is a picture that changes; its state is spoken by
               the banner, the clock and the lanes rather than by the pixels. */}
           <canvas
+            key={canvasKey}
             ref={canvasRef}
             role="img"
             aria-label={
@@ -2011,6 +2082,18 @@ export function Stage({
             }
             onBack={onBack}
             onMenu={() => setSheet({ kind: 'show' })}
+            extra={
+              // In the strip, where no halo, banner or sheet ever sits on it.
+              (mode === 'idle' || mode === 'recording') && puppets.length > 0 && durationS > 0 ? (
+                <IconButton
+                  icon="camera"
+                  label={cameraArmed ? 'put the camera down' : 'pick up the camera'}
+                  aria-pressed={cameraArmed}
+                  className={`stage-camera${cameraArmed ? ' on' : ''}`}
+                  onClick={() => toggleCamera(!cameraArmed)}
+                />
+              ) : null
+            }
           />
           )}
           <BannerView />
@@ -2132,16 +2215,6 @@ export function Stage({
             </div>
           )}
           {mode === 'recording' && <span className="recdot">●</span>}
-          {(mode === 'idle' || mode === 'recording') && puppets.length > 0 && durationS > 0 && (
-            <IconButton
-              icon="camera"
-              label={cameraArmed ? 'put the camera down' : 'pick up the camera'}
-              aria-pressed={cameraArmed}
-              className={`stage-camera${cameraArmed ? ' on' : ''}`}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => toggleCamera(!cameraArmed)}
-            />
-          )}
           {sideView && (mode === 'idle' || mode === 'recording') && !performing && (
             <DirectorView
               cast={castOf(projectSnap)}
@@ -2304,7 +2377,6 @@ export function Stage({
         <MoreSheet
           puppet={selected}
           name={puppetLabel(selected, castOf(projectSnap).indexOf(selected))}
-          wireAmount={(source, target) => wireLevel(selected.id, source, target)}
           hand={handOf(selected.id)}
           voiceS={voiceOf(projectSnap, selected.id)?.durationS ?? null}
           onVoice={() => recordVoice(selected)}
@@ -2322,7 +2394,7 @@ export function Stage({
             toast.undoable('back to the bit', undoRef.current);
           }}
           onRename={(name) => setSpec(selected, { name })}
-          onWire={(source, target, amount) => setWire(selected.id, source, target, amount)}
+          onWires={() => setSheet({ kind: 'wires', pid: selected.id })}
           onScale={(scale) => recastWith(selected, { scale })}
           onDepth={(depth) => recastWith(selected, { depth })}
           onSideView={() => {
@@ -2341,6 +2413,35 @@ export function Stage({
             setSheet(null);
             dropPuppet(selected);
           }}
+          onClose={() => setSheet(null)}
+        />
+      )}
+
+      {sheet?.kind === 'wires' && (
+        <WiresRoom
+          pid={sheet.pid}
+          title={
+            sheet.pid === ''
+              ? 'the stage'
+              : puppetLabel(
+                  castOf(projectSnap).find((p) => p.id === sheet.pid) ?? castOf(projectSnap)[0]!,
+                  castOf(projectSnap).findIndex((p) => p.id === sheet.pid),
+                )
+          }
+          signals={
+            sheet.pid === ''
+              ? COMMON_SIGNALS
+              : [
+                  ...COMMON_SIGNALS,
+                  ...(voiceOf(projectSnap, sheet.pid)
+                    ? [{ id: `voice:${sheet.pid}`, label: 'its own voice' }]
+                    : []),
+                  { id: `sheet:${sheet.pid}.speed`, label: 'its speed' },
+                ]
+          }
+          wireAt={(from, to) => wireAt(effectiveWires(projectSnap), sheet.pid, from, to)}
+          sample={sampleSignal}
+          onSet={(from, to, patch) => setWire(sheet.pid, from, to, patch)}
           onClose={() => setSheet(null)}
         />
       )}
@@ -2380,8 +2481,8 @@ export function Stage({
           castCount={puppets.length}
           canRender={passCount > 0 && !rendering}
           rendered={!!rendered}
-          trails={wireLevel('', 'on', 'trails')}
-          foley={wireLevel('', 'on', 'foley')}
+          trails={wireLevel('', 'const', 'trails')}
+          foley={wireLevel('', 'const', 'foley')}
           corpse={corpse}
           aspect={aspect}
           onAspect={(next) =>
@@ -2407,7 +2508,8 @@ export function Stage({
             setPerforming(true);
           }}
           onSound={() => setSheet({ kind: 'sound' })}
-          onStageWire={(target, amount) => setWire('', 'on', target, amount)}
+          onStageWire={(target, amount) => setWire('', 'const', target, { amount })}
+          onStageWires={() => setSheet({ kind: 'wires', pid: '' })}
           shadow={lookOf(projectSnap)?.shadow ?? 0}
           fog={lookOf(projectSnap)?.fog ?? 0}
           onLook={(patch) =>

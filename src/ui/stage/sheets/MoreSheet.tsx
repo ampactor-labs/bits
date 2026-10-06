@@ -2,14 +2,14 @@
 // floppy, what the sound does to it, where it sits in the stack, and how
 // to get rid of it.
 //
-// Wires used to be tap-to-cycle with one or two dots for a level, which
-// gave no clue there were three states. They are named now.
+// Its wires open the Wires room (ui/rooms/Wires.tsx), where any signal can
+// drive any of its targets.
 
 import { useState } from 'react';
 import { Sheet } from '../../../kit/Sheet';
 import { Segmented, Slider } from '../../../kit/Controls';
 import { IconButton } from '../../../kit/IconButton';
-import type { SpringPreset, WireSource, WireTarget } from '../../../engine/recipe';
+import type { SpringPreset } from '../../../engine/recipe';
 import type { ShowPuppet } from '../../../engine/show';
 
 export type WireLevel = 'off' | 'gentle' | 'wild';
@@ -17,12 +17,6 @@ export type WireLevel = 'off' | 'gentle' | 'wild';
 export const WIRE_AMOUNT: Record<WireLevel, number> = { off: 0, gentle: 0.5, wild: 1 };
 export const levelOf = (amount: number): WireLevel =>
   amount === 0 ? 'off' : amount <= 0.5 ? 'gentle' : 'wild';
-
-const LEVELS = [
-  { value: 'off' as const, label: 'off' },
-  { value: 'gentle' as const, label: 'gentle' },
-  { value: 'wild' as const, label: 'wild' },
-];
 
 const SPRINGS = [
   { value: 'paper' as const, label: 'paper' },
@@ -46,25 +40,17 @@ const stopOf = (depth: number): DepthStop =>
     Math.abs(d.depth - depth) < Math.abs(best.depth - depth) ? d : best,
   ).value;
 
-const WIRES: { source: WireSource; target: WireTarget; label: string }[] = [
-  { source: 'voice', target: 'bounce', label: 'voice makes it bounce' },
-  { source: 'voice', target: 'shake', label: 'voice makes it shake' },
-  { source: 'voice', target: 'lean', label: 'voice makes it lean' },
-  { source: 'beat', target: 'bounce', label: 'beat makes it bounce' },
-  { source: 'beat', target: 'shake', label: 'beat makes it shake' },
-];
-
 export interface MoreSheetProps {
   puppet: ShowPuppet;
   name: string;
-  wireAmount: (source: WireSource, target: WireTarget) => number;
   hand: 'left' | 'right' | 'none';
   /** Its own take, if it has one, in seconds. */
   voiceS: number | null;
   onVoice: () => void;
   onDropVoice: () => void;
   onRename: (name: string) => void;
-  onWire: (source: WireSource, target: WireTarget, amount: number) => void;
+  /** Opens the Wires room for this sheet. */
+  onWires: () => void;
   onScale: (scale: number) => void;
   onDepth: (depth: number) => void;
   /** Opens the side view of the whole stage. */
@@ -82,25 +68,6 @@ export function MoreSheet(props: MoreSheetProps) {
   const { puppet, name } = props;
   const [draft, setDraft] = useState(name);
   const [scale, setScale] = useState(puppet.home.scale);
-  const [showWires, setShowWires] = useState(false);
-
-  if (showWires) {
-    return (
-      <Sheet title={`${name} · wires`} onClose={() => setShowWires(false)}>
-        {WIRES.map((w) => (
-          <div key={`${w.source}-${w.target}`} className="sheet-row">
-            <span className="sheet-row-label">{w.label}</span>
-            <Segmented
-              label={w.label}
-              value={levelOf(props.wireAmount(w.source, w.target))}
-              options={LEVELS}
-              onChange={(level) => props.onWire(w.source, w.target, WIRE_AMOUNT[level])}
-            />
-          </div>
-        ))}
-      </Sheet>
-    );
-  }
 
   return (
     <Sheet title={name} onClose={props.onClose}>
@@ -150,7 +117,7 @@ export function MoreSheet(props: MoreSheetProps) {
 
       <button onClick={props.onSideView}>see the stage from the side</button>
 
-      <button onClick={() => setShowWires(true)}>wires</button>
+      <button onClick={props.onWires}>wires</button>
 
       {/* A puppet with a take of its own flaps to that take, so two people
           can record their halves separately and the right mouth moves. */}
