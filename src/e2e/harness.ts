@@ -40,7 +40,7 @@ import {
 import { runCamera, runLook, type CameraResult, type LookResult } from './camera';
 import { runBands, type BandsResult } from './bands';
 import { runGlParity, runSurface, type GlParityResult, type SurfaceResult } from './glParity';
-import { pickVideo, runVideo, type VideoResult } from './videoProof';
+import { pickVideo, runVideo, runVideoRead, type ReadResult, type VideoResult } from './videoProof';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -583,6 +583,7 @@ declare global {
       runSurface: () => Promise<SurfaceResult>;
       runVideo: () => Promise<VideoResult>;
       pickVideo: () => Promise<boolean>;
+      runVideoRead: () => Promise<ReadResult>;
     };
   }
 }
@@ -603,4 +604,5 @@ window.__bitsE2E = {
   runSurface,
   runVideo,
   pickVideo,
+  runVideoRead,
 };

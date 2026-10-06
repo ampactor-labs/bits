@@ -12,6 +12,7 @@
 
 import { inFront, isRestCamera, type CameraPose } from './camera';
 import type { Bands } from './signals';
+import type { VideoSpec, VideoTracks } from './video';
 import type { Genome } from './ink';
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
@@ -91,6 +92,8 @@ export interface Analysis {
   voices: Map<string, OwnVoice>;
   /** Band loudness and brightness, once decoded; absent reads as silence. */
   bands?: Bands | null;
+  /** Video sheets that have been read, by sheet id, for their signals. */
+  videos?: Map<string, { spec: VideoSpec; tracks: VideoTracks }>;
 }
 
 export const EMPTY_ANALYSIS: Analysis = { voice: EMPTY_VOICE, onsets: [], voices: new Map() };
@@ -202,6 +205,7 @@ export function composeFrame(input: ComposeInput): Frame {
     bands: analysis.bands ?? null,
     seed: project.seed,
     poses,
+    ...(analysis.videos ? { videos: analysis.videos } : {}),
   };
   // The stage's wires move the camera and the fog after the sim: wires
   // never feed physics.

@@ -225,6 +225,30 @@ try {
     wrong.length ? wrong.map((f) => `t ${f.t}: want ${f.want} got ${f.got}`).join('; ') : `${vid.frames.length} moments, clip ${vid.durationS.toFixed(2)}s`,
   );
 
+  // Reading a clip: motion and drift, masks, pose, and what they drive.
+  const read = await page.evaluate(() => window.__bitsE2E.runVideoRead());
+  check(
+    'a read hears the bar drift right and move',
+    read.meanFlowX > 0.1 && read.meanMotion > 0.2,
+    `flow x ${read.meanFlowX.toFixed(2)}, motion ${read.meanMotion.toFixed(2)}`,
+  );
+  check('a read keeps a mask per sample', read.maskShare > 0.005 && read.maskShare < 0.1, `${(read.maskShare * 100).toFixed(1)}% of mask lit`);
+  check(
+    'the real models load offline and answer at the right sizes',
+    typeof read.realModels === 'object' && read.realModels.masks > 10 && read.realModels.pose,
+    typeof read.realModels === 'object' ? `${read.realModels.masks} masks at ${read.realModels.maskSize}, pose ${read.realModels.pose}` : read.realModels,
+  );
+  check(
+    'a masked clip shows only its person',
+    read.maskedBar > 200 && read.maskedElsewhere === 16 && read.unmaskedElsewhere === 0,
+    `bar ${read.maskedBar}, elsewhere ${read.maskedElsewhere} masked vs ${read.unmaskedElsewhere} plain`,
+  );
+  check(
+    'a hand in the clip leads another sheet',
+    read.leadMoves[1] > read.leadMoves[0] + 0.1,
+    `card x ${read.leadMoves[0].toFixed(2)} then ${read.leadMoves[1].toFixed(2)}`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(
