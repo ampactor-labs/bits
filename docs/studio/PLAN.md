@@ -106,7 +106,27 @@ Original notes:
 - `CUT {puppetId:'@camera', at, x, y, scale, rot, depth}`: snaps camera state, zeroes velocity; cut-on-beat snaps in the UI only.
 - Walkthrough: `a-tilt-is-a-camera-pass` (CDP `DeviceOrientation.setDeviceOrientationOverride`), `depth-in-the-director-view`.
 
-### S3 — the signal matrix
+### S3 — the signal matrix (v5) — *done*
+What shipped:
+- **WIRE is `{from, to, amount −1..1, smooth?, threshold?, delay?}`.** v4 `{source, target}` migrates, with `on` becoming `const`.
+- **Signals** (`engine/signals.ts`) share one parser with the recipe:
+  - `const`, `voice`, `voice:<pid>`, `beat`, `band:bass|mid|air`, `bright`, `lfo:<hz>`, `rand:<hz>` and `step:<hz>`.
+  - World signals: `sheet:<pid>.x|y|speed` and `dist:<a>:<b>`.
+- **Shaping.** A shaped time signal is baked causally on the 120 Hz grid: delay, then threshold, then a one-pole attack/release with τ = 0.02·250^smooth and attack τ/4. Any order of questions gets the same answers.
+- **Targets** (`engine/props.ts`):
+  - Sheet: bounce, shake and lean (legacy), plus x, y, scale, rot, opacity, hue and depth.
+  - Stage: trails and foley (legacy), plus fog and cam.x/y/z/rot/scale. The stage targets apply after the sim, in `composeFrame` (`stageMods`).
+- **Legacy wires stay exact.** A legacy wire (const, voice or beat into bounce, shake or lean, unshaped) keeps the exact old arithmetic and summation order. `src/e2e/legacy/wires.ts` is the frozen oracle, checked on 40 random v4 wire sets, and parity stays 0/120.
+- **Bands.** `engine/dsp.ts` (radix-2 FFT, Hann, each band normalised to its own 95th percentile) runs in `media/analysis.worker.ts` from a native-rate decode, memoised by asset and `BANDS_VERSION` (`media/bands.ts`). The render proof checks that the worker returns the same arrays as inline.
+- **The Wires room** (`ui/rooms/Wires.tsx`) is the matrix read by rows: each signal has a live meter and a strip of target chips. Tap a chip to plug it in at 50%. A lit chip opens how much, smooth, above and late by; pulling a wire out is undoable. Sheets reach it from their more panel, the stage from the show menu's "stage wires".
+
+Differs from the notes below:
+- **No pass signals yet** (`pass:<id>.x|y|v|speed`).
+- **World signals are read from the frame's poses and take no shaping.** Shaping would need a filter inside the sim step, so the room offers no smoothing for them.
+- **Rooms are drawers opened from context** rather than a RoomBar, which waits until there are more rooms than one.
+- **The camera controls moved to the stage's bottom-right,** because the camera's own hint banner covered the button that puts the camera down.
+
+Original notes:
 - `engine/dsp.ts` (radix-2 FFT, Hann), bands bass 30–150 Hz, mid 150–2k, air 6–16k, plus `bright` (log centroid), each normalized to its 95th percentile, from a native-rate decode in `media/analysis.worker.ts`, memoized by asset id and an analysis version.
 - WIRE becomes `{from: SignalRef, to: PropRef, amount: -1..1, smooth?, threshold?, delay?}`; migration rewrites `{source,target}`.
 - SignalRef strings, one parser shared by recipe and evaluator: `const | voice | voice:<pid> | beat | band:bass|mid|air | bright | pass:<id>.x|y|v|speed | sheet:<pid>.speed|x|y | cam.speed | dist:<a>:<b> | lfo:<hz> | step:<n> | rand:<hz>`.

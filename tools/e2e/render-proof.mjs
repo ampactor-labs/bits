@@ -180,6 +180,16 @@ try {
     `ghost ${look.ghostPlain} without a cut, ${look.ghostCut} across one`,
   );
 
+  // Bands: decoded at the file's own rate, analysed in the worker, the
+  // same numbers as inline, and bass is bass.
+  const bands = await page.evaluate(() => window.__bitsE2E.runBands());
+  check('the worker hears the same bands as the page', bands.sameAsInline, String(bands.sameAsInline));
+  check(
+    'bass is heard in the bass band and air in the air band',
+    bands.bassLow > 0.8 && bands.bassHigh < 0.3 && bands.airHigh > 0.8 && bands.airLow < 0.3,
+    `bass ${bands.bassLow.toFixed(2)} then ${bands.bassHigh.toFixed(2)}, air ${bands.airLow.toFixed(2)} then ${bands.airHigh.toFixed(2)}`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(

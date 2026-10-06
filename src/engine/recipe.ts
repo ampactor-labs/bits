@@ -3,10 +3,12 @@
 // same frames, always. Undo is popping the last event.
 
 import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
+import { isTargetFor } from './props';
+import { parseSignal } from './signals';
 
-export const RECIPE_VERSION = 4 as const;
+export const RECIPE_VERSION = 5 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5] as const;
 
 interface EventBase {
   id: string;
@@ -184,9 +186,6 @@ export interface EyesEvent extends EventBase {
   size: number;
 }
 
-export type WireSource = 'on' | 'voice' | 'beat';
-export type WireTarget = 'bounce' | 'shake' | 'lean' | 'trails' | 'foley';
-
 export type SfxKind = 'boing' | 'slap' | 'honk' | 'scratch' | 'drop';
 
 /** A performed sound: a foley-board tap at `at`, mixed into the show's audio.
@@ -197,16 +196,25 @@ export interface SoundEvent extends EventBase {
   sfx: SfxKind;
 }
 
-/** A modulation wire: a signal patched into a property. puppetId '' targets
- *  the stage itself (trails). Latest wire per (puppet, source, target) wins;
- *  amount 0 unplugs. Sources are deterministic (the recorded voice track and
- *  its beat grid), so wired shows replay and render bit-true. */
+/** A modulation wire: a signal patched into a property, matrix-style.
+ *  `from` names a signal (engine/signals.ts), `to` a target
+ *  (engine/props.ts); puppetId '' is the stage. Latest wire per (sheet,
+ *  from, to) wins; amount 0 unplugs. Every signal is deterministic, so
+ *  wired shows replay and render bit-true. Since v5; v4's {source,
+ *  target} migrate to it. */
 export interface WireEvent extends EventBase {
   kind: 'WIRE';
   puppetId: string;
-  source: WireSource;
-  target: WireTarget;
+  from: string;
+  to: string;
+  /** -1..1: negative drives the target the other way. */
   amount: number;
+  /** 0..1: lag, from 20 ms to 5 s. */
+  smooth?: number;
+  /** 0..1: ignore the signal below this. */
+  threshold?: number;
+  /** 0..2 seconds late. */
+  delay?: number;
 }
 
 /** What a REMOVE tombstones. Slot indices are never renumbered: pin and
@@ -387,6 +395,20 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   2: (raw) => ({ ...raw, version: 3 }),
   /** v4 adds looks, cuts and tilt-performed passes; nothing older changes. */
   3: (raw) => ({ ...raw, version: 4 }),
+  /** v5 opens the wires into a matrix: {source, target} becomes {from,
+   *  to}, and the old 'on' source is the signal 'const'. */
+  4: (raw) => {
+    const events = Array.isArray(raw.events) ? (raw.events as Raw[]) : [];
+    return {
+      ...raw,
+      version: 5,
+      events: events.map((e) => {
+        if (e.kind !== 'WIRE') return e;
+        const { source, target, ...rest } = e;
+        return { ...rest, from: source === 'on' ? 'const' : source, to: target };
+      }),
+    };
+  },
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -671,15 +693,20 @@ export function parseProject(text: string): Project {
         break;
       }
       case 'WIRE': {
-        const srcOk = ev.source === 'on' || ev.source === 'voice' || ev.source === 'beat';
-        const tgtOk =
-          ev.target === 'bounce' ||
-          ev.target === 'shake' ||
-          ev.target === 'lean' ||
-          ev.target === 'trails' ||
-          ev.target === 'foley';
-        if (!(srcOk && tgtOk && isNum(ev.amount) && ev.amount >= 0 && ev.amount <= 1)) {
-          throw new Error('recipe: WIRE event needs a source, target, and amount in 0..1');
+        const unit = (v: unknown, max = 1) => v === undefined || (isNum(v) && v >= 0 && v <= max);
+        if (
+          typeof ev.from !== 'string' ||
+          typeof ev.to !== 'string' ||
+          !parseSignal(ev.from) ||
+          !isTargetFor(ev.puppetId as string, ev.to)
+        ) {
+          throw new Error('recipe: WIRE needs a known signal and a target for its sheet or the stage');
+        }
+        if (!(isNum(ev.amount) && ev.amount >= -1 && ev.amount <= 1)) {
+          throw new Error('recipe: WIRE amount must be in -1..1');
+        }
+        if (!unit(ev.smooth) || !unit(ev.threshold) || !unit(ev.delay, 2)) {
+          throw new Error('recipe: WIRE smooth and threshold are 0..1, delay 0..2');
         }
         break;
       }

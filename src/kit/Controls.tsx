@@ -128,8 +128,10 @@ export function Slider({
         value={value}
         aria-label={label}
         onChange={(e) => onChange(Number(e.target.value))}
-        onPointerUp={() => onCommit?.(value)}
-        onKeyUp={() => onCommit?.(value)}
+        // The input's own value: a tap fires change and release together,
+        // before the new value has come back round as a prop.
+        onPointerUp={(e) => onCommit?.(Number(e.currentTarget.value))}
+        onKeyUp={(e) => onCommit?.(Number(e.currentTarget.value))}
       />
       <span className="slider-value">{format ? format(value) : value.toFixed(2)}</span>
     </label>

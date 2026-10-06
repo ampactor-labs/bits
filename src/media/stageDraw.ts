@@ -166,6 +166,10 @@ function drawLayer(
   const ph = puppet.spec.h * H * puppet.home.scale;
 
   ctx.save();
+  // Wired fade and colour. Absent unless wired, so an unwired sheet never
+  // touches either and draws as it always did.
+  if (mod.alpha !== undefined) ctx.globalAlpha *= mod.alpha;
+  if (mod.hue) ctx.filter = `hue-rotate(${mod.hue.toFixed(1)}deg)`;
   ctx.translate((s.x + mod.dx) * W, (s.y + mod.dy) * H);
   ctx.rotate(s.angle + puppet.home.rot + mod.dAngle);
   const wireScale = mod.scaleMul;

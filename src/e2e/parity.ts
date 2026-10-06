@@ -6,7 +6,8 @@ import { voiceAt } from '../engine/envelope';
 import { createFramer, visualsOf, voiceMap, type Analysis } from '../engine/frame';
 import type { Project } from '../engine/recipe';
 import { castOf, createShowSim } from '../engine/show';
-import { effectiveWires, trailStrength, wireModsFor, type WireMods } from '../engine/wires';
+import type { WireMods } from '../engine/wires';
+import { effectiveWires, trailStrength, wireModsFor } from './legacy/wires';
 import { createRenderer2d, renderFrame2d, STAGE_BG } from '../media/stageDraw';
 import { drawStage } from './legacy/stageDraw';
 import {

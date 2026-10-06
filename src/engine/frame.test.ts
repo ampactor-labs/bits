@@ -26,13 +26,12 @@ describe('frame builder', () => {
       const poses = sim.advanceTo(t);
       const voices = voiceMap(project, visuals, analysis.voice, t, analysis.voices);
       expect(frame.layers.map((l) => l.puppet.id)).toEqual(cast.map((p) => p.id));
-      expect(frame.trail).toBe(trailStrength(wires, analysis.voice, analysis.onsets, t));
+      const ctx = { ...analysis, bands: null, seed: project.seed, poses };
+      expect(frame.trail).toBe(trailStrength(wires, ctx, t));
       for (const layer of frame.layers) {
         const id = layer.puppet.id;
         expect(layer.pose).toEqual(poses.get(id));
-        expect(layer.mods).toEqual(
-          wireModsFor(wires, id, analysis.voice, analysis.onsets, t, project.seed),
-        );
+        expect(layer.mods).toEqual(wireModsFor(wires, id, ctx, t));
         expect(layer.voice).toEqual(voices.get(id) ?? { open: 0, shape: 0 });
       }
     }
