@@ -4,6 +4,7 @@
 
 import { viewOf } from '../engine/camera';
 import { fogAmount, shadowGap, shadowOffset } from '../engine/look';
+import { gradeParams, gradePixels, grainTile } from '../engine/grade';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
@@ -53,7 +54,9 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
     ctx.fillRect(0, 0, W, H);
   }
 
-  const look = frame.look;
+  // Only shadows and fog need each sheet drawn on its own; a palette or
+  // paper grades the finished frame (see createRenderer2d).
+  const look = frame.look && (frame.look.shadow > 0 || frame.look.fog > 0) ? frame.look : null;
   frame.layers.forEach((layer, i) => {
     if (!look) {
       drawProjected(ctx, W, H, frame, layer, images);
@@ -153,8 +156,37 @@ export function trailFor(frame: Frame, lastT: number | null): number {
 
 export function createRenderer2d(): Renderer2d {
   let lastT: number | null = null;
+  // A graded show draws onto a working canvas, which keeps the trails, and
+  // puts a graded copy on screen: grading the screen itself would grade
+  // every ghost again each frame it survives.
+  let work: OffscreenCanvasRenderingContext2D | null = null;
+  let grading = false;
+  let grain: { seed: number; tile: Uint8Array } | null = null;
+  let out: ImageData | null = null;
   return {
     draw(ctx, W, H, frame, images) {
+      const grade = frame.look && (frame.look.palette || frame.look.paper) ? frame.look : null;
+      if (!!grade !== grading) {
+        // Switching in or out: the working canvas has no history worth
+        // keeping.
+        grading = !!grade;
+        lastT = null;
+      }
+      if (grade) {
+        if (!work || work.canvas.width !== W || work.canvas.height !== H) {
+          work = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+          lastT = null;
+        }
+        const trail = trailSince(frame, lastT);
+        lastT = frame.t;
+        renderFrame2d(work, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
+        if (!grain || grain.seed !== frame.seed) grain = { seed: frame.seed, tile: grainTile(frame.seed) };
+        if (!out || out.width !== W || out.height !== H) out = new ImageData(W, H);
+        const params = gradeParams({ palette: grade.palette, paper: grade.paper, seed: frame.seed }, W, frame.t);
+        gradePixels(work.getImageData(0, 0, W, H).data, out.data, W, H, params, grain.tile);
+        ctx.putImageData(out, 0, 0);
+        return;
+      }
       const trail = trailSince(frame, lastT);
       lastT = frame.t;
       renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);

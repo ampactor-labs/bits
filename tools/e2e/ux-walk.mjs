@@ -2076,6 +2076,39 @@ try {
         const kinds = await kindsSince(before);
         check('dress-a-sheet-in-ink', kinds.join(',') === 'INK', kinds.join(',') || 'nothing');
       });
+
+      // Print: a palette and a paper from the show menu.
+      await phase('a-palette-and-paper-from-the-menu', async () => {
+        await label('this bit');
+        await sleep(350);
+        const before = await kindsNow();
+        await label('tropic');
+        await sleep(250);
+        await option('what it is printed on', 'newsprint');
+        await sleep(250);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(500);
+        await tabShot('printed');
+        check('a-palette-and-paper-from-the-menu', kinds.join(',') === 'LOOK,LOOK', kinds.join(',') || 'nothing');
+      });
+
+      // Motion style: the ink sheet on twos.
+      await phase('a-sheet-on-twos', async () => {
+        await label('more');
+        await sleep(350);
+        const before = await kindsNow();
+        await option('how floppy it is', 'on twos');
+        await sleep(300);
+        const spring = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.puppet.spring ?? 'none';
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-sheet-on-twos', kinds.join(',') === 'CAST' && spring === 'twos', `${kinds.join(',')} ${spring}`);
+      });
     } finally {
       await tab.close();
     }

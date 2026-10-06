@@ -6,10 +6,11 @@ import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
 import { isTargetFor } from './props';
 import { parseSignal } from './signals';
 import { genomeProblem, type Genome } from './ink';
+import type { Palette, Paper } from './grade';
 
-export const RECIPE_VERSION = 6 as const;
+export const RECIPE_VERSION = 7 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
 
 interface EventBase {
   id: string;
@@ -23,9 +24,9 @@ interface EventBase {
 
 /** How floppy a puppet is. 'felt' reproduces the original constants, so an
  *  unset spring and 'felt' simulate identically. */
-export type SpringPreset = 'paper' | 'felt' | 'rubber';
+export type SpringPreset = 'paper' | 'felt' | 'rubber' | 'jelly' | 'stiff' | 'twos';
 
-export const SPRING_PRESETS = ['paper', 'felt', 'rubber'] as const;
+export const SPRING_PRESETS = ['paper', 'felt', 'rubber', 'jelly', 'stiff', 'twos'] as const;
 
 interface SpecCommon {
   w: number;
@@ -127,6 +128,11 @@ export interface LookEvent extends EventBase {
   /** Depth haze, 0..1: far sheets fade toward the fog colour. */
   fog?: number;
   fogColor?: string;
+  /** Five colours the whole picture is mapped onto by brightness; null
+   *  takes the palette off. */
+  palette?: Palette | null;
+  /** What it is printed on; null takes the paper away. */
+  paper?: Paper | null;
 }
 
 /** A cut: at `at` the camera is simply somewhere else, still. It snaps the
@@ -425,6 +431,8 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   /** v6 adds inks (an ink sheet, and INK to dress any sheet); nothing
    *  older changes. */
   5: (raw) => ({ ...raw, version: 6 }),
+  /** v7 adds palettes, paper and three springs; nothing older changes. */
+  6: (raw) => ({ ...raw, version: 7 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -738,6 +746,20 @@ export function parseProject(text: string): Project {
         }
         if (ev.fogColor !== undefined && !(typeof ev.fogColor === 'string' && /^#[0-9a-f]{6}$/i.test(ev.fogColor))) {
           throw new Error('recipe: LOOK fogColor must be #rrggbb');
+        }
+        if (ev.palette !== undefined && ev.palette !== null) {
+          const pal = ev.palette as Record<string, unknown>;
+          const ok =
+            Array.isArray(pal.colors) &&
+            pal.colors.length === 5 &&
+            pal.colors.every((c: unknown) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c)) &&
+            unit(pal.mix);
+          if (!ok) throw new Error('recipe: LOOK palette needs five #rrggbb colours and a mix in 0..1');
+        }
+        if (ev.paper !== undefined && ev.paper !== null) {
+          const pp = ev.paper as Record<string, unknown>;
+          const ok = ['edge', 'grain', 'fade', 'misreg'].every((k) => isNum(pp[k]) && unit(pp[k]));
+          if (!ok) throw new Error('recipe: LOOK paper needs edge, grain, fade and misreg in 0..1');
         }
         break;
       }

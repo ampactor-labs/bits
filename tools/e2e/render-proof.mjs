@@ -200,6 +200,7 @@ try {
   // one extra resampling its sprites cost.
   const glp = await page.evaluate(() => window.__bitsE2E.runGlParity());
   check('webgl2 is there to test', glp.available, glp.renderer);
+  check('a palette and paper really change the picture', glp.gradeEffect > 8, `mean red shift ${glp.gradeEffect.toFixed(1)}`);
   for (const sc of glp.scenes) {
     check(
       `the GL renderer matches the canvas (${sc.name})`,

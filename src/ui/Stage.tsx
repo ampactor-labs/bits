@@ -2577,6 +2577,8 @@ export function Stage({
           onStageWires={() => setSheet({ kind: 'wires', pid: '' })}
           shadow={lookOf(projectSnap)?.shadow ?? 0}
           fog={lookOf(projectSnap)?.fog ?? 0}
+          palette={lookOf(projectSnap)?.palette ?? null}
+          paper={lookOf(projectSnap)?.paper ?? null}
           onLook={(patch) =>
             commit((p) => appendEvent(p, { kind: 'LOOK', id: newId(), at: 0, puppetId: '', ...patch }))
           }
