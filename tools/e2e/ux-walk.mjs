@@ -2203,6 +2203,20 @@ try {
 
       // Kits: the clip rides another sheet, then lets go.
       await phase('a-sheet-rides-another', async () => {
+        // The clip is the one to ride. The read before this can leave it
+        // put down, so pick it up again rather than trust it is held.
+        const clipId = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST' && e.puppet.type === 'video');
+          return casts[casts.length - 1]?.puppetId ?? null;
+        });
+        if (!clipId) throw new Error('no clip on the stage');
+        for (let i = 0; i < 3 && (await selected()) !== clipId; i++) {
+          const at = await tab.evaluate((id) => window.__bits.poses()[id] ?? null, clipId);
+          if (!at) throw new Error('the clip has no pose');
+          await finger([[at.x, at.y]]);
+          await sleep(500);
+        }
+        await tab.waitForSelector('[aria-label="more"]', { timeout: 5000 });
         await label('more');
         await sleep(350);
         const pill = await tab.evaluateHandle(() => {
