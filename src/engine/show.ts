@@ -40,6 +40,8 @@ export interface ShowPuppet {
   spring: SpringPreset;
   /** Behind the stage plane, in focal units; see engine/camera. */
   depth: number;
+  /** The sheet it rides, and where on that sheet; null when free. */
+  attach: { to: string; x: number; y: number } | null;
 }
 
 export interface DangleState {
@@ -93,6 +95,7 @@ function computeCast(project: Project): ShowPuppet[] {
         flip: e.flip === true,
         spring: e.puppet.spring ?? 'felt',
         depth: e.depth ?? 0,
+        attach: e.attach ?? null,
       });
     } else if (e.kind === 'DROP') {
       map.delete(e.puppetId);
@@ -133,6 +136,16 @@ export function snipsOf(project: Project, puppetId: string): (SnipEvent | null)[
     }
   }
   return slots;
+}
+
+/** Each snip slot's fold angle, or null where the snip is a swinging cut.
+ *  Latest FOLD per slot wins. */
+export function foldsOf(project: Project, puppetId: string): (number | null)[] {
+  const folds: (number | null)[] = snipsOf(project, puppetId).map(() => null);
+  for (const e of project.events) {
+    if (e.kind === 'FOLD' && e.puppetId === puppetId && e.snip < folds.length) folds[e.snip] = e.angle;
+  }
+  return folds;
 }
 
 /** Pins apply only to uncut puppets: cut paper or bend it, not both. The
@@ -657,6 +670,37 @@ export function createShowSim(
     return newestCovering(rootPasses.get(p.id) ?? [], t);
   };
 
+  // Kits: a riding sheet steps after the sheet it rides, and springs toward
+  // its anchor on that sheet as it was at the same step. Parents first,
+  // otherwise the cast's own order, so a show without kits steps as it
+  // always did.
+  const byId = new Map(cast.map((p) => [p.id, p]));
+  const simOrder: ShowPuppet[] = [];
+  {
+    const placed = new Set<string>();
+    const place = (p: ShowPuppet, depth: number) => {
+      if (placed.has(p.id) || depth > cast.length) return;
+      const parent = p.attach ? byId.get(p.attach.to) : undefined;
+      if (parent) place(parent, depth + 1);
+      if (!placed.has(p.id)) {
+        placed.add(p.id);
+        simOrder.push(p);
+      }
+    };
+    for (const p of cast) place(p, 0);
+  }
+  /** Sheets something rides: only their roots are kept per step. */
+  const ridden = new Set(cast.flatMap((p) => (p.attach && byId.has(p.attach.to) ? [p.attach.to] : [])));
+  /** Each ridden sheet's root after every step of the chunk being stepped. */
+  const chunkRoots = new Map<string, PuppetState[]>();
+  const anchorTarget = (p: ShowPuppet, step: number, chunkStart: number): PuppetTarget | null => {
+    if (!p.attach) return null;
+    const parent = byId.get(p.attach.to);
+    const roots = parent && chunkRoots.get(parent.id);
+    const root = roots?.[step - chunkStart];
+    return parent && root ? localToWorld(root, parent, p.attach.x, p.attach.y) : null;
+  };
+
   const pieceTarget = (p: ShowPuppet, piece: number, t: number): PuppetTarget | null => {
     if (targets) {
       const live = targets(p.id, { piece }, t);
@@ -683,8 +727,10 @@ export function createShowSim(
           finalStep,
           (Math.floor(stepIndex / CHECKPOINT_STEPS) + 1) * CHECKPOINT_STEPS,
         );
-        for (const p of cast) {
+        for (const p of simOrder) {
           const pose = poses.get(p.id)!;
+          const rootsHere: PuppetState[] | null = ridden.has(p.id) ? [] : null;
+          if (rootsHere) chunkRoots.set(p.id, rootsHere);
           let root = pose.root;
           const dangles = pose.dangles.map((d) => ({ ...d }));
           let pins = pose.pins;
@@ -694,7 +740,13 @@ export function createShowSim(
           let held: PuppetPose | null = null;
           for (let k = stepIndex; k < targetStep; k++) {
             const tt = k * PUPPET_DT;
-            const next = stepPuppet(root, rootTarget(p, tt), PUPPET_DT, p.spring);
+            const next = stepPuppet(
+              root,
+              rootTarget(p, tt) ?? (p.attach ? anchorTarget(p, k, stepIndex) : null),
+              PUPPET_DT,
+              p.spring,
+            );
+            rootsHere?.push(next);
             // A mirrored puppet's local rotation runs the other way, so the
             // sideways acceleration that makes a piece swing flips with it.
             const ax = ((next.vx - root.vx) / PUPPET_DT) * (p.flip ? -1 : 1);
@@ -798,6 +850,12 @@ export function localToWorld(
   const c = Math.cos(a);
   const s = Math.sin(a);
   return { x: root.x + lx * c - ly * s, y: root.y + lx * s + ly * c };
+}
+
+/** Where on `parent` a sheet at stage point (x, y) rides: the point in
+ *  the parent's own box, as the parent sits at home. */
+export function anchorOn(parent: ShowPuppet, x: number, y: number): { x: number; y: number } {
+  return worldToLocal(restingPuppet(parent.home.x, parent.home.y), parent, x, y);
 }
 
 /** Stage coords back to puppet-local box coords under the current root frame. */

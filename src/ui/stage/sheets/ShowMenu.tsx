@@ -27,6 +27,8 @@ export interface ShowMenuProps {
   onStageWire: (target: 'trails' | 'foley', amount: number) => void;
   /** Opens the Wires room for the stage: camera, fog, trails. */
   onStageWires: () => void;
+  /** Opens the Shots room: the cuts, as shots to frame and time. */
+  onShots: () => void;
   /** The stage's look, 0..1 each. */
   shadow: number;
   fog: number;
@@ -193,6 +195,7 @@ export function ShowMenu(props: ShowMenuProps) {
       {/* Everything else on the stage a sound can move: the camera, the
           fog, the trails. */}
       <button onClick={props.onStageWires}>stage wires</button>
+      <button onClick={props.onShots}>shots</button>
 
       <div className="sheet-row">
         <span className="sheet-row-label">record blind</span>

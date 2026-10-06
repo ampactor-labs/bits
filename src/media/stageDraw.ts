@@ -7,7 +7,7 @@ import { fogAmount, shadowGap, shadowOffset } from '../engine/look';
 import { gradeParams, gradePixels, grainTile } from '../engine/grade';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
-import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
+import { pointInPoly, type PieceDef, type PuppetPieces, type SnipLine } from '../engine/pieces';
 import {
   SHAPE_ROUND,
   SHAPE_SLIT,
@@ -25,6 +25,7 @@ import { inkCanvas } from './inkDraw';
 import { videoFrame } from './video';
 import { maskCanvas, tracksOf } from './videoAnalysis';
 import { maskIndex, videoLocalTime } from '../engine/video';
+import { blinkAt } from '../engine/blink';
 
 /** One scratch canvas for masking clips, reused. */
 let maskScratch: OffscreenCanvasRenderingContext2D | null = null;
@@ -286,6 +287,7 @@ export function drawSheetContent(
   const { puppet, pose, visual } = layer;
   if (!pose || !visual) return;
   const { pw, ph } = sheetSize(layer, W, H);
+  const folds = foldsNow(visual, layer.mods);
 
   // Pinned cutouts bend through the MLS warp; everything else draws as
   // scissored pieces (a single uncut piece is the trivial case).
@@ -312,6 +314,11 @@ export function drawSheetContent(
   } else {
     drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed, visual.ink);
     for (const child of visual.pieces.children) {
+      const fold = folds?.[child.snipIndex] ?? null;
+      if (fold !== null && child.line) {
+        drawFoldedPiece(ctx, puppet, child, child.line, fold, pw, ph, images, tS, seed, visual.ink);
+        continue;
+      }
       const dangle = pose.dangles[child.snipIndex];
       drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed, visual.ink);
     }
@@ -321,13 +328,13 @@ export function drawSheetContent(
     const at = warp
       ? mlsSimilarity({ x: visual.mouth.mx, y: visual.mouth.my }, warp.p, warp.q)
       : null;
-    drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, layer.voice, at);
+    drawMouth(ctx, visual.mouth, visual.pieces, pose, pw, ph, layer.voice, at, folds);
   }
   if (visual.eyes) {
     const at = warp
       ? mlsSimilarity({ x: visual.eyes.ex, y: visual.eyes.ey }, warp.p, warp.q)
       : null;
-    drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at);
+    drawEyes(ctx, visual.eyes, visual.pieces, pose, pw, ph, tS, seed, at, folds);
   }
 }
 
@@ -584,9 +591,10 @@ function drawEyes(
   tS: number,
   seed: number,
   warpedAt: Pt | null,
+  folds: Folds,
 ): void {
   ctx.save();
-  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey);
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, eyes.ex, eyes.ey, folds);
   const cx = ((warpedAt?.x ?? eyes.ex) - 0.5) * pw;
   const cy = ((warpedAt?.y ?? eyes.ey) - 0.5) * ph;
   const eyeR = (eyes.size * pw) / 4.4;
@@ -597,15 +605,19 @@ function drawEyes(
   const jitX = boilNoise(seed, variant, 4242) * eyeR * 0.08;
   const jitY = boilNoise(seed, variant, 5353) * eyeR * 0.08;
 
+  // Shut is a line, not nothing: the lid comes down over the white.
+  const shut = eyes.blink ? blinkAt(seed, eyes.puppetId, tS) : 0;
+  const open = 1 - shut * 0.9;
   for (const side of [-1, 1]) {
     const ex = cx + side * gap;
     ctx.fillStyle = '#f4efe7';
     ctx.beginPath();
-    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08 * open, 0, 0, Math.PI * 2);
     ctx.fill();
+    if (open < 0.35) continue;
     ctx.fillStyle = '#17120e';
     ctx.beginPath();
-    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42 * Math.min(1, open * 1.2), 0, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -624,9 +636,13 @@ function applyCarrierTransform(
   ph: number,
   lx: number,
   ly: number,
+  folds: Folds,
 ): void {
   const carrier = pieces.children.find((c) => pointInPoly(c.poly, lx, ly));
-  if (carrier?.joint) {
+  const fold = carrier ? (folds?.[carrier.snipIndex] ?? null) : null;
+  if (carrier?.line && fold !== null) {
+    applyFold(ctx, carrier.line, fold, pw, ph);
+  } else if (carrier?.joint) {
     const dangle = pose.dangles[carrier.snipIndex];
     const jx = (carrier.joint.x - 0.5) * pw;
     const jy = (carrier.joint.y - 0.5) * ph;
@@ -634,6 +650,120 @@ function applyCarrierTransform(
     ctx.rotate(dangle?.angle ?? 0);
     ctx.translate(-jx, -jy);
   }
+}
+
+/** Each snip slot's fold angle this frame, wires included; null when the
+ *  sheet has no folds, which draws exactly as before folds existed. */
+type Folds = (number | null)[] | null;
+
+function foldsNow(visual: PuppetVisual, mods: WireMods): Folds {
+  const folds = visual.folds;
+  if (!folds || !folds.some((f) => f !== null)) return null;
+  const d = mods.dFold ?? 0;
+  return folds.map((f) => (f === null ? null : f + d));
+}
+
+/** Turns the canvas so a piece folds about its snip line. Seen square-on,
+ *  a fold squashes the piece across the line by cos(angle) and, past a
+ *  right angle, lays it over the other side. Pixel space, so a fold on a
+ *  tall sheet stays square to its line. */
+function applyFold(ctx: Ctx2D, line: SnipLine, angle: number, pw: number, ph: number): void {
+  const x0 = (line.x0 - 0.5) * pw;
+  const y0 = (line.y0 - 0.5) * ph;
+  const len = Math.hypot((line.x1 - line.x0) * pw, (line.y1 - line.y0) * ph);
+  if (len < 1e-6) return;
+  const ux = ((line.x1 - line.x0) * pw) / len;
+  const uy = ((line.y1 - line.y0) * ph) / len;
+  const c = Math.cos(angle);
+  // M = u·uᵀ + cos·n·nᵀ with n ⟂ u, fixing the line where it lies.
+  const a = ux * ux + c * uy * uy;
+  const b = ux * uy * (1 - c);
+  const d = uy * uy + c * ux * ux;
+  ctx.transform(a, b, b, d, x0 - (a * x0 + b * y0), y0 - (b * x0 + d * y0));
+}
+
+/** The plain back of the paper, for a piece folded right over. */
+const PAPER_BACK = '#e8e0d2';
+/** How dark a piece turned edge-on to the light gets. */
+const FOLD_SHADE = 0.45;
+
+/** One scratch canvas for folded pieces, reused. */
+let folding: OffscreenCanvasRenderingContext2D | null = null;
+
+/** A folded piece: turned about its line, darker the more it turns from
+ *  the light, and showing the paper's plain back once it is past a right
+ *  angle. The shading is laid only where the piece has paper, so a cutout
+ *  keeps its silhouette. */
+function drawFoldedPiece(
+  ctx: Ctx2D,
+  puppet: ShowPuppet,
+  piece: PieceDef,
+  line: SnipLine,
+  angle: number,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  ink: Genome | null,
+): void {
+  const c = Math.cos(angle);
+  const back = c < 0;
+  const shade = FOLD_SHADE * (1 - Math.abs(c));
+  ctx.save();
+  applyFold(ctx, line, angle, pw, ph);
+  if (!back && shade < 0.004) {
+    ctx.restore();
+    // Flat: a fold lying open is just the piece, unswung.
+    drawPiece(ctx, puppet, piece, 0, pw, ph, images, tS, seed, ink);
+    return;
+  }
+  clipTo(ctx, piece, pw, ph);
+  const m = Math.max(4, Math.min(pw, ph) * 0.1);
+  const tw = pw + m * 2;
+  const th = ph + m * 2;
+  const tr = ctx.getTransform();
+  const k = Math.min(3, Math.max(1, Math.hypot(tr.a, tr.b), Math.hypot(tr.c, tr.d)));
+  const w = Math.min(2048, Math.ceil(tw * k));
+  const h = Math.min(2048, Math.ceil(th * k));
+  if (!folding) folding = new OffscreenCanvas(w, h).getContext('2d')!;
+  const f = folding;
+  if (f.canvas.width !== w || f.canvas.height !== h) {
+    f.canvas.width = w;
+    f.canvas.height = h;
+  }
+  f.setTransform(1, 0, 0, 1, 0, 0);
+  f.globalCompositeOperation = 'source-over';
+  f.clearRect(0, 0, w, h);
+  f.setTransform(w / tw, 0, 0, h / th, w / 2, h / 2);
+  if (ink) drawDressed(f, puppet, pw, ph, images, tS, seed, ink);
+  else drawContent(f, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  f.globalCompositeOperation = 'source-atop';
+  f.setTransform(1, 0, 0, 1, 0, 0);
+  if (back) {
+    f.fillStyle = PAPER_BACK;
+    f.fillRect(0, 0, w, h);
+  }
+  if (shade >= 0.004) {
+    f.fillStyle = `rgba(24, 16, 10, ${shade.toFixed(3)})`;
+    f.fillRect(0, 0, w, h);
+  }
+  ctx.drawImage(f.canvas, -tw / 2, -th / 2, tw, th);
+  ctx.restore();
+}
+
+function clipTo(ctx: Ctx2D, piece: PieceDef, pw: number, ph: number): void {
+  if (piece.poly.length < 3) return;
+  ctx.beginPath();
+  for (let i = 0; i < piece.poly.length; i++) {
+    const [px, py] = piece.poly[i]!;
+    const x = (px - 0.5) * pw;
+    const y = (py - 0.5) * ph;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.clip();
 }
 
 function drawPiece(
@@ -867,9 +997,10 @@ function drawMouth(
   ph: number,
   voice: VoiceMoment,
   warpedAt: Pt | null,
+  folds: Folds,
 ): void {
   ctx.save();
-  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my);
+  if (!warpedAt) applyCarrierTransform(ctx, pieces, pose, pw, ph, mouth.mx, mouth.my, folds);
   const mx = ((warpedAt?.x ?? mouth.mx) - 0.5) * pw;
   const my = ((warpedAt?.y ?? mouth.my) - 0.5) * ph;
   const width = mouth.size * pw;
