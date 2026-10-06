@@ -12,6 +12,7 @@
 
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
+import { PUPPET_DT } from './puppet';
 import { IMPACT_SQUASH } from './sfx';
 import type { EyesEvent, MouthEvent, PinEvent, Project } from './recipe';
 import {
@@ -24,6 +25,7 @@ import {
   talkOpenFor,
   type PuppetPose,
   type ShowPuppet,
+  type StepObserver,
   type TargetProvider,
 } from './show';
 import {
@@ -164,16 +166,34 @@ export function composeFrame(input: ComposeInput): Frame {
   };
 }
 
-/** Puppets whose squash just crossed the impact line: a landing. `prev`
- *  carries the last squash seen per puppet and is updated in place. */
-export function impactsOf(prev: Map<string, number>, poses: Map<string, PuppetPose>): string[] {
-  const out: string[] = [];
-  for (const [pid, pose] of poses) {
-    const before = prev.get(pid) ?? 0;
-    if (pose.root.squash >= IMPACT_SQUASH && before < IMPACT_SQUASH) out.push(pid);
-    prev.set(pid, pose.root.squash);
-  }
-  return out;
+/** A landing: a puppet's squash crossing the impact line on the way up. */
+export interface Impact {
+  /** Show seconds, at the sim step where it crossed. */
+  at: number;
+  puppetId: string;
+}
+
+/** Listens to every sim step for landings. Detection used to look at
+ *  whatever frames happened to be drawn, so a 60 fps preview and a 30 fps
+ *  film heard different landings; at the sim's own resolution they hear
+ *  the same ones at the same moments. */
+export function impactListener(): { onStep: StepObserver; drain(): Impact[] } {
+  const squash = new Map<string, number>();
+  let heard: Impact[] = [];
+  return {
+    onStep(puppetId, k, root) {
+      const before = squash.get(puppetId) ?? 0;
+      if (root.squash >= IMPACT_SQUASH && before < IMPACT_SQUASH) {
+        heard.push({ at: (k + 1) * PUPPET_DT, puppetId });
+      }
+      squash.set(puppetId, root.squash);
+    },
+    drain() {
+      const out = heard.sort((a, b) => a.at - b.at || (a.puppetId < b.puppetId ? -1 : 1));
+      heard = [];
+      return out;
+    },
+  };
 }
 
 /** Impact foley is a stage wire. */
@@ -182,8 +202,9 @@ export const foleyOn = (wires: WireMap): boolean => wireAmount(wires, '', 'on', 
 export interface Framer {
   /** Forward only, like the sim it drives: seeking back means a new one. */
   frameAt(t: number): Frame;
-  /** Landings since the previous frameAt, when impact foley is wired. */
-  impacts(): string[];
+  /** Landings up to the latest frameAt not handed out before, in time
+   *  order, when impact foley is wired. */
+  impacts(): Impact[];
   readonly cast: ShowPuppet[];
 }
 
@@ -203,15 +224,12 @@ export function createFramer(
   const cast = castOf(project);
   const visuals = visualsOf(project);
   const wires = effectiveWires(project);
-  const sim = createShowSim(project, options.fromT ?? 0, options.targets);
-  const foley = foleyOn(wires);
-  const squash = new Map<string, number>();
-  let landed: string[] = [];
+  const listener = foleyOn(wires) ? impactListener() : null;
+  const sim = createShowSim(project, options.fromT ?? 0, options.targets, listener?.onStep);
   return {
     cast,
     frameAt(t) {
       const poses = sim.advanceTo(t);
-      landed = foley ? impactsOf(squash, poses) : [];
       return composeFrame({
         project,
         cast,
@@ -223,6 +241,6 @@ export function createFramer(
         ...(options.trails === undefined ? {} : { trails: options.trails }),
       });
     },
-    impacts: () => landed,
+    impacts: () => listener?.drain() ?? [],
   };
 }

@@ -4,7 +4,7 @@ import {
   createFramer,
   composeFrame,
   EMPTY_ANALYSIS,
-  impactsOf,
+  impactListener,
   visualsOf,
   voiceMap,
 } from './frame';
@@ -60,15 +60,36 @@ describe('frame builder', () => {
   });
 
   it('hears a landing once, on the way up through the line', () => {
-    const prev = new Map<string, number>();
-    const pose = (squash: number) =>
-      new Map([
-        ['a', { root: { x: 0, y: 0, vx: 0, vy: 0, angle: 0, squash }, dangles: [], pins: [] }],
-      ]);
-    expect(impactsOf(prev, pose(0.05))).toEqual([]);
-    expect(impactsOf(prev, pose(0.3))).toEqual(['a']);
-    expect(impactsOf(prev, pose(0.31))).toEqual([]);
-    expect(impactsOf(prev, pose(0.0))).toEqual([]);
-    expect(impactsOf(prev, pose(0.25))).toEqual(['a']);
+    const ears = impactListener();
+    const at = (k: number, squash: number) =>
+      ears.onStep('a', k, { x: 0, y: 0, vx: 0, vy: 0, angle: 0, squash });
+    at(0, 0.05);
+    at(1, 0.3);
+    at(2, 0.31);
+    at(3, 0.0);
+    at(4, 0.25);
+    expect(ears.drain().map((i) => i.at)).toEqual([2 / 120, 5 / 120]);
+    expect(ears.drain()).toEqual([]);
+  });
+
+  it('hears every step, so the frame rate cannot change what lands', () => {
+    // Landings are a function of the per-step stream; it must be the same
+    // whether the sim is asked for frames at 24, 30 or 60 per second.
+    const project = fixtureProject();
+    const stream = (fps: number) => {
+      const seen: string[] = [];
+      const sim = createShowSim(project, 0, undefined, (id, k, root) =>
+        seen.push(`${id}:${k}:${root.squash}`),
+      );
+      for (let i = 0; i * (1 / fps) < 3; i++) sim.advanceTo((i + 0.5) / fps);
+      sim.advanceTo(3.2);
+      // Puppet by puppet, each in step order; how the puppets interleave
+      // depends on how the time was asked for, and does not matter.
+      return seen.sort();
+    };
+    const at30 = stream(30);
+    expect(at30.length).toBeGreaterThan(1000);
+    expect(stream(24)).toEqual(at30);
+    expect(stream(60)).toEqual(at30);
   });
 });

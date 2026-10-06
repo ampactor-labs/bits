@@ -108,13 +108,17 @@ import { RenderCancelled, renderShow, type RenderProgress } from '../media/rende
 import {
   composeFrame,
   foleyOn,
-  impactsOf,
+  impactListener,
   visualsOf,
   type OwnVoice,
   type PuppetVisual,
 } from '../engine/frame';
 import { shareOrDownload } from '../media/shareFile';
-import { loadStageImages, renderFrame2d, type StageImages } from '../media/stageDraw';
+import {
+  createRenderer2d,
+  loadStageImages,
+  type StageImages,
+} from '../media/stageDraw';
 
 interface Grab {
   puppetId: string;
@@ -324,7 +328,10 @@ export function Stage({
   const meterRef = useRef<HTMLDivElement>(null);
   const meterFillRef = useRef<HTMLDivElement>(null);
   const elapsedRef = useRef<HTMLSpanElement>(null);
-  const prevSquashRef = useRef<Map<string, number>>(new Map());
+  /** Draws the stage and remembers the frame before, for trails. */
+  const rendererRef = useRef(createRenderer2d());
+  /** Hears landings from the live sim; rebuilt with it. */
+  const liveImpactsRef = useRef<ReturnType<typeof impactListener> | null>(null);
   const liveImpactCountRef = useRef(0);
 
   const audioBlobRef = useRef<Blob | null>(null);
@@ -764,6 +771,11 @@ export function Stage({
 
   const buildSim = useCallback(
     (recording: boolean, from: number): ShowSim => {
+      // Landings are heard at the sim's own resolution, so the stage plays
+      // the same impacts the film will. The fast-forward to `from` is not
+      // something anyone hears.
+      const ears = impactListener();
+      liveImpactsRef.current = ears;
       const sim = createShowSim(simProjectFor(recording), 0, (id, channel, tt) => {
         for (const finger of grabsRef.current.values()) {
           if (
@@ -780,8 +792,9 @@ export function Stage({
           }
         }
         return null;
-      });
+      }, ears.onStep);
       sim.advanceTo(from);
+      ears.drain();
       return sim;
     },
     [simProjectFor],
@@ -861,7 +874,6 @@ export function Stage({
     let from = playheadRef.current;
     if (from >= high - 0.05 || from < low) from = low;
     playheadRef.current = from;
-    prevSquashRef.current = new Map();
     liveImpactCountRef.current = 0;
 
     if (recording && jamRef.current) {
@@ -890,7 +902,6 @@ export function Stage({
     const from = region.from;
     playheadRef.current = from;
     prevClockRef.current = from;
-    prevSquashRef.current = new Map();
     simRef.current = buildSimRef.current(modeRef.current === 'recording', from);
     clockFromRef.current = from;
     wallStartRef.current = performance.now();
@@ -1067,12 +1078,13 @@ export function Stage({
         if (sim) {
           const poses = sim.advanceTo(clock);
           lastPosesRef.current = poses;
+          const landed = liveImpactsRef.current?.drain() ?? [];
           if (foleyOn(wiresRef.current)) {
-            for (let n = impactsOf(prevSquashRef.current, poses).length; n > 0; n--) {
+            for (let n = landed.length; n > 0; n--) {
               void jamRef.current?.playSfx(renderSfx(impactSfx(liveImpactCountRef.current++)));
             }
           }
-          renderFrame2d(
+          rendererRef.current.draw(
             ctx,
             W,
             H,
@@ -1124,7 +1136,7 @@ export function Stage({
         const sim = createShowSim({ ...project, events: applyStagingCast(project, staging) });
         const poses = sim.advanceTo(playheadRef.current);
         lastPosesRef.current = poses;
-        renderFrame2d(
+        rendererRef.current.draw(
           ctx,
           W,
           H,
