@@ -127,6 +127,13 @@ const check = (id, ok, detail) => {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Stopped, whoever stops it: a show can reach its end between seeing the
+// stop button and tapping it.
+const stopPlayback = async (page) => {
+  const stop = await page.$('.dock-stop');
+  if (stop) await stop.tap().catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('.dock-stop'), { timeout: 5000 });
+};
 
 const preview = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], {
   stdio: 'ignore',
@@ -929,7 +936,7 @@ try {
         ],
         120,
       );
-      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await stopPlayback(page);
       await sleep(600);
       const punched = await page.evaluate(() => {
         const passes = window.__bits.project().events.filter((e) => e.kind === 'PASS');
@@ -1005,7 +1012,7 @@ try {
           [b.x + 0.16, b.y - 0.06],
         ],
       );
-      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await stopPlayback(page);
       await sleep(600);
       const added = await page.evaluate((n) => {
         const passes = window.__bits.project().events.filter((e) => e.kind === 'PASS');
@@ -1035,7 +1042,7 @@ try {
         ],
         120,
       );
-      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await stopPlayback(page);
       await sleep(250);
       await shot('curtain');
       const curtain = await page.$('.curtain');
@@ -1170,7 +1177,7 @@ try {
           : 0;
         return { total: pills.length, clipped: clipped.length, overStage: Math.round(overStage) };
       });
-      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await stopPlayback(page);
       await sleep(400);
       check(
         'the-foley-row-fits',
@@ -1190,7 +1197,7 @@ try {
       const commits = await page.evaluate(() => window.__bits.commits());
       const clock = await page.$eval('.timeline .times span', (e) => (e.textContent ?? '').trim());
       const fill = await page.$eval('.timeline .fill', (e) => e.style.width);
-      if (await page.$('.dock-stop')) await tapLabel('stop');
+      await stopPlayback(page);
       check('playback-does-not-rerender-every-frame', commits <= 4, `${commits} commits in 2s`);
       // Painting through refs must not mean painting nothing.
       check(
@@ -1468,7 +1475,7 @@ try {
       // The first few frames carry the cost of starting audio.
       return window.__frames.slice(5);
     });
-    if (await page.$('.dock-stop')) await tapLabel('stop');
+    await stopPlayback(page);
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
     await cdp.detach();
     await sleep(400);
@@ -2159,7 +2166,7 @@ try {
         await label('play');
         await sleep(1500);
         await tabShot('video-sheet');
-        if (await tab.$('.dock-stop')) await label('stop');
+        await stopPlayback(tab);
         await sleep(300);
         const spec = await tab.evaluate((n) => {
           const e = window.__bits.project().events.slice(n).find((x) => x.kind === 'CAST' && x.puppet.type === 'video');
