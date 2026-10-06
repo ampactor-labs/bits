@@ -9,6 +9,7 @@ import type { Project } from '../engine/recipe';
 import { castOf, voiceOf } from '../engine/show';
 import { decodeMono, mixdownMono } from './audio';
 import { bandsFor } from './bands';
+import { loadVideoAnalyses, videoSourcesOf } from './videoAnalysis';
 
 /** The bit's own track: loudness, visemes and the beat grid. */
 export async function analyzeBed(blob: Blob | null): Promise<Pick<Analysis, 'voice' | 'onsets'>> {
@@ -73,7 +74,14 @@ export async function analyzeShow(
   // thousand FFTs.
   const bands =
     bed && project.audio && usesBands(project) ? await bandsFor(project.audio.assetId, bed) : null;
-  return { analysis: { voice, onsets, voices, bands }, pcm };
+  // A read clip's motion and drift, for the wires that listen to them.
+  const cast = castOf(project);
+  await loadVideoAnalyses(
+    cast.map((p) => p.spec),
+    getAssetBlob,
+  );
+  const videos = videoSourcesOf(cast);
+  return { analysis: { voice, onsets, voices, bands, ...(videos.size ? { videos } : {}) }, pcm };
 }
 
 /** True when some wire reads a band or the brightness. */

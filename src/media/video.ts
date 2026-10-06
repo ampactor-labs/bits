@@ -9,6 +9,7 @@
 
 import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny';
 import type { PuppetSpec } from '../engine/recipe';
+import { videoLocalTime } from '../engine/video';
 
 const MAX_SIDE = 720;
 /** How far ahead the stage decodes, and how much it keeps behind. */
@@ -148,15 +149,7 @@ export async function loadVideos(
   }
 }
 
-/** Where in the clip a sheet is at show time t. */
-export function videoLocalTime(spec: Extract<PuppetSpec, { type: 'video' }>, t: number): number {
-  const from = spec.clipFrom ?? 0;
-  const span = Math.max(1e-3, spec.durationS - from);
-  const local = t - (spec.at ?? 0);
-  if (local <= 0) return from;
-  if (spec.loop === false) return from + Math.min(local, span - 1e-3);
-  return from + (local % span);
-}
+export { videoLocalTime };
 
 /** The frame to draw for a video sheet at show time t, if it has one. */
 export function videoFrame(spec: Extract<PuppetSpec, { type: 'video' }>, t: number): CanvasImageSource | null {

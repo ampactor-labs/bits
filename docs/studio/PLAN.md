@@ -222,6 +222,26 @@ Not done here:
 - **The clip's own audio.**
 - **Masks, pose and motion analysis:** these are S5b.
 
+### S5b — reading a clip (v9) — *done*
+What shipped:
+- **One read per clip** (`media/videoAnalysis.ts`), sampled 15 times a second of clip:
+  - **motion:** the mean frame difference at 64×36, normalised to its 95th percentile;
+  - **drift:** the global shift that best explains each step, found by block matching within ±4 px. A gradient (Lucas–Kanade) step could not see a thin thing that moves further than its own width; the render proof's bar does exactly that.
+  - **person masks:** from MediaPipe's selfie segmenter, in VIDEO mode at 256 px;
+  - **head and wrist tracks:** from the pose landmarker.
+- **Storage.** The read is saved as one binary asset (`serializeTracks`) and referenced from the sheet (`analysisId`, carried through `assetRefs`). Model output differs across phones, so it is a result kept, never re-run.
+- **What a read clip offers:**
+  - signals `video:<pid>.motion|flowx|flowy`, which shape like any time signal and appear in the Wires room as "<name> moving / drifting";
+  - `masked`, to show only the person;
+  - "their head / left hand / right hand leads <sheet>", which writes an ordinary PASS from the pose track (`poseToSamples`, `via: 'video'`) in stage coordinates.
+- **Without the models** (offline, an old phone), the read still finds motion and drift.
+- **The render proof:**
+  - checks drift, masks, masking and leading on the encoded bar clip, with a stand-in model that finds the bar;
+  - runs the real models on that clip offline to prove they load and answer at the right sizes.
+
+Not done here:
+- **Running the read in a worker.** It runs on the main thread with progress shown. MediaPipe's VIDEO mode in a worker needs its own canvas plumbing.
+
 Original notes for S5a/b:
 - `{type:'video', assetId, at?, clipFrom?, loop?, maskAssetId?}`; frames chosen as the largest timestamp ≤ t − at + clipFrom; export awaits exact frames in `prepare`, preview reads ahead. Import transcodes to ≤ 720p with 1 s keyframes when it can; audio goes through `importSoundFile`.
 - One analysis pass in a worker (`VideoSampleSink`): masks (MediaPipe VIDEO, 256 px, deflate per frame) as `.mask`, pose landmarks as `.pose` (a picker turns them into ordinary PASS events, `via:'video'`), motion and flow from 64×36 differences as `.sig` → signals `video:<asset>.motion|flowx|flowy`. Ink `src` op takes the video.

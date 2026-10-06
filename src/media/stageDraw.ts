@@ -23,6 +23,21 @@ import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/reci
 import type { Genome } from '../engine/ink';
 import { inkCanvas } from './inkDraw';
 import { videoFrame } from './video';
+import { maskCanvas, tracksOf } from './videoAnalysis';
+import { maskIndex, videoLocalTime } from '../engine/video';
+
+/** One scratch canvas for masking clips, reused. */
+let maskScratch: OffscreenCanvasRenderingContext2D | null = null;
+function masking(w: number, h: number): OffscreenCanvasRenderingContext2D {
+  const cw = Math.max(1, Math.min(1280, w));
+  const ch = Math.max(1, Math.min(1280, h));
+  if (!maskScratch) maskScratch = new OffscreenCanvas(cw, ch).getContext('2d')!;
+  if (maskScratch.canvas.width !== cw || maskScratch.canvas.height !== ch) {
+    maskScratch.canvas.width = cw;
+    maskScratch.canvas.height = ch;
+  }
+  return maskScratch;
+}
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -738,7 +753,23 @@ function drawContent(
       // The latest frame at or before this moment of the clip; a clip
       // still opening shows as a dark card rather than nothing.
       const frame = videoFrame(spec, tS);
-      if (frame) ctx.drawImage(frame, -pw / 2, -ph / 2, pw, ph);
+      const tracks = spec.masked ? tracksOf(spec) : null;
+      const mask =
+        tracks && spec.analysisId
+          ? maskCanvas(spec.analysisId, tracks, maskIndex(tracks, videoLocalTime(spec, tS)))
+          : null;
+      if (frame && mask) {
+        // Only the person the read found: the frame, cut by its mask.
+        const m = masking(Math.ceil(pw), Math.ceil(ph));
+        m.globalCompositeOperation = 'source-over';
+        m.clearRect(0, 0, m.canvas.width, m.canvas.height);
+        m.drawImage(frame, 0, 0, m.canvas.width, m.canvas.height);
+        m.globalCompositeOperation = 'destination-in';
+        m.imageSmoothingEnabled = true;
+        m.drawImage(mask, 0, 0, m.canvas.width, m.canvas.height);
+        m.globalCompositeOperation = 'source-over';
+        ctx.drawImage(m.canvas, -pw / 2, -ph / 2, pw, ph);
+      } else if (frame) ctx.drawImage(frame, -pw / 2, -ph / 2, pw, ph);
       else {
         ctx.fillStyle = '#1b1b1b';
         ctx.fillRect(-pw / 2, -ph / 2, pw, ph);

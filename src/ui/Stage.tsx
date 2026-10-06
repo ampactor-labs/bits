@@ -75,6 +75,16 @@ import {
 } from '../engine/signals';
 import { bandsFor } from '../media/bands';
 import { loadVideos, prefetchVideos, probeVideo } from '../media/video';
+import {
+  analyzeVideo,
+  loadVideoAnalyses,
+  mediapipeModels,
+  rememberTracks,
+  serializeTracks,
+  tracksOf,
+  videoSourcesOf,
+} from '../media/videoAnalysis';
+import { poseToSamples, type Joint } from '../engine/video';
 import { COMMON_SIGNALS, WiresRoom, type WirePatch } from './rooms/Wires';
 import { BannerView, useBanner } from '../kit/Banner';
 import { Sheet } from '../kit/Sheet';
@@ -340,12 +350,16 @@ export function Stage({
       visualsRef,
       wiresRef,
       imagesRef,
-      analysis: () => ({
-        voice: voiceRef.current,
-        onsets: onsetsRef.current,
-        voices: voicesRef.current,
-        bands: bandsRef.current,
-      }),
+      analysis: () => {
+        const videos = videoSourcesOf(castOf(projectRef.current));
+        return {
+          voice: voiceRef.current,
+          onsets: onsetsRef.current,
+          voices: voicesRef.current,
+          bands: bandsRef.current,
+          ...(videos.size ? { videos } : {}),
+        };
+      },
     });
   }
   const lastPosesRef = useRef<Map<string, PuppetPose>>(new Map());
@@ -521,6 +535,10 @@ export function Stage({
       getAsset(id),
     );
     await loadVideos(
+      castOf(projectRef.current).map((p) => p.spec),
+      async (id) => getAsset(id),
+    );
+    await loadVideoAnalyses(
       castOf(projectRef.current).map((p) => p.spec),
       async (id) => getAsset(id),
     );
@@ -1966,6 +1984,64 @@ export function Stage({
     dirtyRef.current = true;
   };
 
+  /** Reading a clip: motion, masks and pose, once, with progress, kept as
+   *  an asset the sheet points at. */
+  const [readingId, setReadingId] = useState<string | null>(null);
+  const [readProgress, setReadProgress] = useState(0);
+  const readClip = async (p: ShowPuppet) => {
+    if (p.spec.type !== 'video' || readingId) return;
+    const spec = p.spec;
+    setReadingId(p.id);
+    setReadProgress(0);
+    try {
+      const blob = await getAsset(spec.assetId);
+      // Without the models (offline, too old a phone) the read still finds
+      // motion; masks and pose need them.
+      const models = await mediapipeModels({ masks: true, pose: true }).catch(() => ({}));
+      const tracks = await analyzeVideo(blob, spec.durationS, models, setReadProgress);
+      const analysisId = await saveAsset(serializeTracks(tracks), 'vread');
+      rememberTracks(analysisId, tracks);
+      // The sheet as it is now: it may have moved while the clip was read.
+      const now = castOf(projectRef.current).find((x) => x.id === p.id);
+      if (now) setSpec(now, { analysisId } as Partial<PuppetSpec>);
+      toast.show(tracks.masks ? 'read: it can show just the person now' : 'read: its motion can drive wires');
+    } catch {
+      banner.error("couldn't read that clip");
+    } finally {
+      setReadingId(null);
+    }
+  };
+
+  /** A joint of the clip's person leads another sheet: an ordinary pass,
+   *  made from the pose track, in stage coordinates. */
+  const leadWith = (p: ShowPuppet, joint: Joint, targetId: string) => {
+    if (p.spec.type !== 'video') return;
+    const tracks = tracksOf(p.spec);
+    if (!tracks) return;
+    const samples = poseToSamples(p.spec, tracks, joint, {
+      x: p.home.x,
+      y: p.home.y,
+      w: p.spec.w * p.home.scale,
+      h: p.spec.h * p.home.scale,
+      rot: p.home.rot,
+    });
+    if (samples.length < 6) {
+      toast.show('the clip never shows that clearly enough');
+      return;
+    }
+    commit((proj) =>
+      appendEvent(proj, {
+        kind: 'PASS',
+        id: newId(),
+        at: samples[0]!,
+        puppetId: targetId,
+        samples,
+        via: 'video',
+      }),
+    );
+    toast.undoable('it follows the clip now', undoRef.current);
+  };
+
   /** An ink kept from the tray: dressing a sheet, or a sheet of its own. */
   const keepInk = (genome: Genome, as: KeepAs, target: string | null) => {
     if (as === 'dress' && target) {
@@ -2510,6 +2586,22 @@ export function Stage({
           }}
           onInk={() => setSheet({ kind: 'ink', target: selected.id })}
           inked={!!inkOf(projectSnap, selected.id)}
+          {...(selected.spec.type === 'video'
+            ? {
+                clip: {
+                  read: !!selected.spec.analysisId,
+                  reading: readingId === selected.id ? readProgress : null,
+                  masked: selected.spec.masked === true,
+                  hasPose: !!(tracksOf(selected.spec)?.pose),
+                  others: castOf(projectSnap)
+                    .filter((p) => p.id !== selected.id && !p.back)
+                    .map((p) => ({ id: p.id, name: puppetLabel(p, castOf(projectSnap).indexOf(p)) })),
+                },
+                onRead: () => void readClip(selected),
+                onMasked: (masked: boolean) => setSpec(selected, { masked } as Partial<PuppetSpec>),
+                onLead: (joint: Joint, targetId: string) => leadWith(selected, joint, targetId),
+              }
+            : {})}
           onInkOff={() => {
             commit((p) =>
               appendEvent(p, { kind: 'INK', id: newId(), at: 0, puppetId: selected.id, genome: null }),
@@ -2566,8 +2658,9 @@ export function Stage({
           }
           signals={
             sheet.pid === ''
-              ? COMMON_SIGNALS
+              ? [...COMMON_SIGNALS, ...clipSignals(projectSnap)]
               : [
+                  ...clipSignals(projectSnap),
                   ...COMMON_SIGNALS,
                   ...(voiceOf(projectSnap, sheet.pid)
                     ? [{ id: `voice:${sheet.pid}`, label: 'its own voice' }]
@@ -2757,4 +2850,18 @@ function videoSpecsOf(project: Project): PuppetSpec[] {
   return castOf(project)
     .map((p) => p.spec)
     .filter((spec) => spec.type === 'video');
+}
+
+/** The signals a read clip offers, for the Wires room. */
+function clipSignals(project: Project): { id: string; label: string }[] {
+  const cast = castOf(project);
+  return cast.flatMap((p, i) => {
+    if (p.spec.type !== 'video' || !p.spec.analysisId) return [];
+    const name = puppetLabel(p, i);
+    return [
+      { id: `video:${p.id}.motion`, label: `${name} moving` },
+      { id: `video:${p.id}.flowx`, label: `${name} drifting sideways` },
+      { id: `video:${p.id}.flowy`, label: `${name} drifting up and down` },
+    ];
+  });
 }

@@ -8,9 +8,9 @@ import { parseSignal } from './signals';
 import { genomeProblem, type Genome } from './ink';
 import type { Palette, Paper } from './grade';
 
-export const RECIPE_VERSION = 8 as const;
+export const RECIPE_VERSION = 9 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 
 interface EventBase {
   id: string;
@@ -67,6 +67,10 @@ export type PuppetSpec =
       at?: number;
       clipFrom?: number;
       loop?: boolean;
+      /** The stored read of the clip (motion, masks, pose): an asset. */
+      analysisId?: string;
+      /** Shows only the person the read found. */
+      masked?: boolean;
     } & SpecCommon);
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
@@ -126,7 +130,7 @@ export interface PassEvent extends EventBase {
   prop?: CameraProp;
   /** What performed it: a finger (absent) or the phone's tilt. Metadata
    *  only; the pass plays the same either way. */
-  via?: 'finger' | 'gyro';
+  via?: 'finger' | 'gyro' | 'video';
 }
 
 /** How the whole stage looks. Latest wins per field; an absent field is
@@ -447,6 +451,8 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   6: (raw) => ({ ...raw, version: 7 }),
   /** v8 adds video sheets; nothing older changes. */
   7: (raw) => ({ ...raw, version: 8 }),
+  /** v9 adds a clip's stored read, masking, and passes made from it. */
+  8: (raw) => ({ ...raw, version: 9 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -590,7 +596,9 @@ export function parseProject(text: string): Project {
             (spec.at === undefined || isNum(spec.at)) &&
             (spec.clipFrom === undefined ||
               (isNum(spec.clipFrom) && spec.clipFrom >= 0 && spec.clipFrom < (spec.durationS as number))) &&
-            (spec.loop === undefined || typeof spec.loop === 'boolean');
+            (spec.loop === undefined || typeof spec.loop === 'boolean') &&
+            (spec.analysisId === undefined || (typeof spec.analysisId === 'string' && spec.analysisId.length > 0)) &&
+            (spec.masked === undefined || typeof spec.masked === 'boolean');
           if (!ok) throw new Error('recipe: video needs an assetId, a positive duration, and a start inside it');
         }
         if (spec.type === 'ink' && genomeProblem(spec.genome) !== null) {
@@ -640,8 +648,8 @@ export function parseProject(text: string): Project {
             throw new Error('recipe: only the camera records props');
           }
         }
-        if (ev.via !== undefined && ev.via !== 'finger' && ev.via !== 'gyro') {
-          throw new Error('recipe: PASS via must be finger or gyro');
+        if (ev.via !== undefined && ev.via !== 'finger' && ev.via !== 'gyro' && ev.via !== 'video') {
+          throw new Error('recipe: PASS via must be finger, gyro or video');
         }
         if (ev.puppetId === CAMERA_ID && (ev.piece !== undefined || ev.pin !== undefined)) {
           throw new Error('recipe: the camera has no pieces or pins');

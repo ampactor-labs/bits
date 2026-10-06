@@ -11,6 +11,8 @@ import { Segmented, Slider } from '../../../kit/Controls';
 import { IconButton } from '../../../kit/IconButton';
 import type { SpringPreset } from '../../../engine/recipe';
 import type { ShowPuppet } from '../../../engine/show';
+import type { Joint } from '../../../engine/video';
+import { ProgressRing } from '../../../kit/Controls';
 
 export type WireLevel = 'off' | 'gentle' | 'wild';
 
@@ -64,6 +66,18 @@ export interface MoreSheetProps {
   /** True when it is dressed; offers taking it off. */
   inked: boolean;
   onInkOff: () => void;
+  /** Only for a video sheet: what its read knows and what can use it. */
+  clip?: {
+    read: boolean;
+    /** 0..1 while reading, null otherwise. */
+    reading: number | null;
+    masked: boolean;
+    hasPose: boolean;
+    others: { id: string; name: string }[];
+  };
+  onRead?: () => void;
+  onMasked?: (masked: boolean) => void;
+  onLead?: (joint: Joint, targetId: string) => void;
   onSpring: (spring: SpringPreset) => void;
   onHand: (hand: 'left' | 'right' | 'none') => void;
   onDuplicate: () => void;
@@ -123,6 +137,8 @@ export function MoreSheet(props: MoreSheetProps) {
           onChange={(stop) => props.onDepth(DEPTHS.find((d) => d.value === stop)!.depth)}
         />
       </div>
+
+      {props.clip && <ClipRows {...props} clip={props.clip} />}
 
       <button onClick={props.onSideView}>see the stage from the side</button>
 
@@ -199,5 +215,57 @@ export function MoreSheet(props: MoreSheetProps) {
 
       <button onClick={props.onDrop}>drop from the cast</button>
     </Sheet>
+  );
+}
+
+const JOINT_NAMES: { value: Joint; label: string }[] = [
+  { value: 'head', label: 'head' },
+  { value: 'leftHand', label: 'left hand' },
+  { value: 'rightHand', label: 'right hand' },
+];
+
+/** A clip's own rows: read it once, then show just the person, and let
+ *  their head or a hand lead another sheet as an ordinary pass. */
+function ClipRows(props: MoreSheetProps & { clip: NonNullable<MoreSheetProps['clip']> }) {
+  const { clip } = props;
+  const [joint, setJoint] = useState<Joint>('rightHand');
+  if (clip.reading !== null) {
+    return <ProgressRing value={clip.reading} label="reading the clip" />;
+  }
+  if (!clip.read) {
+    return (
+      <button onClick={props.onRead}>read the clip: find the person, how it moves</button>
+    );
+  }
+  return (
+    <>
+      <div className="sheet-row">
+        <span className="sheet-row-label">show</span>
+        <Segmented
+          label="what of the clip shows"
+          value={clip.masked ? 'person' : 'all'}
+          options={[
+            { value: 'all' as const, label: 'all of it' },
+            { value: 'person' as const, label: 'the person' },
+          ]}
+          onChange={(v) => props.onMasked?.(v === 'person')}
+        />
+      </div>
+      {clip.hasPose && clip.others.length > 0 && (
+        <>
+          <div className="sheet-row">
+            <span className="sheet-row-label">their</span>
+            <Segmented label="which part leads" value={joint} options={JOINT_NAMES} onChange={setJoint} />
+          </div>
+          <div className="sheet-icons">
+            {clip.others.map((o) => (
+              <button key={o.id} className="pill" onClick={() => props.onLead?.(joint, o.id)}>
+                leads {o.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
   );
 }

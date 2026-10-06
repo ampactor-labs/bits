@@ -22,6 +22,7 @@
 import { voiceAt, type VoiceTrack } from './envelope';
 import { boilNoise } from './puppet';
 import type { PuppetPose } from './show';
+import { videoSignalAt, type VideoSpec, type VideoTracks } from './video';
 
 export type Band = 'bass' | 'mid' | 'air';
 
@@ -35,7 +36,8 @@ export type Signal =
   | { kind: 'rand'; hz: number }
   | { kind: 'step'; hz: number }
   | { kind: 'sheet'; pid: string; of: 'x' | 'y' | 'speed' }
-  | { kind: 'dist'; a: string; b: string };
+  | { kind: 'dist'; a: string; b: string }
+  | { kind: 'video'; pid: string; of: 'motion' | 'flowx' | 'flowy' };
 
 const HZ = /^(?:\d+(?:\.\d+)?|\.\d+)$/;
 
@@ -69,6 +71,14 @@ export function parseSignal(id: string): Signal | null {
         ? { kind: 'sheet', pid: rest.slice(0, dot), of }
         : null;
     }
+    case 'video': {
+      const dot = rest.lastIndexOf('.');
+      if (dot <= 0) return null;
+      const of = rest.slice(dot + 1);
+      return of === 'motion' || of === 'flowx' || of === 'flowy'
+        ? { kind: 'video', pid: rest.slice(0, dot), of }
+        : null;
+    }
     case 'dist': {
       const parts = rest.split(':');
       return parts.length === 2 && parts[0] && parts[1] ? { kind: 'dist', a: parts[0], b: parts[1] } : null;
@@ -98,6 +108,8 @@ export interface SignalSources {
   voices: Map<string, { track: VoiceTrack; at: number; durationS: number }>;
   bands: Bands | null;
   seed: number;
+  /** Video sheets that have been read, by sheet id. */
+  videos?: Map<string, { spec: VideoSpec; tracks: VideoTracks }>;
 }
 
 const BEAT_DECAY = 7;
@@ -158,6 +170,10 @@ export function timeSignalAt(s: Signal, src: SignalSources, t: number): number {
     }
     case 'step':
       return cell(src.seed, s.hz, Math.floor(t * s.hz));
+    case 'video': {
+      const v = src.videos?.get(s.pid);
+      return v ? videoSignalAt(v.spec, v.tracks, s.of, t) : 0;
+    }
     default:
       return 0;
   }
