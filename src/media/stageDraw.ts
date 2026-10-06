@@ -4,6 +4,7 @@
 
 import { viewOf } from '../engine/camera';
 import { fogAmount, shadowGap, shadowOffset } from '../engine/look';
+import { gradeParams, gradePixels, grainTile } from '../engine/grade';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
@@ -19,6 +20,8 @@ import type { Frame, LayerFrame, PuppetVisual } from '../engine/frame';
 
 export type { PuppetVisual } from '../engine/frame';
 import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
+import type { Genome } from '../engine/ink';
+import { inkCanvas } from './inkDraw';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -51,7 +54,9 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
     ctx.fillRect(0, 0, W, H);
   }
 
-  const look = frame.look;
+  // Only shadows and fog need each sheet drawn on its own; a palette or
+  // paper grades the finished frame (see createRenderer2d).
+  const look = frame.look && (frame.look.shadow > 0 || frame.look.fog > 0) ? frame.look : null;
   frame.layers.forEach((layer, i) => {
     if (!look) {
       drawProjected(ctx, W, H, frame, layer, images);
@@ -151,8 +156,37 @@ export function trailFor(frame: Frame, lastT: number | null): number {
 
 export function createRenderer2d(): Renderer2d {
   let lastT: number | null = null;
+  // A graded show draws onto a working canvas, which keeps the trails, and
+  // puts a graded copy on screen: grading the screen itself would grade
+  // every ghost again each frame it survives.
+  let work: OffscreenCanvasRenderingContext2D | null = null;
+  let grading = false;
+  let grain: { seed: number; tile: Uint8Array } | null = null;
+  let out: ImageData | null = null;
   return {
     draw(ctx, W, H, frame, images) {
+      const grade = frame.look && (frame.look.palette || frame.look.paper) ? frame.look : null;
+      if (!!grade !== grading) {
+        // Switching in or out: the working canvas has no history worth
+        // keeping.
+        grading = !!grade;
+        lastT = null;
+      }
+      if (grade) {
+        if (!work || work.canvas.width !== W || work.canvas.height !== H) {
+          work = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })!;
+          lastT = null;
+        }
+        const trail = trailSince(frame, lastT);
+        lastT = frame.t;
+        renderFrame2d(work, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
+        if (!grain || grain.seed !== frame.seed) grain = { seed: frame.seed, tile: grainTile(frame.seed) };
+        if (!out || out.width !== W || out.height !== H) out = new ImageData(W, H);
+        const params = gradeParams({ palette: grade.palette, paper: grade.paper, seed: frame.seed }, W, frame.t);
+        gradePixels(work.getImageData(0, 0, W, H).data, out.data, W, H, params, grain.tile);
+        ctx.putImageData(out, 0, 0);
+        return;
+      }
       const trail = trailSince(frame, lastT);
       lastT = frame.t;
       renderFrame2d(ctx, W, H, trail === frame.trail ? frame : { ...frame, trail }, images);
@@ -260,10 +294,10 @@ export function drawSheetContent(
     const crop = cropOf(puppet.spec, img, pw, ph);
     drawWarpedMesh(ctx, img, crop, pw, ph, deformGrid(WARP_GRID, warp.p, warp.q));
   } else {
-    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed);
+    drawPiece(ctx, puppet, visual.pieces.root, null, pw, ph, images, tS, seed, visual.ink);
     for (const child of visual.pieces.children) {
       const dangle = pose.dangles[child.snipIndex];
-      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed);
+      drawPiece(ctx, puppet, child, dangle?.angle ?? 0, pw, ph, images, tS, seed, visual.ink);
     }
   }
 
@@ -289,6 +323,8 @@ export function sheetContentKey(layer: LayerFrame, W: number, H: number, tS: num
   const { puppet, visual } = layer;
   if (!visual) return null;
   if (visual.mouth || visual.eyes) return null;
+  // Inks move every tick.
+  if (visual.ink || puppet.spec.type === 'ink') return null;
   if (visual.pieces.children.length > 0) return null;
   if (visual.pins.some((pin) => pin !== null)) return null;
   const { pw, ph } = sheetSize(layer, W, H);
@@ -594,6 +630,7 @@ function drawPiece(
   images: StageImages,
   tS: number,
   seed: number,
+  ink: Genome | null = null,
 ): void {
   ctx.save();
   if (dangleAngle !== null && piece.joint) {
@@ -615,8 +652,54 @@ function drawPiece(
     ctx.closePath();
     ctx.clip();
   }
-  drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  if (ink) drawDressed(ctx, puppet, pw, ph, images, tS, seed, ink);
+  else drawContent(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
   ctx.restore();
+}
+
+/** One scratch canvas for dressing, reused. */
+let dressing: OffscreenCanvasRenderingContext2D | null = null;
+
+/** A sheet dressed in an ink keeps its own shape and takes the ink's
+ *  colours, like paper cut from patterned stock: its content is drawn
+ *  alone, the ink laid over exactly where that content is, and the result
+ *  placed where the content would have gone. */
+function drawDressed(
+  ctx: Ctx2D,
+  puppet: ShowPuppet,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+  ink: Genome,
+): void {
+  // Strokes and words reach a little past the box.
+  const m = Math.max(4, Math.min(pw, ph) * 0.1);
+  const tw = pw + m * 2;
+  const th = ph + m * 2;
+  // Drawn at the resolution it lands at, so it is as sharp as undressed.
+  const tr = ctx.getTransform();
+  const k = Math.min(3, Math.max(1, Math.hypot(tr.a, tr.b)));
+  const w = Math.min(2048, Math.ceil(tw * k));
+  const h = Math.min(2048, Math.ceil(th * k));
+  if (!dressing) dressing = new OffscreenCanvas(w, h).getContext('2d')!;
+  const d = dressing;
+  if (d.canvas.width !== w || d.canvas.height !== h) {
+    d.canvas.width = w;
+    d.canvas.height = h;
+  }
+  d.setTransform(1, 0, 0, 1, 0, 0);
+  d.globalCompositeOperation = 'source-over';
+  d.clearRect(0, 0, w, h);
+  d.setTransform(w / tw, 0, 0, h / th, w / 2, h / 2);
+  drawContent(d, puppet.spec, puppet.id, pw, ph, images, tS, seed, puppet.flip);
+  d.globalCompositeOperation = 'source-atop';
+  d.imageSmoothingEnabled = true;
+  d.imageSmoothingQuality = 'high';
+  d.drawImage(inkCanvas(ink, tS), -pw / 2, -ph / 2, pw, ph);
+  d.globalCompositeOperation = 'source-over';
+  ctx.drawImage(d.canvas, -tw / 2, -th / 2, tw, th);
 }
 
 function drawContent(
@@ -650,6 +733,17 @@ function drawContent(
       ctx.fillStyle = spec.color;
       ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
       break;
+    case 'ink': {
+      // Grown at a small fixed size and scaled smoothly: soft, like print.
+      const smooth = ctx.imageSmoothingEnabled;
+      const quality = ctx.imageSmoothingQuality;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(inkCanvas(spec.genome, tS), -pw / 2, -ph / 2, pw, ph);
+      ctx.imageSmoothingEnabled = smooth;
+      ctx.imageSmoothingQuality = quality;
+      break;
+    }
     case 'doodle':
       drawDoodle(ctx, spec.strokes, spec.strokeStyle, pw, ph, tS, seed);
       break;

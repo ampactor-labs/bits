@@ -861,6 +861,57 @@ body {
   font-weight: 700;
 }
 
+.ink-tray {
+  /* One row of six: the sheet is a third of the stage at most, and the
+     keep buttons have to be in sight without scrolling. */
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.ink-tile {
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--r-1);
+  overflow: hidden;
+  border: 2px solid transparent;
+  touch-action: none;
+}
+
+.ink-tile canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ink-tile.front {
+  border-color: var(--accent-2);
+}
+
+.ink-tile.marked {
+  border-color: var(--accent);
+}
+
+.palette-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.palette-chip {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+.palette-chip.on {
+  border-color: var(--accent-2);
+}
+
 .stagepills {
   position: absolute;
   bottom: 12px;

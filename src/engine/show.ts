@@ -13,6 +13,8 @@ import {
 } from './puppet';
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
 import { CAMERA_ID, CAMERA_PROPS, REST_CAMERA, type CameraPose, type CameraProp } from './camera';
+import type { Genome } from './ink';
+import type { Palette, Paper } from './grade';
 import type {
   CutEvent,
   EyesEvent,
@@ -62,7 +64,20 @@ const PIECE_MAX = 2.2;
 
 /** Cast in draw order: backdrops first, then puppets, newest CAST in front.
  *  A DROP removes; a later CAST revives (and fronts). */
+/** Read-only by contract: callers map or filter it, never change it in
+ *  place, so one cast per event list can be shared by every caller. */
+const castMemo = new WeakMap<RecipeEvent[], ShowPuppet[]>();
+
 export function castOf(project: Project): ShowPuppet[] {
+  let hit = castMemo.get(project.events);
+  if (!hit) {
+    hit = computeCast(project);
+    castMemo.set(project.events, hit);
+  }
+  return hit;
+}
+
+function computeCast(project: Project): ShowPuppet[] {
   const map = new Map<string, ShowPuppet>();
   let order: string[] | null = null;
   for (const e of project.events) {
@@ -152,18 +167,41 @@ export function voiceOf(project: Project, puppetId: string): VoiceEvent | null {
   return out;
 }
 
+/** The ink a sheet is dressed in: latest INK wins, null takes it off. */
+export function inkOf(project: Project, puppetId: string): Genome | null {
+  let out: Genome | null = null;
+  for (const e of project.events) {
+    if (e.kind === 'INK' && e.puppetId === puppetId) out = e.genome;
+  }
+  return out;
+}
+
 /** The stage's look: latest wins per field, absent is off. */
 export interface Look {
   shadow: number;
   fog: number;
   fogColor: string;
+  palette: Palette | null;
+  paper: Paper | null;
 }
 
 export const DEFAULT_FOG = '#8a93a6';
 
+/** Per event list: a project is immutable, so its look and cuts are too,
+ *  and the stage asks for them every frame. */
+const lookMemo = new WeakMap<RecipeEvent[], Look | null>();
+const cutsMemo = new WeakMap<RecipeEvent[], CutEvent[]>();
+
 export function lookOf(project: Project): Look | null {
+  if (lookMemo.has(project.events)) return lookMemo.get(project.events)!;
+  const out = computeLook(project);
+  lookMemo.set(project.events, out);
+  return out;
+}
+
+function computeLook(project: Project): Look | null {
   let found = false;
-  const look: Look = { shadow: 0, fog: 0, fogColor: DEFAULT_FOG };
+  const look: Look = { shadow: 0, fog: 0, fogColor: DEFAULT_FOG, palette: null, paper: null };
   for (const e of project.events) {
     if (e.kind !== 'LOOK') continue;
     found = true;
@@ -171,13 +209,26 @@ export function lookOf(project: Project): Look | null {
     if (l.shadow !== undefined) look.shadow = l.shadow;
     if (l.fog !== undefined) look.fog = l.fog;
     if (l.fogColor !== undefined) look.fogColor = l.fogColor;
+    if (l.palette !== undefined) look.palette = l.palette;
+    if (l.paper !== undefined) look.paper = l.paper;
   }
   // A look that is all off is no look: the plain drawing path.
-  return found && (look.shadow > 0 || look.fog > 0) ? look : null;
+  return found && (look.shadow > 0 || look.fog > 0 || look.palette !== null || look.paper !== null)
+    ? look
+    : null;
 }
 
 /** The camera's cuts in time order, without the ones taken out. */
 export function cutsOf(project: Project): CutEvent[] {
+  let hit = cutsMemo.get(project.events);
+  if (!hit) {
+    hit = computeCuts(project);
+    cutsMemo.set(project.events, hit);
+  }
+  return hit;
+}
+
+function computeCuts(project: Project): CutEvent[] {
   const removed = new Set<string>();
   for (const e of project.events) {
     if (e.kind === 'REMOVE' && 'cut' in e.target) removed.add(e.target.cut);
@@ -395,8 +446,15 @@ const restingCamera = (): CameraBody => ({
 const CHECKPOINT_STEPS = 120;
 interface Checkpoint {
   poses: Map<string, PuppetPose>;
+  /** What was on show: differs from the physics only for sheets on twos. */
+  shown: Map<string, PuppetPose>;
   camera: CameraBody | null;
 }
+
+/** On twos: a sheet animated on twos shows a new pose every twelfth of a
+ *  second (every ten sim steps) and holds it in between, the way cutout
+ *  animation shot on film moves. The spring underneath runs as felt. */
+const TWOS_STEPS = 10;
 const checkpoints = new WeakMap<RecipeEvent[], Map<number, Checkpoint>>();
 
 const copyPose = (pose: PuppetPose): PuppetPose => ({
@@ -544,6 +602,7 @@ export function createShowSim(
     return b;
   })();
   const writes = targets === undefined && stepIndex === 0;
+  let shownCp: Map<string, PuppetPose> | null = null;
   if (options.resumeAt !== undefined && stepIndex === 0) {
     const want = Math.floor(options.resumeAt / PUPPET_DT);
     let best = 0;
@@ -551,12 +610,15 @@ export function createShowSim(
     const cp = book.get(best);
     if (cp) {
       poses = new Map([...cp.poses].map(([id, pose]) => [id, copyPose(pose)]));
+      shownCp = new Map([...cp.shown].map(([id, pose]) => [id, copyPose(pose)]));
       // A checkpoint written without a camera (no passes for it) is still
       // valid for a live stage: its camera just has not moved yet.
       cam = copyCamera(cp.camera) ?? (cam && restingCamera());
       stepIndex = best;
     }
   }
+  /** What the frame shows; the physics in `poses` runs underneath. */
+  const shown: Map<string, PuppetPose> = shownCp ?? new Map(poses);
 
   const camTarget = (channel: Channel, passes: EffectivePass[], t: number) => {
     if (targets) {
@@ -628,6 +690,8 @@ export function createShowSim(
           let pins = pose.pins;
           const geoms = pieceGeoms.get(p.id)!;
           const locals = pinLocals.get(p.id)!;
+          const onTwos = p.spring === 'twos';
+          let held: PuppetPose | null = null;
           for (let k = stepIndex; k < targetStep; k++) {
             const tt = k * PUPPET_DT;
             const next = stepPuppet(root, rootTarget(p, tt), PUPPET_DT, p.spring);
@@ -674,22 +738,28 @@ export function createShowSim(
             }
             root = next;
             onStep?.(p.id, k, root);
+            if (onTwos && (k + 1) % TWOS_STEPS === 0) {
+              held = { root, dangles: dangles.map((d) => ({ ...d })), pins };
+            }
           }
-          poses.set(p.id, { root, dangles, pins });
+          const live = { root, dangles, pins };
+          poses.set(p.id, live);
+          shown.set(p.id, onTwos ? (held ?? shown.get(p.id) ?? live) : live);
         }
         stepCamera(stepIndex, targetStep);
         stepIndex = targetStep;
         if (writes && stepIndex % CHECKPOINT_STEPS === 0 && !book.has(stepIndex)) {
           book.set(stepIndex, {
             poses: new Map([...poses].map(([id, pose]) => [id, copyPose(pose)])),
+            shown: new Map([...shown].map(([id, pose]) => [id, copyPose(pose)])),
             camera: copyCamera(cam),
           });
         }
       }
-      return poses;
+      return shown;
     },
     states() {
-      return poses;
+      return shown;
     },
     camera() {
       if (!cam) return null;

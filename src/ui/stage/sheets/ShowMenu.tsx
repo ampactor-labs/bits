@@ -4,6 +4,7 @@
 
 import { Sheet } from '../../../kit/Sheet';
 import { Segmented } from '../../../kit/Controls';
+import { harmony, PAPER_PRESETS, type Palette, type Paper } from '../../../engine/grade';
 import { IconButton } from '../../../kit/IconButton';
 import { levelOf, WIRE_AMOUNT, type WireLevel } from './MoreSheet';
 
@@ -29,10 +30,26 @@ export interface ShowMenuProps {
   /** The stage's look, 0..1 each. */
   shadow: number;
   fog: number;
-  onLook: (patch: { shadow?: number; fog?: number }) => void;
+  onLook: (patch: { shadow?: number; fog?: number; palette?: Palette | null; paper?: Paper | null }) => void;
+  palette: Palette | null;
+  paper: Paper | null;
   onCorpse: (on: boolean) => void;
   onClose: () => void;
 }
+
+/** Palettes as named harmonies: a mood to pick, not five colours to mix. */
+const PALETTES: { name: string; colors: string[] }[] = [
+  { name: 'dusk', colors: harmony('analogous', 285) },
+  { name: 'tropic', colors: harmony('complement', 195) },
+  { name: 'candy', colors: harmony('triad', 330) },
+  { name: 'blueprint', colors: harmony('duotone', 250) },
+];
+const PAPERS = [
+  { value: 'off' as const, label: 'off' },
+  ...Object.keys(PAPER_PRESETS).map((k) => ({ value: k, label: k })),
+];
+const paperName = (p: Paper | null): string =>
+  p ? (Object.entries(PAPER_PRESETS).find(([, v]) => JSON.stringify(v) === JSON.stringify(p))?.[0] ?? 'off') : 'off';
 
 /** Three steps each: a look you can name beats a number you have to judge. */
 const SHADOWS = [
@@ -123,6 +140,43 @@ export function ShowMenu(props: ShowMenuProps) {
           value={nearest(FOGS, props.fog).value}
           options={FOGS}
           onChange={(v) => props.onLook({ fog: FOGS.find((s) => s.value === v)!.amount })}
+        />
+      </div>
+
+      {/* The palette and the paper grade the whole picture, as print. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">palette</span>
+        <span className="palette-row" role="group" aria-label="palette">
+          <button
+            className={`palette-chip${props.palette ? '' : ' on'}`}
+            aria-pressed={!props.palette}
+            onClick={() => props.onLook({ palette: null })}
+          >
+            off
+          </button>
+          {PALETTES.map((p) => {
+            const on = props.palette?.colors.join() === p.colors.join();
+            return (
+              <button
+                key={p.name}
+                className={`palette-chip${on ? ' on' : ''}`}
+                aria-pressed={on}
+                aria-label={p.name}
+                style={{ background: `linear-gradient(90deg, ${p.colors.join(', ')})` }}
+                onClick={() => props.onLook({ palette: { colors: p.colors, mix: 0.85 } })}
+              />
+            );
+          })}
+        </span>
+      </div>
+
+      <div className="sheet-row">
+        <span className="sheet-row-label">paper</span>
+        <Segmented
+          label="what it is printed on"
+          value={paperName(props.paper)}
+          options={PAPERS}
+          onChange={(v) => props.onLook({ paper: v === 'off' ? null : PAPER_PRESETS[v]! })}
         />
       </div>
 

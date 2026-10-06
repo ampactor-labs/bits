@@ -308,10 +308,12 @@ export function stageMods(
           shadow: look?.shadow ?? 0,
           fog: Math.min(1, Math.max(0, (look?.fog ?? 0) + fog)),
           fogColor: look?.fogColor ?? '#8a93a6',
+          palette: look?.palette ?? null,
+          paper: look?.paper ?? null,
         }
       : look;
-  return {
-    camera: cam ?? camera,
-    look: nextLook && (nextLook.shadow > 0 || nextLook.fog > 0) ? nextLook : null,
-  };
+  const on =
+    nextLook &&
+    (nextLook.shadow > 0 || nextLook.fog > 0 || nextLook.palette !== null || nextLook.paper !== null);
+  return { camera: cam ?? camera, look: on ? nextLook : null };
 }

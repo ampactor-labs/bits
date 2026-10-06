@@ -49,7 +49,8 @@ export type IconName =
   | 'body'
   | 'blind'
   | 'sticker'
-  | 'camera';
+  | 'camera'
+  | 'ink';
 
 /** Path data only; every icon shares the stroke setup below. */
 const STROKE: Record<IconName, string> = {
@@ -97,6 +98,7 @@ const STROKE: Record<IconName, string> = {
   blind: 'M3 4h18v3H3zM6 7v13M10 7v13M14 7v13M18 7v13',
   sticker: 'M4 4h11l5 5v11H4zM15 4v5h5M8 13a4 4 0 0 0 8 0',
   camera: 'M3 7h12v10H3zM15 10.5l6-3.5v10l-6-3.5',
+  ink: 'M12 3c3 5 6 8 6 11a6 6 0 0 1-12 0c0-3 3-6 6-11ZM9 15a3 3 0 0 0 3 3',
 };
 
 /** Icons drawn as filled shapes rather than strokes. */
