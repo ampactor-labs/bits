@@ -12,6 +12,7 @@ import type { RefObject } from 'react';
 import { CAMERA_ID, REST_CAMERA, type CameraPose } from '../../engine/camera';
 import { appendEvent, type CastEvent, type Project, type RemoveTarget } from '../../engine/recipe';
 import {
+  anchorOn,
   castOf,
   eyesOf,
   mouthOf,
@@ -347,7 +348,8 @@ export function installGestures(g: GestureDeps): () => void {
         p,
         kind === 'MOUTH'
           ? { kind, id: newId(), at: 0, puppetId: puppet.id, mx: lx, my: ly, size: 0.24 }
-          : { kind, id: newId(), at: 0, puppetId: puppet.id, ex: lx, ey: ly, size: 0.3 },
+          : // New eyes blink; eyes from before blinking existed never do.
+            { kind, id: newId(), at: 0, puppetId: puppet.id, ex: lx, ey: ly, size: 0.3, blink: true },
       ),
     );
     setSelectedId(puppet.id);
@@ -410,6 +412,7 @@ export function installGestures(g: GestureDeps): () => void {
           ex: lx,
           ey: ly,
           size: prev?.size ?? 0.3,
+          ...(prev?.blink ? { blink: true } : {}),
         });
       }
       return appendEvent(p, {
@@ -794,6 +797,14 @@ export function installGestures(g: GestureDeps): () => void {
           ...(existing.back ? { back: true as const } : {}),
           ...(existing.flip ? { flip: true as const } : {}),
           ...(existing.depth !== 0 ? { depth: existing.depth } : {}),
+          // A riding sheet put down somewhere else rides from there.
+          ...(() => {
+            const parent = existing.attach
+              ? castOf(projectRef.current).find((p) => p.id === existing.attach!.to)
+              : undefined;
+            if (!existing.attach || !parent) return {};
+            return { attach: { to: parent.id, ...anchorOn(parent, staging.x, staging.y) } };
+          })(),
         };
         commit((p) => appendEvent(p, recast));
       }

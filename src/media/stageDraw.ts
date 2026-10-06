@@ -25,6 +25,7 @@ import { inkCanvas } from './inkDraw';
 import { videoFrame } from './video';
 import { maskCanvas, tracksOf } from './videoAnalysis';
 import { maskIndex, videoLocalTime } from '../engine/video';
+import { blinkAt } from '../engine/blink';
 
 /** One scratch canvas for masking clips, reused. */
 let maskScratch: OffscreenCanvasRenderingContext2D | null = null;
@@ -597,15 +598,19 @@ function drawEyes(
   const jitX = boilNoise(seed, variant, 4242) * eyeR * 0.08;
   const jitY = boilNoise(seed, variant, 5353) * eyeR * 0.08;
 
+  // Shut is a line, not nothing: the lid comes down over the white.
+  const shut = eyes.blink ? blinkAt(seed, eyes.puppetId, tS) : 0;
+  const open = 1 - shut * 0.9;
   for (const side of [-1, 1]) {
     const ex = cx + side * gap;
     ctx.fillStyle = '#f4efe7';
     ctx.beginPath();
-    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex, cy, eyeR, eyeR * 1.08 * open, 0, 0, Math.PI * 2);
     ctx.fill();
+    if (open < 0.35) continue;
     ctx.fillStyle = '#17120e';
     ctx.beginPath();
-    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42, 0, 0, Math.PI * 2);
+    ctx.ellipse(ex + lagX + jitX, cy + lagY + jitY, eyeR * 0.42, eyeR * 0.42 * Math.min(1, open * 1.2), 0, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();

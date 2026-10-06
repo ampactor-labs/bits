@@ -202,6 +202,8 @@ What shipped:
 - **Springs.** `jelly`, `stiff`, and `twos`: felt physics, shown on twos. The sim keeps the physics and the shown pose apart and holds the shown one for ten steps (1/12 s); checkpoints carry both.
 - **Memoisation.** `castOf`, `lookOf` and `cutsOf` are memoised per event array (projects are immutable), which takes three event-log scans out of every preview frame.
 
+Measured later (S6a), with the gate's own steps run in isolation, three runs at a time on fresh profiles. The share of frames over 50 ms swings from 3% to 36% on identical builds, including the pre-studio S0 build (4–36%) and S5b (4–23%) as well as S6a (3–20%). The walkthrough's single sample therefore sits on noise at its 10% line. The studio work did not move it, and CI has passed it every time; when it fails locally, re-measure rather than loosen.
+
 Watch: the frame gate's "over 50 ms" share sits near its 10% limit because frame times quantise to vsync (33.3 / 50.0 ms). It passed every run after the memoisation, but S5 should not add per-frame work on the Canvas2D path without measuring.
 
 Original notes:
@@ -246,8 +248,18 @@ Original notes for S5a/b:
 - `{type:'video', assetId, at?, clipFrom?, loop?, maskAssetId?}`; frames chosen as the largest timestamp ≤ t − at + clipFrom; export awaits exact frames in `prepare`, preview reads ahead. Import transcodes to ≤ 720p with 1 s keyframes when it can; audio goes through `importSoundFile`.
 - One analysis pass in a worker (`VideoSampleSink`): masks (MediaPipe VIDEO, 256 px, deflate per frame) as `.mask`, pose landmarks as `.pose` (a picker turns them into ordinary PASS events, `via:'video'`), motion and flow from 64×36 differences as `.sig` → signals `video:<asset>.motion|flowx|flowy`. Ink `src` op takes the video.
 
-### S6a/b — kits and shots
-- `CAST.attach {to, x, y}`: kits are sheets on springs, simulated parents first, cycles rejected at parse. `EYES.blink?`/`look?` (blink schedule from the seed). Selfie → kit in one flow.
+### S6a — kits (v10) — *done*
+What shipped:
+- **`CAST.attach {to, x, y}`.** A sheet rides another at a point in the parent's own box (0..1). The parser rejects a sheet riding itself or a ring of riders ("attachments go round in a circle").
+- **The sim steps parents first** (`simOrder`), otherwise in cast order, so a show without kits steps exactly as before. A rider springs toward its anchor on the parent as the parent stood at the same 1/120 s step; a pass on the rider still wins while it covers the moment. Only sheets something rides keep their per-step roots, so shows without kits allocate nothing new.
+- **`EYES.blink`.** Blinks come from the seed (`engine/blink.ts`: one in every 3.5 s window, 0.13 s long, placed by `boilNoise`), so preview and film blink together. New eyes blink; old eyes have no `blink` and draw byte-identically.
+- **The more sheet** has a "rides on" row: pills for each sheet it could ride without making a ring, and "let go". Riding keeps where the sheet sits now (`anchorOn`).
+- **A selfie kit** (`media/kit.ts`, "a selfie kit" in the cast sheet): the photo is cut out, the pose model finds the neck, and the cutout splits there into a body and a head that rides it, cast as one undoable step. Without a person (or the model), it casts the cutout as one sheet.
+
+Not done here:
+- **`EYES.look`** (eyes that follow something). It waits for a signal-driven target; a wire to an eye prop is the likely shape.
+
+### S6b — shots
 - Shots: CUTs as cards in `rooms/Time.tsx` alongside Lanes and the timeline.
 
 ### S7 — folds

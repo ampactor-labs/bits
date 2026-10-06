@@ -2165,6 +2165,56 @@ try {
         await sleep(300);
         check('a-clip-can-be-read-and-masked', masked && kinds.join(',') === 'CAST', `${kinds.join(',')} masked ${masked}`);
       });
+
+      // Kits: the clip rides another sheet, then lets go.
+      await phase('a-sheet-rides-another', async () => {
+        await label('more');
+        await sleep(350);
+        const pill = await tab.evaluateHandle(() => {
+          const row = Array.from(document.querySelectorAll('.sheet .sheet-row')).find((r) =>
+            (r.textContent || '').startsWith('rides on'),
+          );
+          return row?.querySelector('button.pill') ?? null;
+        });
+        if (!pill.asElement()) throw new Error('nothing to ride');
+        const before = await kindsNow();
+        await pill.asElement().tap();
+        await sleep(400);
+        const attach = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.attach ?? null;
+        });
+        await label('let go');
+        await sleep(400);
+        const free = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return !casts[casts.length - 1]?.attach;
+        });
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(300);
+        check('a-sheet-rides-another', !!attach && free && kinds.join(',') === 'CAST,CAST', `${kinds.join(',')} rode ${attach?.to ?? 'nothing'}, free ${free}`);
+      });
+
+      // A selfie kit from a photo with no person in it: one piece, said so.
+      await phase('a-kit-without-a-person-is-one-piece', async () => {
+        const png = makePng(join(SHOTS, 'kit-fixture.png'), 96);
+        const input = await tab.$('input[data-pick="kit"]');
+        if (!input) throw new Error('no kit input');
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        await input.uploadFile(png);
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.slice(n).some((e) => e.kind === 'CAST'),
+          { timeout: 30000 },
+          before,
+        );
+        await sleep(400);
+        const casts = await tab.evaluate(
+          (n) => window.__bits.project().events.slice(n).filter((e) => e.kind === 'CAST').map((e) => e.puppet.type),
+          before,
+        );
+        check('a-kit-without-a-person-is-one-piece', casts.join(',') === 'cutout', casts.join(',') || 'nothing');
+      });
     } finally {
       await tab.close();
     }

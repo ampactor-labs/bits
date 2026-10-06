@@ -8,9 +8,9 @@ import { parseSignal } from './signals';
 import { genomeProblem, type Genome } from './ink';
 import type { Palette, Paper } from './grade';
 
-export const RECIPE_VERSION = 9 as const;
+export const RECIPE_VERSION = 10 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 interface EventBase {
   id: string;
@@ -97,6 +97,10 @@ export interface CastEvent extends EventBase {
    *  until the camera moves, except that a further sheet paints behind a
    *  nearer one in its layer. */
   depth?: number;
+  /** Rides another sheet: springs toward the point (x, y) in that sheet's
+   *  own box whenever no pass is driving it. A hat on a head, a head on a
+   *  body: a kit. Chains are fine; circles are refused. */
+  attach?: { to: string; x: number; y: number };
 }
 
 /** Draw order for non-backdrops, back to front. Latest REORDER wins.
@@ -209,6 +213,9 @@ export interface EyesEvent extends EventBase {
   ey: number;
   /** Eye-pair width as a fraction of the puppet box width. */
   size: number;
+  /** Blinks now and then, on a schedule from the seed. Absent: never, as
+   *  every pair of eyes before blinking existed. */
+  blink?: boolean;
 }
 
 export type SfxKind = 'boing' | 'slap' | 'honk' | 'scratch' | 'drop';
@@ -453,6 +460,8 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   7: (raw) => ({ ...raw, version: 8 }),
   /** v9 adds a clip's stored read, masking, and passes made from it. */
   8: (raw) => ({ ...raw, version: 9 }),
+  /** v10 adds kits (attach) and blinking; nothing older changes. */
+  9: (raw) => ({ ...raw, version: 10 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -526,6 +535,8 @@ export function parseProject(text: string): Project {
   const pinSlots = new Map<string, number>();
   const snipSlots = new Map<string, number>();
   let prevGroup: string | undefined;
+  /** Who rides whom, latest CAST per sheet: checked for circles at the end. */
+  const attachments = new Map<string, string>();
   const closedGroups = new Set<string>();
 
   for (const e of p.events) {
@@ -576,6 +587,22 @@ export function parseProject(text: string): Project {
         }
         if (ev.puppetId === CAMERA_ID) {
           throw new Error('recipe: the camera is not a puppet');
+        }
+        if (ev.attach !== undefined) {
+          const at = ev.attach as Record<string, unknown> | null;
+          if (
+            typeof at !== 'object' ||
+            at === null ||
+            typeof at.to !== 'string' ||
+            at.to === ev.puppetId ||
+            !isNum(at.x) ||
+            !isNum(at.y)
+          ) {
+            throw new Error('recipe: CAST attach needs another sheet and a point on it');
+          }
+          attachments.set(ev.puppetId, at.to);
+        } else {
+          attachments.delete(ev.puppetId);
         }
         if (ev.depth !== undefined && !(isNum(ev.depth) && ev.depth >= MIN_DEPTH && ev.depth <= MAX_DEPTH)) {
           throw new Error(`recipe: CAST depth must be in ${MIN_DEPTH}..${MAX_DEPTH}`);
@@ -672,6 +699,9 @@ export function parseProject(text: string): Project {
       case 'EYES':
         if (!(isNum(ev.ex) && isNum(ev.ey) && isNum(ev.size) && (ev.size as number) > 0)) {
           throw new Error('recipe: EYES event needs ex, ey, positive size');
+        }
+        if (ev.blink !== undefined && typeof ev.blink !== 'boolean') {
+          throw new Error('recipe: EYES blink must be true or false');
         }
         break;
       case 'PIN': {
@@ -815,6 +845,17 @@ export function parseProject(text: string): Project {
         throw new Error(`recipe: unknown event kind ${ev.kind}`);
     }
     seen.set(ev.id, ev.kind);
+  }
+  // A kit is a tree: a sheet riding itself, however far round, would have
+  // nowhere to be.
+  for (const start of attachments.keys()) {
+    const path = new Set<string>([start]);
+    let at = attachments.get(start);
+    while (at !== undefined) {
+      if (path.has(at)) throw new Error('recipe: attachments go round in a circle');
+      path.add(at);
+      at = attachments.get(at);
+    }
   }
   return p as unknown as Project;
 }

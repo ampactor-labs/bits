@@ -39,6 +39,7 @@ import {
   eyesOf,
   cutsOf,
   inkOf,
+  anchorOn,
   lanePasses,
   localToWorld,
   lookOf,
@@ -75,6 +76,7 @@ import {
 } from '../engine/signals';
 import { bandsFor } from '../media/bands';
 import { loadVideos, prefetchVideos, probeVideo } from '../media/video';
+import { makeKit } from '../media/kit';
 import {
   analyzeVideo,
   loadVideoAnalyses,
@@ -1379,6 +1381,7 @@ export function Stage({
   const snapInputRef = useRef<HTMLInputElement>(null);
   const backdropInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const kitInputRef = useRef<HTMLInputElement>(null);
   const soundFileInputRef = useRef<HTMLInputElement>(null);
 
   /** Where a new cast lands. Everything used to arrive at dead centre, so
@@ -1458,9 +1461,86 @@ export function Stage({
     }
   };
 
-  const castPhoto = async (files: FileList | null) => {
+  /** A selfie as a kit: a body, and a head riding it at the neck. When it
+   *  cannot be split, it is cast as an ordinary cutout, and says so. */
+  const castKit = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
+    setCasting(true);
+    setCastProgress(0);
+    try {
+      const kit = await makeKit(file, setCastProgress);
+      if (!kit) {
+        setCasting(false);
+        setCastProgress(null);
+        toast.show('no neck found, so it is one piece');
+        return castPhotoFile(file);
+      }
+      const bodyId = await saveAsset(kit.body.blob, 'png');
+      const headId = await saveAsset(kit.head.blob, 'png');
+      const frame = frameRef.current;
+      const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
+      const w = 0.42;
+      const bodyH = w * stageRatio * (kit.body.height / kit.body.width);
+      const headH = w * stageRatio * (kit.head.height / kit.head.width);
+      const spot = freeSpot();
+      const body = newId();
+      const head = newId();
+      const bodyY = spot.y + headH / 2;
+      const group = newId();
+      // The head image is as wide as the body's and sits on its top edge,
+      // overlapping a little so the seam hides as it nods; it rides there.
+      const headY = bodyY - bodyH / 2 - headH / 2 + headH * 0.04;
+      const anchor = { x: 0.5, y: (headY - (bodyY - bodyH / 2)) / bodyH };
+      commit((p) =>
+        appendEvent(
+          appendEvent(p, {
+            kind: 'CAST',
+            id: newId(),
+            at: 0,
+            group,
+            puppetId: body,
+            puppet: { type: 'cutout', assetId: bodyId, w, h: bodyH, name: 'body' },
+            x: spot.x,
+            y: bodyY,
+            scale: 1,
+            rot: 0,
+          }),
+          {
+            kind: 'CAST',
+            id: newId(),
+            at: 0,
+            group,
+            puppetId: head,
+            puppet: { type: 'cutout', assetId: headId, w, h: headH, name: 'head' },
+            x: spot.x,
+            y: headY,
+            scale: 1,
+            rot: 0,
+            attach: { to: body, ...anchor },
+          },
+        ),
+      );
+      setSelectedId(head);
+      setSheet(null);
+      await reloadImages();
+      toast.show('a head on a body: drag the body and the head follows');
+    } catch {
+      banner.error("couldn't make a kit from that photo");
+    } finally {
+      setCasting(false);
+      setCastProgress(null);
+    }
+  };
+
+  const castPhoto = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (file) await castPhotoFile(file);
+  };
+
+  /** Takes the File itself: an input's FileList empties when the input is
+   *  cleared, which happens before an async flow gets round to reading it. */
+  const castPhotoFile = async (file: File) => {
     // The segmenter's first run downloads 11MB of wasm and a model. Saying
     // nothing for that long reads as a broken app (audit F7).
     setCasting(true);
@@ -1654,9 +1734,34 @@ export function Stage({
         ...(p.back ? { back: true as const } : {}),
         ...(p.flip ? { flip: true as const } : {}),
         ...(p.depth !== 0 ? { depth: p.depth } : {}),
+        ...(p.attach ? { attach: p.attach } : {}),
         ...patch,
       }),
     );
+  };
+
+  /** Rides another sheet from where it is now, or lets go. One CAST
+   *  either way, so undo puts it back. */
+  const ride = (p: ShowPuppet, parentId: string | null) => {
+    const parent = parentId ? castOf(projectRef.current).find((x) => x.id === parentId) : undefined;
+    commit((proj) =>
+      appendEvent(proj, {
+        kind: 'CAST',
+        id: newId(),
+        at: 0,
+        puppetId: p.id,
+        puppet: p.spec,
+        x: p.home.x,
+        y: p.home.y,
+        scale: p.home.scale,
+        rot: p.home.rot,
+        ...(p.back ? { back: true as const } : {}),
+        ...(p.flip ? { flip: true as const } : {}),
+        ...(p.depth !== 0 ? { depth: p.depth } : {}),
+        ...(parent ? { attach: { to: parent.id, ...anchorOn(parent, p.home.x, p.home.y) } } : {}),
+      }),
+    );
+    if (parent) toast.show(`it rides ${puppetLabel(parent, castOf(projectRef.current).indexOf(parent))} now`);
   };
 
   const setSpec = (p: ShowPuppet, patch: Partial<PuppetSpec>) =>
@@ -2220,6 +2325,7 @@ export function Stage({
   const castPick = (kind: CastKind) => {
     if (kind === 'photo') return photoInputRef.current?.click();
     if (kind === 'selfie') return snapInputRef.current?.click();
+    if (kind === 'kit') return kitInputRef.current?.click();
     if (kind === 'backdrop') return backdropInputRef.current?.click();
     if (kind === 'ink') return setSheet({ kind: 'ink', target: null });
     if (kind === 'video') return videoInputRef.current?.click();
@@ -2586,6 +2692,18 @@ export function Stage({
           }}
           onInk={() => setSheet({ kind: 'ink', target: selected.id })}
           inked={!!inkOf(projectSnap, selected.id)}
+          riding={
+            selected.attach
+              ? puppetLabel(
+                  castOf(projectSnap).find((p) => p.id === selected.attach!.to) ?? selected,
+                  castOf(projectSnap).findIndex((p) => p.id === selected.attach!.to),
+                )
+              : null
+          }
+          rideable={castOf(projectSnap)
+            .filter((p) => p.id !== selected.id && !p.back && !ridesOn(projectSnap, p.id, selected.id))
+            .map((p) => ({ id: p.id, name: puppetLabel(p, castOf(projectSnap).indexOf(p)) }))}
+          onRide={(parentId) => ride(selected, parentId)}
           {...(selected.spec.type === 'video'
             ? {
                 clip: {
@@ -2820,6 +2938,18 @@ export function Stage({
         }}
       />
       <input
+        ref={kitInputRef}
+        data-pick="kit"
+        type="file"
+        accept="image/*"
+        capture="user"
+        hidden
+        onChange={(e) => {
+          void castKit(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
         ref={videoInputRef}
         data-pick="video"
         type="file"
@@ -2864,4 +2994,18 @@ function clipSignals(project: Project): { id: string; label: string }[] {
       { id: `video:${p.id}.flowy`, label: `${name} drifting up and down` },
     ];
   });
+}
+
+/** True when `id` rides `on`, however far up the chain: offering it as
+ *  a mount would make a circle, which the recipe refuses. */
+function ridesOn(project: Project, id: string, on: string): boolean {
+  const byId = new Map(castOf(project).map((p) => [p.id, p]));
+  const seen = new Set<string>();
+  let at = byId.get(id)?.attach?.to;
+  while (at && !seen.has(at)) {
+    if (at === on) return true;
+    seen.add(at);
+    at = byId.get(at)?.attach?.to;
+  }
+  return false;
 }

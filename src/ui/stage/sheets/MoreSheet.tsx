@@ -66,6 +66,11 @@ export interface MoreSheetProps {
   /** True when it is dressed; offers taking it off. */
   inked: boolean;
   onInkOff: () => void;
+  /** The name of the sheet it rides, or null when free. */
+  riding: string | null;
+  /** Sheets it could ride without making a circle. */
+  rideable: { id: string; name: string }[];
+  onRide: (parentId: string | null) => void;
   /** Only for a video sheet: what its read knows and what can use it. */
   clip?: {
     read: boolean;
@@ -139,6 +144,24 @@ export function MoreSheet(props: MoreSheetProps) {
       </div>
 
       {props.clip && <ClipRows {...props} clip={props.clip} />}
+
+      {/* A kit: sheets riding sheets on springs, a hat on a head. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">{props.riding ? `rides ${props.riding}` : 'rides on'}</span>
+        <span className="sheet-icons">
+          {props.riding ? (
+            <button className="pill" onClick={() => props.onRide(null)}>
+              let go
+            </button>
+          ) : (
+            props.rideable.map((o) => (
+              <button key={o.id} className="pill" onClick={() => props.onRide(o.id)}>
+                {o.name}
+              </button>
+            ))
+          )}
+        </span>
+      </div>
 
       <button onClick={props.onSideView}>see the stage from the side</button>
 
