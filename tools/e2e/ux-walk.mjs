@@ -1699,7 +1699,15 @@ try {
       await tab.touchscreen.touchEnd();
     };
     const label = async (name) => {
-      const h = await tab.$(`[aria-label="${name}"]`);
+      let h = await tab.$(`[aria-label="${name}"]`);
+      // A pill's text is its name.
+      if (!h) {
+        const byText = await tab.evaluateHandle(
+          (n) => Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === n),
+          name,
+        );
+        h = byText.asElement();
+      }
       if (!h) throw new Error(`no control labelled "${name}"`);
       await h.tap();
     };
@@ -1847,6 +1855,124 @@ try {
         );
         check('a-camera-pass-is-one-finger', passes.join(',') === '@camera', passes.join(',') || 'no pass');
         await label('put the camera down');
+      });
+
+      // A segmented control's option by its text, inside a labelled group.
+      const option = async (group, text) => {
+        const h = await tab.evaluateHandle(
+          (g, t) =>
+            Array.from(document.querySelectorAll(`[aria-label="${g}"] button`)).find(
+              (b) => b.textContent?.trim() === t,
+            ),
+          group,
+          text,
+        );
+        if (!h.asElement()) throw new Error(`no "${text}" in ${group}`);
+        await h.asElement().tap();
+      };
+      const recordCameraTake = async (during) => {
+        await label('pick up the camera');
+        await sleep(300);
+        await label('record a pass');
+        await tab.waitForFunction(
+          () => document.querySelector('.stagebox')?.classList.contains('mode-recording'),
+          { timeout: 10000 },
+        );
+        await sleep(300);
+        await during();
+        await label('stop');
+        await sleep(500);
+        await label('put the camera down');
+        await sleep(200);
+      };
+
+      await phase('shadows-and-fog-from-the-menu', async () => {
+        await label('this bit');
+        await sleep(350);
+        const before = await kindsNow();
+        await option('paper shadows', 'deep');
+        await sleep(200);
+        await option('fog with distance', 'haze');
+        await sleep(200);
+        const kinds = await kindsSince(before);
+        await label('close');
+        await sleep(400);
+        await tabShot('shadows-and-fog');
+        check('shadows-and-fog-from-the-menu', kinds.join(',') === 'LOOK,LOOK', kinds.join(',') || 'nothing');
+      });
+
+      await phase('a-cut-snaps-the-camera', async () => {
+        const before = await kindsNow();
+        await recordCameraTake(async () => {
+          await finger([[0.5, 0.5], [0.4, 0.5], [0.3, 0.5]], { stepMs: 120 });
+          await sleep(200);
+          await label('cut');
+          await sleep(200);
+        });
+        const kinds = await kindsSince(before);
+        check('a-cut-snaps-the-camera', kinds.includes('CUT') && kinds.includes('PASS'), kinds.join(',') || 'nothing');
+      });
+
+      await phase('a-tilt-is-a-camera-pass', async () => {
+        const cdp = await tab.createCDPSession();
+        await cdp.send('DeviceOrientation.setDeviceOrientationOverride', { alpha: 0, beta: 0, gamma: 0 });
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        await recordCameraTake(async () => {
+          await label('tilt');
+          await sleep(200);
+          for (let g = 0; g <= 24; g += 4) {
+            await cdp.send('DeviceOrientation.setDeviceOrientationOverride', { alpha: 0, beta: g / 2, gamma: g });
+            await sleep(120);
+          }
+          await sleep(200);
+        });
+        await cdp.send('DeviceOrientation.clearDeviceOrientationOverride');
+        const passes = await tab.evaluate(
+          (k) =>
+            window.__bits
+              .project()
+              .events.slice(k)
+              .filter((e) => e.kind === 'PASS')
+              .map((e) => `${e.puppetId}${e.via ? `/${e.via}` : ''}`),
+          before,
+        );
+        check('a-tilt-is-a-camera-pass', passes.join(',') === '@camera/gyro', passes.join(',') || 'no pass');
+      });
+
+      await phase('depth-in-the-director-view', async () => {
+        // The backdrop is the sheet that is always there: pick it up, and
+        // open the side view from its own panel.
+        await finger([[0.6, 0.3]], { holdMs: 800 });
+        await sleep(400);
+        await label('more');
+        await sleep(350);
+        for (const h of await tab.$$('.sheet button')) {
+          if ((await h.evaluate((e) => (e.textContent || '').trim())) === 'see the stage from the side') {
+            await h.tap();
+            break;
+          }
+        }
+        await sleep(400);
+        const dot = await tab.$('.director-dot:not(.back)');
+        if (!dot) throw new Error('no sheet in the side view');
+        const r = await dot.boundingBox();
+        const before = await kindsNow();
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        await tab.touchscreen.touchStart(cx, cy);
+        for (let i = 1; i <= 5; i++) {
+          await tab.touchscreen.touchMove(cx, cy - i * 12);
+          await sleep(60);
+        }
+        await tab.touchscreen.touchEnd();
+        await sleep(400);
+        await tabShot('director-view');
+        const kinds = await kindsSince(before);
+        const depth = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.depth ?? 0;
+        });
+        check('depth-in-the-director-view', kinds.join(',') === 'CAST' && depth > 0, `${kinds.join(',') || 'nothing'} at depth ${depth}`);
       });
     } finally {
       await tab.close();

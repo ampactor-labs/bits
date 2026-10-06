@@ -13,7 +13,7 @@ import {
   type CameraPose,
 } from './camera';
 import { createFramer, composeFrame, paintOrder, visualsOf } from './frame';
-import { parseProject, type Project, type RecipeEvent } from './recipe';
+import { parseProject, RECIPE_VERSION, type Project, type RecipeEvent } from './recipe';
 import { castOf, createShowSim } from './show';
 import { effectiveWires } from './wires';
 
@@ -220,7 +220,7 @@ describe('recipe v3', () => {
 
   it('moves a v2 file up untouched', () => {
     const p = parse(2, [cast()]);
-    expect(p.version).toBe(3);
+    expect(p.version).toBe(RECIPE_VERSION);
     expect(p.events).toEqual([cast()]);
   });
 

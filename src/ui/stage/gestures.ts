@@ -47,7 +47,12 @@ export interface Grab {
   y: number;
   /** The sheet's depth, so each move is un-projected where the sheet is. */
   depth: number;
+  /** Performed by the phone's tilt rather than a finger. */
+  via?: 'gyro';
 }
+
+/** The tilt's grab, beside the pointer-keyed ones. */
+export const TILT_KEY = -3;
 
 export interface StagingDrag {
   puppetId: string;

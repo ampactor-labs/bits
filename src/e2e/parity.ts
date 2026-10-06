@@ -209,6 +209,8 @@ export async function runTrailRate(): Promise<TrailRateResult> {
         seed: 1,
         trail: 0.8,
         camera: null,
+        look: null,
+        cutAt: null,
         layers: shown
           ? [
               {

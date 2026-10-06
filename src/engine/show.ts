@@ -14,7 +14,9 @@ import {
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
 import { CAMERA_ID, CAMERA_PROPS, REST_CAMERA, type CameraPose, type CameraProp } from './camera';
 import type {
+  CutEvent,
   EyesEvent,
+  LookEvent,
   MouthEvent,
   PassEvent,
   PinEvent,
@@ -146,6 +148,51 @@ export function voiceOf(project: Project, puppetId: string): VoiceEvent | null {
   for (const e of project.events) {
     if (e.kind === 'VOICE' && e.puppetId === puppetId) out = e;
     else if (e.kind === 'REMOVE' && e.puppetId === puppetId && 'voice' in e.target) out = null;
+  }
+  return out;
+}
+
+/** The stage's look: latest wins per field, absent is off. */
+export interface Look {
+  shadow: number;
+  fog: number;
+  fogColor: string;
+}
+
+export const DEFAULT_FOG = '#8a93a6';
+
+export function lookOf(project: Project): Look | null {
+  let found = false;
+  const look: Look = { shadow: 0, fog: 0, fogColor: DEFAULT_FOG };
+  for (const e of project.events) {
+    if (e.kind !== 'LOOK') continue;
+    found = true;
+    const l: LookEvent = e;
+    if (l.shadow !== undefined) look.shadow = l.shadow;
+    if (l.fog !== undefined) look.fog = l.fog;
+    if (l.fogColor !== undefined) look.fogColor = l.fogColor;
+  }
+  // A look that is all off is no look: the plain drawing path.
+  return found && (look.shadow > 0 || look.fog > 0) ? look : null;
+}
+
+/** The camera's cuts in time order, without the ones taken out. */
+export function cutsOf(project: Project): CutEvent[] {
+  const removed = new Set<string>();
+  for (const e of project.events) {
+    if (e.kind === 'REMOVE' && 'cut' in e.target) removed.add(e.target.cut);
+  }
+  return project.events
+    .filter((e): e is CutEvent => e.kind === 'CUT' && !removed.has(e.id))
+    .sort((a, b) => a.at - b.at);
+}
+
+/** The latest cut at or before t, in show seconds; null before the first. */
+export function cutBefore(cuts: CutEvent[], t: number): number | null {
+  let out: number | null = null;
+  for (const c of cuts) {
+    if (c.at <= t) out = c.at;
+    else break;
   }
   return out;
 }
@@ -466,8 +513,25 @@ export function createShowSim(
   const propPasses = new Map<CameraProp, EffectivePass[]>(
     CAMERA_PROPS.map((prop) => [prop, cameraPasses.filter((e) => e.event.prop === prop)]),
   );
+  const cuts = cutsOf(project);
   let cam: CameraBody | null =
-    cameraPasses.length > 0 || targets !== undefined ? restingCamera() : null;
+    cameraPasses.length > 0 || cuts.length > 0 || targets !== undefined ? restingCamera() : null;
+  /** Cuts by the step boundary they land on: the first boundary at or
+   *  after the cut's time, so a frame drawn at the cut already sees it.
+   *  Several on one boundary: the last wins. */
+  const cutAtBoundary = new Map<number, CutEvent>();
+  for (const c of cuts) cutAtBoundary.set(Math.ceil(c.at / PUPPET_DT - 1e-9), c);
+  const snapTo = (body: CameraBody, cut: CutEvent): CameraBody => ({
+    // Somewhere else, still: the pose snaps and every spring stops.
+    pan: restingPuppet(cut.x, cut.y),
+    props: {
+      z: restingPuppet(cut.z, 0),
+      rot: restingPuppet(cut.rot, 0),
+      scale: restingPuppet(cut.scale, 0),
+    },
+  });
+  const opening = cutAtBoundary.get(stepIndex);
+  if (cam && opening && options.resumeAt === undefined) cam = snapTo(cam, opening);
 
   // Checkpoints are written only by sims nobody is steering live, from the
   // start of the show, so every one of them is the recipe's own truth.
@@ -512,6 +576,12 @@ export function createShowSim(
       for (const prop of CAMERA_PROPS) {
         const want = camTarget({ prop }, propPasses.get(prop)!, tt);
         props[prop] = stepPuppet(props[prop], want && { x: want.x, y: 0 }, PUPPET_DT);
+      }
+      const cut = cutAtBoundary.get(k + 1);
+      if (cut) {
+        const snapped = snapTo({ pan, props }, cut);
+        pan = snapped.pan;
+        Object.assign(props, snapped.props);
       }
     }
     cam = { pan, props };

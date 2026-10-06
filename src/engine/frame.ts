@@ -15,15 +15,19 @@ import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack }
 import { splitPieces, type PuppetPieces } from './pieces';
 import { PUPPET_DT } from './puppet';
 import { IMPACT_SQUASH } from './sfx';
-import type { EyesEvent, MouthEvent, PinEvent, Project } from './recipe';
+import type { CutEvent, EyesEvent, MouthEvent, PinEvent, Project } from './recipe';
 import {
   castOf,
   createShowSim,
+  cutBefore,
+  cutsOf,
+  lookOf,
   eyesOf,
   mouthOf,
   pinsOf,
   snipsOf,
   talkOpenFor,
+  type Look,
   type PuppetPose,
   type ShowPuppet,
   type StepObserver,
@@ -136,6 +140,11 @@ export interface Frame {
   /** Null when the camera is at rest: an explicit identity, so a renderer
    *  draws exactly what it drew before there was a camera. */
   camera: CameraPose | null;
+  /** Shadows and fog; null draws as every bit before looks did. */
+  look: Look | null;
+  /** The latest camera cut at or before t: a renderer that last drew
+   *  before it starts clean. */
+  cutAt: number | null;
   /** Back to front. */
   layers: LayerFrame[];
 }
@@ -153,6 +162,10 @@ export interface ComposeInput {
   /** Idle stills are drawn clean; playing and rendering ghost. Default on. */
   trails?: boolean;
   camera?: CameraPose | null;
+  /** Precomputed by callers that build many frames; read from the project
+   *  otherwise. */
+  look?: Look | null;
+  cuts?: CutEvent[];
 }
 
 /** Paint order: the back layer stays behind, and within each layer a
@@ -192,6 +205,8 @@ export function composeFrame(input: ComposeInput): Frame {
     seed: project.seed,
     trail: input.trails === false ? 0 : trailStrength(wires, analysis.voice, analysis.onsets, t),
     camera,
+    look: input.look === undefined ? lookOf(project) : input.look,
+    cutAt: cutBefore(input.cuts ?? cutsOf(project), t),
     layers,
   };
 }
@@ -254,6 +269,8 @@ export function createFramer(
   const cast = castOf(project);
   const visuals = visualsOf(project);
   const wires = effectiveWires(project);
+  const look = lookOf(project);
+  const cuts = cutsOf(project);
   const listener = foleyOn(wires) ? impactListener() : null;
   const sim = createShowSim(project, options.fromT ?? 0, options.targets, listener?.onStep);
   return {
@@ -269,6 +286,8 @@ export function createFramer(
         poses,
         t,
         camera: sim.camera(),
+        look,
+        cuts,
         ...(options.trails === undefined ? {} : { trails: options.trails }),
       });
     },

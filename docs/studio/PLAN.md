@@ -80,7 +80,25 @@ Original notes:
 - Camera gestures: drag pans, pinch records z, twist records roll.
 - Checks: rest identity; parallax f/(f + z); project∘unproject round-trip; checkpoint seek equals a fresh sim; harness preview-equals-export with a fake clock; walkthrough `a-camera-pass-is-one-finger`.
 
-### S2b — look: shadows, fog, director view, gyro, cuts (v3 continued or v4)
+### S2b — look: shadows, fog, director view, gyro, cuts (v4) — *done*
+What shipped:
+- **Recipe v4** (v3 migrates by header) adds three things:
+  - `LOOK {shadow, fog, fogColor}`: latest wins per field, absent is off.
+  - `CUT` on `'@camera'`: snaps pose and stops motion at the step boundary where it lands, and is removable with REMOVE `{cut}`.
+  - `PASS.via: 'gyro'`.
+- **One sprite path for both looks.** A looked layer is drawn alone onto a scratch canvas, fogged there with `source-atop` by depth, then drawn with a canvas shadow whose offset grows with the depth gap to the nearest overlapping sheet behind (`engine/look.ts`). With no look, every frame takes the old path, so parity is unchanged.
+- **The renderer starts clean when a cut passes** (`Frame.cutAt`).
+- **The stage player** (`ui/stage/player.ts`) owns playing and still frames and the overlay marks, and keeps the last frame.
+- **The director view** (`DirectorView.tsx`) is opened from a sheet's more panel. Each sheet is a dot at (x, depth) on a log scale; drag a dot up to push the sheet back.
+- **Camera-in-hand controls during a take:**
+  - A "cut" pill cuts back to the wide shot, on the next beat if one lands within 0.3 s.
+  - A "tilt" pill: `media/gyro.ts` records the phone's tilt as a camera pass.
+- **Cuts in the lanes.** They are ticks in the camera lane; a tap takes one out, with an undo.
+- **Body passes go through the camera.**
+
+Not done here: a measured frame gate for looked frames. A look costs one stage-sized sprite blit per sheet, which WebGL (S4a) makes cheap; until then the gate covers the demo, which has no look.
+
+Original notes:
 - `LOOK {shadow?, fog?}` stage event (latest per field wins); migrated bits get `lookBase:'flat'`.
 - Shadows onto the nearest overlapping sheet behind, offset and blur growing with the depth gap; fog as a depth tint.
 - `DirectorView.tsx`: an inset side view (x against depth) to drag depth and perform the camera.
