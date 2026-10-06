@@ -208,8 +208,18 @@ export async function runTrailRate(): Promise<TrailRateResult> {
         t,
         seed: 1,
         trail: 0.8,
+        camera: null,
         layers: shown
-          ? [{ puppet: card, pose: still, visual, voice: { open: 0, shape: 0 }, mods: ident }]
+          ? [
+              {
+                puppet: card,
+                pose: still,
+                visual,
+                voice: { open: 0, shape: 0 },
+                mods: ident,
+                depth: 0,
+              },
+            ]
           : [],
       };
       if (byTime) renderer.draw(ctx, W, H, frame, new Map());

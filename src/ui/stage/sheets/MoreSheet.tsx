@@ -30,6 +30,22 @@ const SPRINGS = [
   { value: 'rubber' as const, label: 'rubber' },
 ];
 
+/** How far back a sheet sits. Named stops rather than a slider: depth only
+ *  shows once the camera moves, so a number would be a guess, and a few
+ *  places a puppeteer would name are easier to choose between. */
+const DEPTHS = [
+  { value: 'near' as const, label: 'near', depth: -0.6 },
+  { value: 'stage' as const, label: 'stage', depth: 0 },
+  { value: 'back' as const, label: 'back', depth: 1 },
+  { value: 'far' as const, label: 'far', depth: 3 },
+  { value: 'horizon' as const, label: 'horizon', depth: 10 },
+];
+type DepthStop = (typeof DEPTHS)[number]['value'];
+const stopOf = (depth: number): DepthStop =>
+  DEPTHS.reduce((best, d) =>
+    Math.abs(d.depth - depth) < Math.abs(best.depth - depth) ? d : best,
+  ).value;
+
 const WIRES: { source: WireSource; target: WireTarget; label: string }[] = [
   { source: 'voice', target: 'bounce', label: 'voice makes it bounce' },
   { source: 'voice', target: 'shake', label: 'voice makes it shake' },
@@ -50,6 +66,7 @@ export interface MoreSheetProps {
   onRename: (name: string) => void;
   onWire: (source: WireSource, target: WireTarget, amount: number) => void;
   onScale: (scale: number) => void;
+  onDepth: (depth: number) => void;
   onSpring: (spring: SpringPreset) => void;
   onHand: (hand: 'left' | 'right' | 'none') => void;
   onDuplicate: () => void;
@@ -115,6 +132,17 @@ export function MoreSheet(props: MoreSheetProps) {
           value={puppet.spring}
           options={SPRINGS}
           onChange={props.onSpring}
+        />
+      </div>
+
+      {/* Free at rest: nothing moves until the camera does. */}
+      <div className="sheet-row">
+        <span className="sheet-row-label">how far back</span>
+        <Segmented
+          label="how far back it sits"
+          value={stopOf(puppet.depth)}
+          options={DEPTHS}
+          onChange={(stop) => props.onDepth(DEPTHS.find((d) => d.value === stop)!.depth)}
         />
       </div>
 

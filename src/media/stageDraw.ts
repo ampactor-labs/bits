@@ -2,6 +2,7 @@
 // as scissored pieces (root clipped to what remains, children hinged at their
 // snip lines), mouths flap with the loudness envelope, doodles boil.
 
+import { viewOf } from '../engine/camera';
 import { boilNoise } from '../engine/puppet';
 import { worldToLocal, type PuppetPose, type ShowPuppet } from '../engine/show';
 import { pointInPoly, type PieceDef, type PuppetPieces } from '../engine/pieces';
@@ -50,7 +51,20 @@ export function renderFrame2d(ctx: Ctx2D, W: number, H: number, frame: Frame, im
     ctx.fillRect(0, 0, W, H);
   }
 
-  for (const layer of frame.layers) drawLayer(ctx, W, H, layer, images, tS, seed);
+  for (const layer of frame.layers) {
+    const view = viewOf(frame.camera, layer.depth, W, H);
+    if (!view) {
+      drawLayer(ctx, W, H, layer, images, tS, seed, false);
+      continue;
+    }
+    // The camera is one similarity per sheet, applied on top of whatever
+    // the caller set (device pixels), so everything inside the sheet
+    // follows it.
+    ctx.save();
+    ctx.transform(view.a, view.b, view.c, view.d, view.e, view.f);
+    drawLayer(ctx, W, H, layer, images, tS, seed, true);
+    ctx.restore();
+  }
 }
 
 /** A canvas renderer that remembers the frame before. Trails are a ghost
@@ -95,6 +109,7 @@ function drawLayer(
   images: StageImages,
   tS: number,
   seed: number,
+  moved: boolean,
 ): void {
   const { puppet, pose, visual, mods: mod } = layer;
   if (!pose || !visual) return;
@@ -119,6 +134,13 @@ function drawLayer(
   // The mirror goes here, after the root frame, so pieces, mouths, eyes
   // and the warp mesh all follow it. localToWorld already agrees.
   if (puppet.flip) ctx.scale(-1, 1);
+
+  // A backdrop the camera has moved would slide off and show the void
+  // behind it, so it carries a mirrored apron: the photo reflected across
+  // each edge, which reads as more of the same place rather than a seam.
+  if (moved && puppet.back && img && puppet.spec.type === 'cutout' && puppet.spec.fit === 'cover') {
+    drawApron(ctx, puppet.spec, puppet.id, pw, ph, images, tS, seed);
+  }
 
   if (warp && img) {
     const crop = cropOf(puppet.spec, img, pw, ph);
@@ -146,6 +168,36 @@ function drawLayer(
   ctx.restore();
 }
 
+/** The eight neighbours of a cover-fit box, each mirrored so its edge
+ *  meets the box's own edge with the same pixels. */
+function drawApron(
+  ctx: Ctx2D,
+  spec: PuppetSpec,
+  puppetId: string,
+  pw: number,
+  ph: number,
+  images: StageImages,
+  tS: number,
+  seed: number,
+): void {
+  for (let j = -1; j <= 1; j++) {
+    for (let i = -1; i <= 1; i++) {
+      if (i === 0 && j === 0) continue;
+      ctx.save();
+      ctx.translate(i * pw, j * ph);
+      ctx.scale(i === 0 ? 1 : -1, j === 0 ? 1 : -1);
+      // A little past the shared edge, under the box itself: two
+      // anti-aliased clips meeting on one line let the stage show through
+      // as a hairline seam.
+      ctx.beginPath();
+      ctx.rect(-pw / 2 - 1.5, -ph / 2 - 1.5, pw + 3, ph + 3);
+      ctx.clip();
+      drawContent(ctx, spec, puppetId, pw, ph, images, tS, seed);
+      ctx.restore();
+    }
+  }
+}
+
 const IDENTITY: WireMods = { scaleMul: 1, dx: 0, dy: 0, dAngle: 0 };
 
 /** The old call shape, kept for the harness's small fixtures. */
@@ -171,12 +223,14 @@ export function drawStage(
       t: tS,
       seed,
       trail: trailKeep,
+      camera: null,
       layers: cast.map((puppet) => ({
         puppet,
         pose: poses.get(puppet.id),
         visual: visuals.get(puppet.id),
         voice: voices.get(puppet.id) ?? { open: 0, shape: 0 },
         mods: mods.get(puppet.id) ?? IDENTITY,
+        depth: puppet.depth,
       })),
     },
     images,

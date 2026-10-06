@@ -37,6 +37,7 @@ import {
   type ParityResult,
   type TrailRateResult,
 } from './parity';
+import { runCamera, type CameraResult } from './camera';
 
 interface ShowE2EResult {
   audioDurationS: number;
@@ -572,8 +573,19 @@ declare global {
       runFrameParity: () => Promise<ParityResult>;
       peekFixture: (times: number[], w?: number, h?: number) => Promise<string[]>;
       runTrailRate: () => Promise<TrailRateResult>;
+      runCamera: () => Promise<CameraResult>;
     };
   }
 }
 
-window.__bitsE2E = { runShow, runBundle, runV0, runFlip, runVoice, runFrameParity, peekFixture, runTrailRate };
+window.__bitsE2E = {
+  runShow,
+  runBundle,
+  runV0,
+  runFlip,
+  runVoice,
+  runFrameParity,
+  peekFixture,
+  runTrailRate,
+  runCamera,
+};

@@ -10,6 +10,7 @@
 // A "sheet" in docs/VISION.md is a puppet here: the recipe's names stay what
 // files on phones already say.
 
+import { inFront, isRestCamera, type CameraPose } from './camera';
 import { SHAPE_CLOSED, voiceAt, EMPTY_VOICE, type VoiceMoment, type VoiceTrack } from './envelope';
 import { splitPieces, type PuppetPieces } from './pieces';
 import { PUPPET_DT } from './puppet';
@@ -122,6 +123,9 @@ export interface LayerFrame {
   visual: PuppetVisual | undefined;
   voice: VoiceMoment;
   mods: WireMods;
+  /** Behind the stage plane; the renderer projects the sheet through the
+   *  camera at this depth. */
+  depth: number;
 }
 
 export interface Frame {
@@ -129,6 +133,9 @@ export interface Frame {
   seed: number;
   /** How much of the previous frame survives (0 wipes clean). */
   trail: number;
+  /** Null when the camera is at rest: an explicit identity, so a renderer
+   *  draws exactly what it drew before there was a camera. */
+  camera: CameraPose | null;
   /** Back to front. */
   layers: LayerFrame[];
 }
@@ -145,23 +152,46 @@ export interface ComposeInput {
   t: number;
   /** Idle stills are drawn clean; playing and rendering ghost. Default on. */
   trails?: boolean;
+  camera?: CameraPose | null;
+}
+
+/** Paint order: the back layer stays behind, and within each layer a
+ *  further sheet paints first. Stable, so sheets at the same depth keep
+ *  the cast's order and a show with no depth paints as it always did. */
+export function paintOrder(cast: ShowPuppet[]): ShowPuppet[] {
+  if (cast.every((p) => p.depth === 0)) return cast;
+  const rank = new Map(cast.map((p, i) => [p.id, i]));
+  return [...cast].sort(
+    (a, b) =>
+      Number(a.back === false) - Number(b.back === false) ||
+      b.depth - a.depth ||
+      rank.get(a.id)! - rank.get(b.id)!,
+  );
 }
 
 /** The pure half: given poses, everything else about the frame. */
 export function composeFrame(input: ComposeInput): Frame {
   const { project, cast, visuals, wires, analysis, poses, t } = input;
+  const camera = input.camera && !isRestCamera(input.camera) ? input.camera : null;
   const voices = voiceMap(project, visuals, analysis.voice, t, analysis.voices);
-  const layers: LayerFrame[] = cast.map((puppet) => ({
-    puppet,
-    pose: poses.get(puppet.id),
-    visual: visuals.get(puppet.id),
-    voice: voices.get(puppet.id) ?? SHUT,
-    mods: wireModsFor(wires, puppet.id, analysis.voice, analysis.onsets, t, project.seed),
-  }));
+  const layers: LayerFrame[] = [];
+  for (const puppet of paintOrder(cast)) {
+    // Behind the lens is not drawn at all.
+    if (camera && !inFront(camera, puppet.depth)) continue;
+    layers.push({
+      puppet,
+      pose: poses.get(puppet.id),
+      visual: visuals.get(puppet.id),
+      voice: voices.get(puppet.id) ?? SHUT,
+      mods: wireModsFor(wires, puppet.id, analysis.voice, analysis.onsets, t, project.seed),
+      depth: puppet.depth,
+    });
+  }
   return {
     t,
     seed: project.seed,
     trail: input.trails === false ? 0 : trailStrength(wires, analysis.voice, analysis.onsets, t),
+    camera,
     layers,
   };
 }
@@ -238,6 +268,7 @@ export function createFramer(
         analysis,
         poses,
         t,
+        camera: sim.camera(),
         ...(options.trails === undefined ? {} : { trails: options.trails }),
       });
     },

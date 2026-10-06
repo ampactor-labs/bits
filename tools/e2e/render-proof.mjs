@@ -144,6 +144,23 @@ try {
     `ghost after 0.3s: ${t30} vs ${t60} by time; ${f30} vs ${f60} the old way`,
   );
 
+  // The camera: depth is free at rest, parallax when it pans, and a
+  // backdrop never shows the void behind it.
+  const cam = await page.evaluate(() => window.__bitsE2E.runCamera());
+  check('a show with no camera draws no camera', cam.restIsNull, String(cam.restIsNull));
+  check(
+    'a pan slides near sheets with the world and far ones by f / (f + depth)',
+    Math.abs(cam.pan) > 40 &&
+      Math.abs(cam.nearSlide + cam.pan) < 2 &&
+      Math.abs(cam.farSlide - cam.farExpected) < 2,
+    `pan ${cam.pan.toFixed(1)}px: near ${cam.nearSlide.toFixed(1)}, far ${cam.farSlide.toFixed(1)} (want ${cam.farExpected.toFixed(1)})`,
+  );
+  check(
+    'a panned backdrop never opens onto the void',
+    cam.voidAtRest < 0.001 && cam.voidPanned < 0.001,
+    `bare stage ${(cam.voidAtRest * 100).toFixed(2)}% at rest, ${(cam.voidPanned * 100).toFixed(2)}% panned`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(

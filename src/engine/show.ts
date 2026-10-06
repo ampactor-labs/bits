@@ -12,6 +12,7 @@ import {
   type PuppetTarget,
 } from './puppet';
 import { polyCentroid, splitPieces, type PuppetPieces } from './pieces';
+import { CAMERA_ID, CAMERA_PROPS, REST_CAMERA, type CameraPose, type CameraProp } from './camera';
 import type {
   EyesEvent,
   MouthEvent,
@@ -19,6 +20,7 @@ import type {
   PinEvent,
   Project,
   PuppetSpec,
+  RecipeEvent,
   SnipEvent,
   SpringPreset,
   VoiceEvent,
@@ -32,6 +34,8 @@ export interface ShowPuppet {
   /** Mirrors the local frame; see localToWorld. */
   flip: boolean;
   spring: SpringPreset;
+  /** Behind the stage plane, in focal units; see engine/camera. */
+  depth: number;
 }
 
 export interface DangleState {
@@ -71,6 +75,7 @@ export function castOf(project: Project): ShowPuppet[] {
         back: e.back === true,
         flip: e.flip === true,
         spring: e.puppet.spring ?? 'felt',
+        depth: e.depth ?? 0,
       });
     } else if (e.kind === 'DROP') {
       map.delete(e.puppetId);
@@ -273,7 +278,9 @@ function newestCovering(passes: EffectivePass[], t: number): PuppetTarget | null
 /** The newest ROOT pass covering t owns the body; older passes fill gaps. */
 export function targetForPuppet(project: Project, puppetId: string, t: number): PuppetTarget | null {
   return newestCovering(
-    effectivePasses(project, puppetId).filter((p) => p.event.piece === undefined),
+    effectivePasses(project, puppetId).filter(
+      (p) => p.event.piece === undefined && p.event.prop === undefined,
+    ),
     t,
   );
 }
@@ -289,15 +296,20 @@ export function talkOpenFor(project: Project, puppetId: string, envOpen: number,
 export interface ShowSim {
   advanceTo(t: number): Map<string, PuppetPose>;
   states(): Map<string, PuppetPose>;
+  /** Where the camera is after the last advance; null when this show has
+   *  no camera to move (nothing to record it and no passes for it). */
+  camera(): CameraPose | null;
 }
 
-/** Which part of a puppet a target drives. */
-export type Channel = null | { piece: number } | { pin: number };
+/** Which part of a puppet a target drives. A prop is one number, carried
+ *  in the target's x. */
+export type Channel = null | { piece: number } | { pin: number } | { prop: CameraProp };
 
 export const sameChannel = (a: Channel, b: Channel): boolean => {
   if (a === null || b === null) return a === b;
   if ('piece' in a) return 'piece' in b && a.piece === b.piece;
-  return 'pin' in b && a.pin === b.pin;
+  if ('pin' in a) return 'pin' in b && a.pin === b.pin;
+  return 'prop' in b && a.prop === b.prop;
 };
 
 /** Live-override targets: null channel is the body. */
@@ -312,6 +324,50 @@ interface PieceGeom {
  *  at (k + 1) · PUPPET_DT. Called puppet by puppet, each in time order. */
 export type StepObserver = (puppetId: string, k: number, root: PuppetState) => void;
 
+/** The camera as the sim carries it: a body for pan, and one spring per
+ *  prop, each riding in a PuppetState's x so it moves with the same weight
+ *  as everything else on the stage (handheld for free). */
+interface CameraBody {
+  pan: PuppetState;
+  props: Record<CameraProp, PuppetState>;
+}
+
+const restingCamera = (): CameraBody => ({
+  pan: restingPuppet(REST_CAMERA.x, REST_CAMERA.y),
+  props: {
+    z: restingPuppet(REST_CAMERA.z, 0),
+    rot: restingPuppet(REST_CAMERA.rot, 0),
+    scale: restingPuppet(REST_CAMERA.scale, 0),
+  },
+});
+
+/** Every second of sim time, everyone's state, so a seek steps at most a
+ *  second instead of the whole show. Keyed by the event list itself: a
+ *  project is immutable, so the same array always simulates the same way,
+ *  and an edit makes a new array whose checkpoints start empty. */
+const CHECKPOINT_STEPS = 120;
+interface Checkpoint {
+  poses: Map<string, PuppetPose>;
+  camera: CameraBody | null;
+}
+const checkpoints = new WeakMap<RecipeEvent[], Map<number, Checkpoint>>();
+
+const copyPose = (pose: PuppetPose): PuppetPose => ({
+  root: pose.root,
+  dangles: pose.dangles.map((d) => ({ ...d })),
+  pins: pose.pins.slice(),
+});
+
+const copyCamera = (c: CameraBody | null): CameraBody | null =>
+  c && { pan: c.pan, props: { ...c.props } };
+
+export interface ShowSimOptions {
+  /** Start from the latest checkpoint at or before this time instead of
+   *  from rest at `fromT`. Only for callers whose live targets cannot have
+   *  acted before it; the caller still advances to the time it wants. */
+  resumeAt?: number;
+}
+
 /** Incremental simulator on the global fixed-step grid: whole steps only, so
  *  every advance schedule runs the identical sequence and replay stays
  *  bit-exact. Seek backward by rebuilding and fast-forwarding. */
@@ -320,9 +376,10 @@ export function createShowSim(
   fromT = 0,
   targets?: TargetProvider,
   onStep?: StepObserver,
+  options: ShowSimOptions = {},
 ): ShowSim {
   const cast = castOf(project);
-  const poses = new Map<string, PuppetPose>();
+  let poses = new Map<string, PuppetPose>();
 
   // Precomputed per puppet: pass tables (root and per-piece) and piece
   // geometry, so the hot loop never rescans the event log.
@@ -401,6 +458,65 @@ export function createShowSim(
 
   let stepIndex = Math.floor(fromT / PUPPET_DT);
 
+  // The camera only exists when something can move it: passes recorded for
+  // it, or a live stage that might record one. Otherwise there is nothing
+  // to step and the frame says "no camera", which draws as it always did.
+  const cameraPasses = effectivePasses(project, CAMERA_ID);
+  const panPasses = cameraPasses.filter((e) => e.event.prop === undefined);
+  const propPasses = new Map<CameraProp, EffectivePass[]>(
+    CAMERA_PROPS.map((prop) => [prop, cameraPasses.filter((e) => e.event.prop === prop)]),
+  );
+  let cam: CameraBody | null =
+    cameraPasses.length > 0 || targets !== undefined ? restingCamera() : null;
+
+  // Checkpoints are written only by sims nobody is steering live, from the
+  // start of the show, so every one of them is the recipe's own truth.
+  const book = (() => {
+    let b = checkpoints.get(project.events);
+    if (!b) {
+      b = new Map();
+      checkpoints.set(project.events, b);
+    }
+    return b;
+  })();
+  const writes = targets === undefined && stepIndex === 0;
+  if (options.resumeAt !== undefined && stepIndex === 0) {
+    const want = Math.floor(options.resumeAt / PUPPET_DT);
+    let best = 0;
+    for (const k of book.keys()) if (k <= want && k > best) best = k;
+    const cp = book.get(best);
+    if (cp) {
+      poses = new Map([...cp.poses].map(([id, pose]) => [id, copyPose(pose)]));
+      // A checkpoint written without a camera (no passes for it) is still
+      // valid for a live stage: its camera just has not moved yet.
+      cam = copyCamera(cp.camera) ?? (cam && restingCamera());
+      stepIndex = best;
+    }
+  }
+
+  const camTarget = (channel: Channel, passes: EffectivePass[], t: number) => {
+    if (targets) {
+      const live = targets(CAMERA_ID, channel, t);
+      if (live) return live;
+    }
+    return newestCovering(passes, t);
+  };
+
+  const stepCamera = (from: number, to: number) => {
+    if (!cam) return;
+    let { pan } = cam;
+    const props = { ...cam.props };
+    for (let k = from; k < to; k++) {
+      const tt = k * PUPPET_DT;
+      pan = stepPuppet(pan, camTarget(null, panPasses, tt), PUPPET_DT);
+      for (const prop of CAMERA_PROPS) {
+        const want = camTarget({ prop }, propPasses.get(prop)!, tt);
+        props[prop] = stepPuppet(props[prop], want && { x: want.x, y: 0 }, PUPPET_DT);
+      }
+    }
+    cam = { pan, props };
+  };
+
   const rootTarget = (p: ShowPuppet, t: number): PuppetTarget | null => {
     if (targets) {
       const live = targets(p.id, null, t);
@@ -427,8 +543,14 @@ export function createShowSim(
 
   return {
     advanceTo(t: number) {
-      const targetStep = Math.floor(t / PUPPET_DT);
-      if (targetStep > stepIndex) {
+      const finalStep = Math.floor(t / PUPPET_DT);
+      // In chunks that end on checkpoint boundaries. Each sheet steps on
+      // its own, so where the chunks fall changes nothing it computes.
+      while (finalStep > stepIndex) {
+        const targetStep = Math.min(
+          finalStep,
+          (Math.floor(stepIndex / CHECKPOINT_STEPS) + 1) * CHECKPOINT_STEPS,
+        );
         for (const p of cast) {
           const pose = poses.get(p.id)!;
           let root = pose.root;
@@ -485,12 +607,29 @@ export function createShowSim(
           }
           poses.set(p.id, { root, dangles, pins });
         }
+        stepCamera(stepIndex, targetStep);
         stepIndex = targetStep;
+        if (writes && stepIndex % CHECKPOINT_STEPS === 0 && !book.has(stepIndex)) {
+          book.set(stepIndex, {
+            poses: new Map([...poses].map(([id, pose]) => [id, copyPose(pose)])),
+            camera: copyCamera(cam),
+          });
+        }
       }
       return poses;
     },
     states() {
       return poses;
+    },
+    camera() {
+      if (!cam) return null;
+      return {
+        x: cam.pan.x,
+        y: cam.pan.y,
+        z: cam.props.z.x,
+        rot: cam.props.rot.x,
+        scale: cam.props.scale.x,
+      };
     },
   };
 }

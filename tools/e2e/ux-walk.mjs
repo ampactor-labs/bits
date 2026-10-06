@@ -1785,6 +1785,69 @@ try {
         const kinds = await kindsSince(before);
         check('a-backdrop-can-be-wired', kinds.join(',') === 'WIRE', kinds.join(',') || 'nothing');
       });
+
+      // Depth is free at rest: pushing the backdrop back records a CAST
+      // and moves nothing until the camera does.
+      await phase('a-sheet-can-be-pushed-back', async () => {
+        await label('close');
+        await sleep(300);
+        const before = await kindsNow();
+        const far = await tab.evaluateHandle(() =>
+          Array.from(document.querySelectorAll('[aria-label="how far back it sits"] button')).find(
+            (b) => b.textContent?.trim() === 'far',
+          ),
+        );
+        if (!far.asElement()) throw new Error('no depth control');
+        await far.asElement().tap();
+        await sleep(300);
+        await tabShot('pushed-back');
+        const kinds = await kindsSince(before);
+        const depth = await tab.evaluate(() => {
+          const casts = window.__bits.project().events.filter((e) => e.kind === 'CAST');
+          return casts[casts.length - 1]?.depth ?? 0;
+        });
+        check('a-sheet-can-be-pushed-back', kinds.join(',') === 'CAST' && depth === 3, `${kinds.join(',') || 'nothing'} at depth ${depth}`);
+        await label('close');
+        await sleep(300);
+      });
+
+      // The camera is one more thing to perform: pick it up, record, and a
+      // single finger dragged across the stage is a camera pass.
+      await phase('a-camera-pass-is-one-finger', async () => {
+        await label('pick up the camera');
+        await sleep(300);
+        const before = await kindsNow();
+        await label('record a pass');
+        await tab.waitForFunction(
+          () => document.querySelector('.stagebox')?.classList.contains('mode-recording'),
+          { timeout: 10000 },
+        );
+        await sleep(300);
+        await finger(
+          [
+            [0.5, 0.5],
+            [0.45, 0.5],
+            [0.38, 0.52],
+            [0.3, 0.52],
+            [0.25, 0.5],
+          ],
+          { stepMs: 120 },
+        );
+        await sleep(300);
+        await tabShot('camera-pass');
+        await label('stop');
+        await sleep(500);
+        const passes = await tab.evaluate((k) =>
+          window.__bits
+            .project()
+            .events.slice(k)
+            .filter((e) => e.kind === 'PASS')
+            .map((e) => `${e.puppetId}${e.prop ? `.${e.prop}` : ''}`),
+          before,
+        );
+        check('a-camera-pass-is-one-finger', passes.join(',') === '@camera', passes.join(',') || 'no pass');
+        await label('put the camera down');
+      });
     } finally {
       await tab.close();
     }

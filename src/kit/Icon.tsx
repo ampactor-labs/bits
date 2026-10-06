@@ -48,7 +48,8 @@ export type IconName =
   | 'foley'
   | 'body'
   | 'blind'
-  | 'sticker';
+  | 'sticker'
+  | 'camera';
 
 /** Path data only; every icon shares the stroke setup below. */
 const STROKE: Record<IconName, string> = {
@@ -95,6 +96,7 @@ const STROKE: Record<IconName, string> = {
   body: 'M12 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 7v8M12 15l-3 6M12 15l3 6M6 10l6 1 6-1',
   blind: 'M3 4h18v3H3zM6 7v13M10 7v13M14 7v13M18 7v13',
   sticker: 'M4 4h11l5 5v11H4zM15 4v5h5M8 13a4 4 0 0 0 8 0',
+  camera: 'M3 7h12v10H3zM15 10.5l6-3.5v10l-6-3.5',
 };
 
 /** Icons drawn as filled shapes rather than strokes. */

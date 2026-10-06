@@ -2,9 +2,11 @@
 // performed passes, scissor cuts, mouths, drops. Same recipe simulates to the
 // same frames, always. Undo is popping the last event.
 
-export const RECIPE_VERSION = 2 as const;
+import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
+
+export const RECIPE_VERSION = 3 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3] as const;
 
 interface EventBase {
   id: string;
@@ -68,6 +70,11 @@ export interface CastEvent extends EventBase {
    *  flip has to live in the local/world transform or a dragged pin renders
    *  at the mirror image of the finger. */
   flip?: boolean;
+  /** How far behind the stage plane the sheet sits, in focal units (the
+   *  focal distance is 2). Absent is 0. Free at rest: it changes nothing
+   *  until the camera moves, except that a further sheet paints behind a
+   *  nearer one in its layer. */
+  depth?: number;
 }
 
 /** Draw order for non-backdrops, back to front. Latest REORDER wins.
@@ -95,6 +102,10 @@ export interface PassEvent extends EventBase {
   piece?: number;
   /** Targets a warp pin (by pin index) instead of the body or a piece. */
   pin?: number;
+  /** Records one number instead of a point: samples are [t, v, 0]
+   *  triples, so everything that reads passes by threes still works. Only
+   *  the camera (puppetId '@camera') has props so far: dolly, roll, zoom. */
+  prop?: CameraProp;
 }
 
 /** A warp control point in puppet-local box coords. Pins accumulate; drag
@@ -340,6 +351,9 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
     }
     return { ...raw, version: 2, events: kept };
   },
+  /** v3 adds depth, the camera and scalar passes. Nothing in v2 means
+   *  anything new, so only the header moves. */
+  2: (raw) => ({ ...raw, version: 3 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -365,6 +379,11 @@ export function serializeProject(project: Project): string {
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** How near and how far a sheet can sit. Nearer than -1.5 and a modest
+ *  dolly would put it behind the lens; past 20 it barely moves at all. */
+export const MIN_DEPTH = -1.5;
+export const MAX_DEPTH = 20;
 
 export function parseProject(text: string): Project {
   let parsed: unknown;
@@ -456,6 +475,12 @@ export function parseProject(text: string): Project {
         if (ev.flip !== undefined && typeof ev.flip !== 'boolean') {
           throw new Error('recipe: CAST flip must be a boolean');
         }
+        if (ev.puppetId === CAMERA_ID) {
+          throw new Error('recipe: the camera is not a puppet');
+        }
+        if (ev.depth !== undefined && !(isNum(ev.depth) && ev.depth >= MIN_DEPTH && ev.depth <= MAX_DEPTH)) {
+          throw new Error(`recipe: CAST depth must be in ${MIN_DEPTH}..${MAX_DEPTH}`);
+        }
         const spec = ev.puppet as Record<string, unknown>;
         if (spec.spring !== undefined && !SPRING_PRESETS.includes(spec.spring as SpringPreset)) {
           throw new Error('recipe: unknown spring preset');
@@ -498,6 +523,17 @@ export function parseProject(text: string): Project {
         }
         if (ev.piece !== undefined && ev.pin !== undefined) {
           throw new Error('recipe: PASS cannot target both a piece and a pin');
+        }
+        if (ev.prop !== undefined) {
+          if (!CAMERA_PROPS.includes(ev.prop as CameraProp)) {
+            throw new Error('recipe: PASS prop must be z, rot or scale');
+          }
+          if (ev.puppetId !== CAMERA_ID) {
+            throw new Error('recipe: only the camera records props');
+          }
+        }
+        if (ev.puppetId === CAMERA_ID && (ev.piece !== undefined || ev.pin !== undefined)) {
+          throw new Error('recipe: the camera has no pieces or pins');
         }
         break;
       }
