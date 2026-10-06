@@ -39,6 +39,8 @@ export interface WireMods {
   hue?: number;
   /** Added to the sheet's depth for projection. */
   dDepth?: number;
+  /** Added to every folded piece's angle, in radians. */
+  dFold?: number;
 }
 
 const IDENTITY_MODS: WireMods = { scaleMul: 1, dx: 0, dy: 0, dAngle: 0 };
@@ -201,6 +203,7 @@ export function wireModsFor(wires: WireMap, pid: string, ctx: WireContext, t: nu
   let alpha: number | undefined;
   let hue: number | undefined;
   let dDepth: number | undefined;
+  let dFold: number | undefined;
   for (const w of rest) {
     const s = wireSignal(w, ctx, t);
     const a = w.amount;
@@ -242,6 +245,9 @@ export function wireModsFor(wires: WireMap, pid: string, ctx: WireContext, t: nu
       case 'depth':
         dDepth = (dDepth ?? 0) + a * REACH.depth * s;
         break;
+      case 'fold':
+        dFold = (dFold ?? 0) + a * REACH.fold * s;
+        break;
       default:
         break;
     }
@@ -255,6 +261,7 @@ export function wireModsFor(wires: WireMap, pid: string, ctx: WireContext, t: nu
     ...(alpha !== undefined ? { alpha } : {}),
     ...(hue !== undefined ? { hue } : {}),
     ...(dDepth !== undefined ? { dDepth } : {}),
+    ...(dFold !== undefined ? { dFold } : {}),
   };
 }
 

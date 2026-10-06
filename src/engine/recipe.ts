@@ -8,9 +8,9 @@ import { parseSignal } from './signals';
 import { genomeProblem, type Genome } from './ink';
 import type { Palette, Paper } from './grade';
 
-export const RECIPE_VERSION = 10 as const;
+export const RECIPE_VERSION = 11 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
 
 interface EventBase {
   id: string;
@@ -310,6 +310,17 @@ export interface InkEvent extends EventBase {
   genome: Genome | null;
 }
 
+/** Turns a cut into a fold: the piece a SNIP made stays joined along the
+ *  snip line and turns out of the paper by `angle` radians (0 lies flat,
+ *  ±π folds it right over, showing its back). Latest per snip slot wins;
+ *  a null angle makes it a swinging cut again. */
+export interface FoldEvent extends EventBase {
+  kind: 'FOLD';
+  puppetId: string;
+  snip: number;
+  angle: number | null;
+}
+
 /** Removes a puppet from the cast; a later CAST revives it. */
 export interface DropEvent extends EventBase {
   kind: 'DROP';
@@ -333,7 +344,8 @@ export type RecipeEvent =
   | DropEvent
   | LookEvent
   | CutEvent
-  | InkEvent;
+  | InkEvent
+  | FoldEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -462,6 +474,8 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   8: (raw) => ({ ...raw, version: 9 }),
   /** v10 adds kits (attach) and blinking; nothing older changes. */
   9: (raw) => ({ ...raw, version: 10 }),
+  /** v11 adds folds; nothing older changes. */
+  10: (raw) => ({ ...raw, version: 11 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -832,6 +846,16 @@ export function parseProject(text: string): Project {
           throw new Error(`recipe: INK genome is malformed (${genomeProblem(ev.genome)})`);
         }
         break;
+      case 'FOLD': {
+        const n = ev.snip;
+        if (!(isNum(n) && Number.isInteger(n) && n >= 0 && n < (snipSlots.get(ev.puppetId as string) ?? 0))) {
+          throw new Error('recipe: FOLD must name an existing snip');
+        }
+        if (ev.angle !== null && !(isNum(ev.angle) && Math.abs(ev.angle as number) <= Math.PI + 1e-9)) {
+          throw new Error('recipe: FOLD angle is radians within ±π, or null');
+        }
+        break;
+      }
       case 'CUT':
         if (
           ev.puppetId !== CAMERA_ID ||

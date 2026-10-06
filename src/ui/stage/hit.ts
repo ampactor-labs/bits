@@ -124,6 +124,9 @@ function hitOne(
         }
       }
       for (const child of visual.pieces.children) {
+        // A fold is part of the sheet, not a piece to swing: grabbing it
+        // grabs the sheet.
+        if (visual.folds?.[child.snipIndex] != null) continue;
         const dangle = pose.dangles[child.snipIndex]?.angle ?? 0;
         const j = child.joint!;
         const ca = Math.cos(-dangle);

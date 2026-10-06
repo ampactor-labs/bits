@@ -186,6 +186,31 @@ try {
     `ghost ${look.ghostPlain} without a cut, ${look.ghostCut} across one`,
   );
 
+  // Folds: a flap bent out of the paper is shorter and darker; folded
+  // right over it shows the paper's back where the card was, and bare
+  // stage where the flap used to be.
+  const fold = await page.evaluate(() => window.__bitsE2E.runFold());
+  const magenta = ([r, g, b]) => r > 200 && g < 60 && b > 200;
+  const bare = ([r, g, b]) => r + g + b < 80;
+  const rgb = (c) => c.join(',');
+  check(
+    'a fold lying open is the whole card',
+    fold.flat.every(magenta),
+    fold.flat.map(rgb).join(' / '),
+  );
+  check(
+    'a bent fold is shorter and darker',
+    magenta([fold.bent[1][0] + 30, fold.bent[1][1], fold.bent[1][2] + 30]) &&
+      fold.bent[1][0] < fold.flat[1][0] - 20 &&
+      bare(fold.bent[2]),
+    fold.bent.map(rgb).join(' / '),
+  );
+  check(
+    'a fold right over shows the back of the paper',
+    fold.over[0][1] > 180 && fold.over[0][0] > 180 && bare(fold.over[1]) && bare(fold.over[2]),
+    fold.over.map(rgb).join(' / '),
+  );
+
   // Bands: decoded at the file's own rate, analysed in the worker, the
   // same numbers as inline, and bass is bass.
   const bands = await page.evaluate(() => window.__bitsE2E.runBands());

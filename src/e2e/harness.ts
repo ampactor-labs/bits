@@ -38,6 +38,7 @@ import {
   type TrailRateResult,
 } from './parity';
 import { runCamera, runLook, type CameraResult, type LookResult } from './camera';
+import { runFold, type FoldResult } from './fold';
 import { runBands, type BandsResult } from './bands';
 import { runGlParity, runSurface, type GlParityResult, type SurfaceResult } from './glParity';
 import { pickVideo, runVideo, runVideoRead, type ReadResult, type VideoResult } from './videoProof';
@@ -578,6 +579,7 @@ declare global {
       runTrailRate: () => Promise<TrailRateResult>;
       runCamera: () => Promise<CameraResult>;
       runLook: () => Promise<LookResult>;
+      runFold: () => Promise<FoldResult>;
       runBands: () => Promise<BandsResult>;
       runGlParity: () => Promise<GlParityResult>;
       runSurface: () => Promise<SurfaceResult>;
@@ -599,6 +601,7 @@ window.__bitsE2E = {
   runTrailRate,
   runCamera,
   runLook,
+  runFold,
   runBands,
   runGlParity,
   runSurface,
