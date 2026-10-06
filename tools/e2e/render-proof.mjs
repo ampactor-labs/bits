@@ -144,6 +144,42 @@ try {
     `ghost after 0.3s: ${t30} vs ${t60} by time; ${f30} vs ${f60} the old way`,
   );
 
+  // The camera: depth is free at rest, parallax when it pans, and a
+  // backdrop never shows the void behind it.
+  const cam = await page.evaluate(() => window.__bitsE2E.runCamera());
+  check('a show with no camera draws no camera', cam.restIsNull, String(cam.restIsNull));
+  check(
+    'a pan slides near sheets with the world and far ones by f / (f + depth)',
+    Math.abs(cam.pan) > 40 &&
+      Math.abs(cam.nearSlide + cam.pan) < 2 &&
+      Math.abs(cam.farSlide - cam.farExpected) < 2,
+    `pan ${cam.pan.toFixed(1)}px: near ${cam.nearSlide.toFixed(1)}, far ${cam.farSlide.toFixed(1)} (want ${cam.farExpected.toFixed(1)})`,
+  );
+  check(
+    'a panned backdrop never opens onto the void',
+    cam.voidAtRest < 0.001 && cam.voidPanned < 0.001,
+    `bare stage ${(cam.voidAtRest * 100).toFixed(2)}% at rest, ${(cam.voidPanned * 100).toFixed(2)}% panned`,
+  );
+
+  // The look: shadows fall further across a bigger depth gap, fog eats far
+  // sheets more than near ones, and a cut leaves no ghost.
+  const look = await page.evaluate(() => window.__bitsE2E.runLook());
+  check(
+    'a shadow falls further onto a sheet further back',
+    look.shadowReachNear > 2 && look.shadowReachFar > look.shadowReachNear + 2,
+    `reach ${look.shadowReachNear}px over the plane, ${look.shadowReachFar}px over a far backdrop`,
+  );
+  check(
+    'fog takes far sheets more than near ones',
+    look.fogNear > 10 && look.fogFar > look.fogNear * 1.5,
+    `colour moved ${look.fogNear} near, ${look.fogFar} far`,
+  );
+  check(
+    'a cut leaves no ghost',
+    look.ghostPlain > 50 && look.ghostCut === 0,
+    `ghost ${look.ghostPlain} without a cut, ${look.ghostCut} across one`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(

@@ -29,6 +29,7 @@ CI (`.github/workflows/deploy.yml`) runs all of the above on every PR; main depl
 
 - `localToWorld` rotates in normalized stage coords while drawing rotates in pixels, so pins and joints of rotated puppets on 9:16 are slightly off. Old bits depend on it; don't "fix" it. Camera and depth work in pixel space.
 - Pin and snip indices are slots that never compact (passes name them by position).
+- The rest camera is `null` on the frame, never an identity matrix: old bits must take the exact old drawing path. Anything a finger touches goes through `toStage` at the sheet's depth (`ui/stage/gestures.ts`).
 - Trails read the previous frame, so renders draw every frame in order.
 - `mixdownMono` (16 kHz, stride decimation) is baked into every bit's mouths and beats. New analysis (bands) decodes separately at native rate.
 - `Stage.tsx` is large; move code out before adding to it.

@@ -2,9 +2,11 @@
 // performed passes, scissor cuts, mouths, drops. Same recipe simulates to the
 // same frames, always. Undo is popping the last event.
 
-export const RECIPE_VERSION = 2 as const;
+import { CAMERA_ID, CAMERA_PROPS, type CameraProp } from './camera';
+
+export const RECIPE_VERSION = 4 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4] as const;
 
 interface EventBase {
   id: string;
@@ -68,6 +70,11 @@ export interface CastEvent extends EventBase {
    *  flip has to live in the local/world transform or a dragged pin renders
    *  at the mirror image of the finger. */
   flip?: boolean;
+  /** How far behind the stage plane the sheet sits, in focal units (the
+   *  focal distance is 2). Absent is 0. Free at rest: it changes nothing
+   *  until the camera moves, except that a further sheet paints behind a
+   *  nearer one in its layer. */
+  depth?: number;
 }
 
 /** Draw order for non-backdrops, back to front. Latest REORDER wins.
@@ -95,6 +102,38 @@ export interface PassEvent extends EventBase {
   piece?: number;
   /** Targets a warp pin (by pin index) instead of the body or a piece. */
   pin?: number;
+  /** Records one number instead of a point: samples are [t, v, 0]
+   *  triples, so everything that reads passes by threes still works. Only
+   *  the camera (puppetId '@camera') has props so far: dolly, roll, zoom. */
+  prop?: CameraProp;
+  /** What performed it: a finger (absent) or the phone's tilt. Metadata
+   *  only; the pass plays the same either way. */
+  via?: 'finger' | 'gyro';
+}
+
+/** How the whole stage looks. Latest wins per field; an absent field is
+ *  off, which is how every bit before looks existed is drawn. */
+export interface LookEvent extends EventBase {
+  kind: 'LOOK';
+  puppetId: '';
+  /** Paper shadows, 0..1: how dark, and how far they fall per unit of
+   *  depth between a sheet and the one behind it. */
+  shadow?: number;
+  /** Depth haze, 0..1: far sheets fade toward the fog colour. */
+  fog?: number;
+  fogColor?: string;
+}
+
+/** A cut: at `at` the camera is simply somewhere else, still. It snaps the
+ *  camera's pose and stops its motion, and the trails start clean. */
+export interface CutEvent extends EventBase {
+  kind: 'CUT';
+  puppetId: typeof CAMERA_ID;
+  x: number;
+  y: number;
+  z: number;
+  rot: number;
+  scale: number;
 }
 
 /** A warp control point in puppet-local box coords. Pins accumulate; drag
@@ -180,7 +219,8 @@ export type RemoveTarget =
   | { pin: number }
   | { snip: number }
   | { pass: string }
-  | { sound: string };
+  | { sound: string }
+  | { cut: string };
 
 /** Undoes a feature without rewriting history. puppetId is '' for pass and
  *  sound targets, which are named by event id. */
@@ -241,7 +281,9 @@ export type RecipeEvent =
   | WireEvent
   | SoundEvent
   | VoiceEvent
-  | DropEvent;
+  | DropEvent
+  | LookEvent
+  | CutEvent;
 
 export interface Project {
   version: typeof RECIPE_VERSION;
@@ -340,6 +382,11 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
     }
     return { ...raw, version: 2, events: kept };
   },
+  /** v3 adds depth, the camera and scalar passes. Nothing in v2 means
+   *  anything new, so only the header moves. */
+  2: (raw) => ({ ...raw, version: 3 }),
+  /** v4 adds looks, cuts and tilt-performed passes; nothing older changes. */
+  3: (raw) => ({ ...raw, version: 4 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -365,6 +412,11 @@ export function serializeProject(project: Project): string {
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/** How near and how far a sheet can sit. Nearer than -1.5 and a modest
+ *  dolly would put it behind the lens; past 20 it barely moves at all. */
+export const MIN_DEPTH = -1.5;
+export const MAX_DEPTH = 20;
 
 export function parseProject(text: string): Project {
   let parsed: unknown;
@@ -456,6 +508,12 @@ export function parseProject(text: string): Project {
         if (ev.flip !== undefined && typeof ev.flip !== 'boolean') {
           throw new Error('recipe: CAST flip must be a boolean');
         }
+        if (ev.puppetId === CAMERA_ID) {
+          throw new Error('recipe: the camera is not a puppet');
+        }
+        if (ev.depth !== undefined && !(isNum(ev.depth) && ev.depth >= MIN_DEPTH && ev.depth <= MAX_DEPTH)) {
+          throw new Error(`recipe: CAST depth must be in ${MIN_DEPTH}..${MAX_DEPTH}`);
+        }
         const spec = ev.puppet as Record<string, unknown>;
         if (spec.spring !== undefined && !SPRING_PRESETS.includes(spec.spring as SpringPreset)) {
           throw new Error('recipe: unknown spring preset');
@@ -498,6 +556,20 @@ export function parseProject(text: string): Project {
         }
         if (ev.piece !== undefined && ev.pin !== undefined) {
           throw new Error('recipe: PASS cannot target both a piece and a pin');
+        }
+        if (ev.prop !== undefined) {
+          if (!CAMERA_PROPS.includes(ev.prop as CameraProp)) {
+            throw new Error('recipe: PASS prop must be z, rot or scale');
+          }
+          if (ev.puppetId !== CAMERA_ID) {
+            throw new Error('recipe: only the camera records props');
+          }
+        }
+        if (ev.via !== undefined && ev.via !== 'finger' && ev.via !== 'gyro') {
+          throw new Error('recipe: PASS via must be finger or gyro');
+        }
+        if (ev.puppetId === CAMERA_ID && (ev.piece !== undefined || ev.pin !== undefined)) {
+          throw new Error('recipe: the camera has no pieces or pins');
         }
         break;
       }
@@ -556,6 +628,8 @@ export function parseProject(text: string): Project {
           refersBack(target.pass, 'PASS', 'REMOVE pass');
         } else if ('sound' in target) {
           refersBack(target.sound, 'SOUND', 'REMOVE sound');
+        } else if ('cut' in target) {
+          refersBack(target.cut, 'CUT', 'REMOVE cut');
         } else {
           throw new Error('recipe: unknown REMOVE target');
         }
@@ -610,6 +684,25 @@ export function parseProject(text: string): Project {
         break;
       }
       case 'DROP':
+        break;
+      case 'LOOK': {
+        const unit = (v: unknown) => v === undefined || (isNum(v) && v >= 0 && v <= 1);
+        if (ev.puppetId !== '' || !unit(ev.shadow) || !unit(ev.fog)) {
+          throw new Error('recipe: LOOK shadow and fog are 0..1, on the stage');
+        }
+        if (ev.fogColor !== undefined && !(typeof ev.fogColor === 'string' && /^#[0-9a-f]{6}$/i.test(ev.fogColor))) {
+          throw new Error('recipe: LOOK fogColor must be #rrggbb');
+        }
+        break;
+      }
+      case 'CUT':
+        if (
+          ev.puppetId !== CAMERA_ID ||
+          !(isNum(ev.x) && isNum(ev.y) && isNum(ev.z) && isNum(ev.rot) && isNum(ev.scale)) ||
+          (ev.scale as number) <= 0
+        ) {
+          throw new Error('recipe: CUT needs the camera and a pose (x, y, z, rot, scale > 0)');
+        }
         break;
       default:
         throw new Error(`recipe: unknown event kind ${ev.kind}`);

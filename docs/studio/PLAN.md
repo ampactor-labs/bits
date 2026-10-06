@@ -67,7 +67,12 @@ What shipped: `createRenderer2d()` keeps the previous frame's time and fades tra
 - `ui/stage/player.ts` (a StagePlayer owning framer and renderer with `tick()`), `ui/stage/store.ts` (a small `useSyncExternalStore` store for project, history, selection, mode).
 - Checks: v0/v1 fixtures identical against the legacy renderer; migration fixtures (a v1 backdrop with a stray scale and wires); back layer hit-tests last; walkthrough phases `a-backdrop-can-be-snipped`, `a-backdrop-can-be-wired`.
 
-### S2a — depth and the camera (v3)
+### S2a — depth and the camera (v3) — *done*
+What shipped: `engine/camera.ts` (the projection below, `viewOf` returning null at rest, `toScreen`/`toStage`, culling); `CAST.depth` (−1.5..20) and `PASS.prop: 'z'|'rot'|'scale'`, camera-only, on puppetId `'@camera'`, at recipe v3 (v2 migrates by header). The camera needs no CAST: it rests at identity until a pass moves it, then holds where the pass left it, like any sheet. The sim steps it as one more body (pan) plus a spring per prop, only when there are camera passes or a live stage; `ShowSim.camera()` reaches the frame as `Frame.camera`, null at rest, and each layer carries its depth. Paint order is back layer first, then far to near, stable on `castOf`. A backdrop that the camera has moved draws a mirrored apron, so a pan never shows the void. Sim checkpoints every 120 steps (`resumeAt`), keyed by the immutable event array and written only by sims that nothing is steering live. The pointer effect moved out of Stage.tsx into `ui/stage/gestures.ts`, which un-projects every touch at the touched sheet's depth: hits, staging drags, handles, tools and recorded samples. The camera is a button on the stage: with it in hand, a take's single finger pans (the world follows the finger) and a second finger dollies and rolls, each as its own pass in a camera lane. Depth is a five-stop row in a sheet's more panel.
+
+Not done here: the StagePlayer/store extraction (the frame loop still lives in Stage.tsx; it moves with S2b's director view, which needs a second view of the same frame); a harness check that preview equals export under a fake clock; body (pose) passes are recorded in screen coords, so they ignore a moving camera.
+
+Original notes:
 - `engine/camera.ts`. Pixel-space projection: P = (x·W, y·H), O = centre, f = 2, k = f / (f + z − camZ), m = k·(f + z)/f, `screen = O + R(roll)·[m·(P − O) + k·(O − c)]`. Each sheet's projection is a similarity, so Canvas2D uses `setTransform`. Cull at f + z − camZ < 0.05. Paint order: depth, ties by `castOf`.
 - The camera is a reserved `'@camera'` CAST `{type:'camera'}`: x, y pan, scale zoom, rot roll, depth dolly. It is an extra body in the sim with its own spring (handheld weight for free); scalar props are 1-D springs. `PASS.prop: 'z'|'rot'|'scale'` and `PASS.via: 'finger'|'body'|'gyro'|'video'`.
 - Sim checkpoints every 120 steps so seeks cost at most a second of stepping.
@@ -75,7 +80,25 @@ What shipped: `createRenderer2d()` keeps the previous frame's time and fades tra
 - Camera gestures: drag pans, pinch records z, twist records roll.
 - Checks: rest identity; parallax f/(f + z); project∘unproject round-trip; checkpoint seek equals a fresh sim; harness preview-equals-export with a fake clock; walkthrough `a-camera-pass-is-one-finger`.
 
-### S2b — look: shadows, fog, director view, gyro, cuts (v3 continued or v4)
+### S2b — look: shadows, fog, director view, gyro, cuts (v4) — *done*
+What shipped:
+- **Recipe v4** (v3 migrates by header) adds three things:
+  - `LOOK {shadow, fog, fogColor}`: latest wins per field, absent is off.
+  - `CUT` on `'@camera'`: snaps pose and stops motion at the step boundary where it lands, and is removable with REMOVE `{cut}`.
+  - `PASS.via: 'gyro'`.
+- **One sprite path for both looks.** A looked layer is drawn alone onto a scratch canvas, fogged there with `source-atop` by depth, then drawn with a canvas shadow whose offset grows with the depth gap to the nearest overlapping sheet behind (`engine/look.ts`). With no look, every frame takes the old path, so parity is unchanged.
+- **The renderer starts clean when a cut passes** (`Frame.cutAt`).
+- **The stage player** (`ui/stage/player.ts`) owns playing and still frames and the overlay marks, and keeps the last frame.
+- **The director view** (`DirectorView.tsx`) is opened from a sheet's more panel. Each sheet is a dot at (x, depth) on a log scale; drag a dot up to push the sheet back.
+- **Camera-in-hand controls during a take:**
+  - A "cut" pill cuts back to the wide shot, on the next beat if one lands within 0.3 s.
+  - A "tilt" pill: `media/gyro.ts` records the phone's tilt as a camera pass.
+- **Cuts in the lanes.** They are ticks in the camera lane; a tap takes one out, with an undo.
+- **Body passes go through the camera.**
+
+Not done here: a measured frame gate for looked frames. A look costs one stage-sized sprite blit per sheet, which WebGL (S4a) makes cheap; until then the gate covers the demo, which has no look.
+
+Original notes:
 - `LOOK {shadow?, fog?}` stage event (latest per field wins); migrated bits get `lookBase:'flat'`.
 - Shadows onto the nearest overlapping sheet behind, offset and blur growing with the depth gap; fog as a depth tint.
 - `DirectorView.tsx`: an inset side view (x against depth) to drag depth and perform the camera.
