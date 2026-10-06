@@ -8,9 +8,9 @@ import { parseSignal } from './signals';
 import { genomeProblem, type Genome } from './ink';
 import type { Palette, Paper } from './grade';
 
-export const RECIPE_VERSION = 7 as const;
+export const RECIPE_VERSION = 8 as const;
 /** Every version this app can open. Older files migrate on load. */
-export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
+export const READABLE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 
 interface EventBase {
   id: string;
@@ -55,7 +55,19 @@ export type PuppetSpec =
   | ({ type: 'text'; text: string } & SpecCommon)
   | ({ type: 'rect'; color: string } & SpecCommon)
   /** A sheet grown rather than drawn: an ink genome, stored whole. */
-  | ({ type: 'ink'; genome: Genome } & SpecCommon);
+  | ({ type: 'ink'; genome: Genome } & SpecCommon)
+  /** A clip playing in show time. `at` is when its first frame shows,
+   *  `clipFrom` how far into the file it starts, and it loops unless
+   *  told not to. Its duration is stored, so where it is at any moment
+   *  is a rule of the recipe, not of whichever decoder opens it. */
+  | ({
+      type: 'video';
+      assetId: string;
+      durationS: number;
+      at?: number;
+      clipFrom?: number;
+      loop?: boolean;
+    } & SpecCommon);
 
 /** A puppet joins (or re-poses in) the cast. The latest CAST for a puppet
  *  wins and moves it to the front; `back` puts it in the back layer, behind
@@ -433,6 +445,8 @@ const MIGRATIONS: Record<number, (raw: Raw) => Raw> = {
   5: (raw) => ({ ...raw, version: 6 }),
   /** v7 adds palettes, paper and three springs; nothing older changes. */
   6: (raw) => ({ ...raw, version: 7 }),
+  /** v8 adds video sheets; nothing older changes. */
+  7: (raw) => ({ ...raw, version: 8 }),
 };
 
 /** Bring a stored recipe up to today's version, one step at a time. Kept
@@ -566,6 +580,18 @@ export function parseProject(text: string): Project {
         }
         if (spec.fit !== undefined && !(spec.type === 'cutout' && spec.fit === 'cover')) {
           throw new Error('recipe: fit is cover, on photos only');
+        }
+        if (spec.type === 'video') {
+          const ok =
+            typeof spec.assetId === 'string' &&
+            spec.assetId.length > 0 &&
+            isNum(spec.durationS) &&
+            (spec.durationS as number) > 0 &&
+            (spec.at === undefined || isNum(spec.at)) &&
+            (spec.clipFrom === undefined ||
+              (isNum(spec.clipFrom) && spec.clipFrom >= 0 && spec.clipFrom < (spec.durationS as number))) &&
+            (spec.loop === undefined || typeof spec.loop === 'boolean');
+          if (!ok) throw new Error('recipe: video needs an assetId, a positive duration, and a start inside it');
         }
         if (spec.type === 'ink' && genomeProblem(spec.genome) !== null) {
           throw new Error(`recipe: ink genome is malformed (${genomeProblem(spec.genome)})`);

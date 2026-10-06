@@ -22,6 +22,7 @@ export type { PuppetVisual } from '../engine/frame';
 import type { EyesEvent, MouthEvent, PinEvent, PuppetSpec } from '../engine/recipe';
 import type { Genome } from '../engine/ink';
 import { inkCanvas } from './inkDraw';
+import { videoFrame } from './video';
 
 export const STAGE_BG = '#101010';
 const DOODLE_COLOR = '#ece5db';
@@ -323,8 +324,8 @@ export function sheetContentKey(layer: LayerFrame, W: number, H: number, tS: num
   const { puppet, visual } = layer;
   if (!visual) return null;
   if (visual.mouth || visual.eyes) return null;
-  // Inks move every tick.
-  if (visual.ink || puppet.spec.type === 'ink') return null;
+  // Inks and clips move every tick.
+  if (visual.ink || puppet.spec.type === 'ink' || puppet.spec.type === 'video') return null;
   if (visual.pieces.children.length > 0) return null;
   if (visual.pins.some((pin) => pin !== null)) return null;
   const { pw, ph } = sheetSize(layer, W, H);
@@ -733,6 +734,17 @@ function drawContent(
       ctx.fillStyle = spec.color;
       ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
       break;
+    case 'video': {
+      // The latest frame at or before this moment of the clip; a clip
+      // still opening shows as a dark card rather than nothing.
+      const frame = videoFrame(spec, tS);
+      if (frame) ctx.drawImage(frame, -pw / 2, -ph / 2, pw, ph);
+      else {
+        ctx.fillStyle = '#1b1b1b';
+        ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      }
+      break;
+    }
     case 'ink': {
       // Grown at a small fixed size and scaled smoothly: soft, like print.
       const smooth = ctx.imageSmoothingEnabled;

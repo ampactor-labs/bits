@@ -9,7 +9,7 @@ import type { Project, RecipeEvent } from './recipe';
  *  (return the same id to keep it). Never mutates. */
 export function mapAssetRefs(project: Project, rename: (id: string) => string): Project {
   const events = project.events.map((e): RecipeEvent => {
-    if (e.kind === 'CAST' && e.puppet.type === 'cutout') {
+    if (e.kind === 'CAST' && (e.puppet.type === 'cutout' || e.puppet.type === 'video')) {
       const id = rename(e.puppet.assetId);
       return id === e.puppet.assetId ? e : { ...e, puppet: { ...e.puppet, assetId: id } };
     }

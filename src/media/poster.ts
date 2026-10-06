@@ -11,6 +11,7 @@ import { createFramer } from '../engine/frame';
 import type { Project } from '../engine/recipe';
 import { getAsset } from './assets';
 import { loadStageImages, renderFrame2d, STAGE_BG } from './stageDraw';
+import { loadVideos, videosReadyAt } from './video';
 
 /** Where in the bit the still is taken. Far enough that a pass has moved
  *  something, early enough that most bits have reached it. */
@@ -48,6 +49,9 @@ export async function posterFor(
   try {
     const images = await loadStageImages(framer.cast, getAsset);
     const t = (project.audio?.durationS ?? 0) * AT;
+    const specs = framer.cast.map((p) => p.spec);
+    await loadVideos(specs, getAsset);
+    await videosReadyAt(specs, t);
     renderFrame2d(ctx, W, H, framer.frameAt(t), images);
     for (const img of images.values()) img.close();
   } catch {

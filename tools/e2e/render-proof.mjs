@@ -216,6 +216,15 @@ try {
     `forced ${surf.forced}, auto ${surf.auto}, ${surf.colours} colours drawn`,
   );
 
+  // Video sheets: the film draws exactly the frame the rule names.
+  const vid = await page.evaluate(() => window.__bitsE2E.runVideo());
+  const wrong = vid.frames.filter((f) => f.want !== f.got);
+  check(
+    'a video sheet shows exactly the frame its moment names',
+    vid.frames.length >= 9 && wrong.length === 0,
+    wrong.length ? wrong.map((f) => `t ${f.t}: want ${f.want} got ${f.got}`).join('; ') : `${vid.frames.length} moments, clip ${vid.durationS.toFixed(2)}s`,
+  );
+
   // A bit saved by the shipped v0 app must keep opening and keep rendering.
   const v0 = await page.evaluate(() => window.__bitsE2E.runV0());
   check(

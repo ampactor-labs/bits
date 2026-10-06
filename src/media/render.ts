@@ -19,6 +19,7 @@ import { createFramer } from '../engine/frame';
 import { AudioSourceHandle, mixPcmInto } from './audio';
 import { analyzeShow, type VoicePcm } from './analyze';
 import { STAGE_BG, createRenderer2d, loadStageImages } from './stageDraw';
+import { loadVideos, videosReadyAt } from './video';
 
 export interface RenderProgress {
   phase: 'video' | 'audio' | 'finalize';
@@ -119,6 +120,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
   const framer = createFramer(project, analysis);
   const renderer = createRenderer2d();
   const images = await loadStageImages(framer.cast, options.getAssetBlob);
+  const specs = framer.cast.map((p) => p.spec);
+  await loadVideos(specs, options.getAssetBlob);
 
   const target = new BufferTarget();
   const output = new Output({ format: new Mp4OutputFormat(), target });
@@ -152,6 +155,8 @@ export async function renderShow(options: RenderShowOptions): Promise<File> {
     const frameCount = Math.max(1, Math.ceil(spanS * fps));
     for (let i = 0; i < frameCount; i++) {
       const t = fromS + (i + 0.5) / fps;
+      // The film waits for every clip's exact frame before drawing.
+      await videosReadyAt(specs, t);
       const frame = framer.frameAt(t);
       for (const hit of framer.impacts()) {
         sounds.push({ at: hit.at, sfx: impactSfx(impactCount++) });

@@ -2109,6 +2109,29 @@ try {
         await sleep(300);
         check('a-sheet-on-twos', kinds.join(',') === 'CAST' && spring === 'twos', `${kinds.join(',')} ${spring}`);
       });
+
+      // A clip from the camera roll becomes a sheet that plays in time.
+      await phase('a-video-becomes-a-sheet', async () => {
+        const before = await tab.evaluate(() => window.__bits.project().events.length);
+        const fed = await tab.evaluate(() => window.__bitsE2E.pickVideo());
+        if (!fed) throw new Error('no video picker');
+        await tab.waitForFunction(
+          (n) => window.__bits.project().events.slice(n).some((e) => e.kind === 'CAST' && e.puppet.type === 'video'),
+          { timeout: 20000 },
+          before,
+        );
+        await sleep(800);
+        await label('play');
+        await sleep(1500);
+        await tabShot('video-sheet');
+        if (await tab.$('.dock-stop')) await label('stop');
+        await sleep(300);
+        const spec = await tab.evaluate((n) => {
+          const e = window.__bits.project().events.slice(n).find((x) => x.kind === 'CAST' && x.puppet.type === 'video');
+          return e ? e.puppet : null;
+        }, before);
+        check('a-video-becomes-a-sheet', !!spec && spec.durationS > 1.4 && spec.durationS < 1.6, spec ? `${spec.durationS.toFixed(2)}s` : 'no clip');
+      });
     } finally {
       await tab.close();
     }

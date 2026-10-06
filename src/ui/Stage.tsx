@@ -74,6 +74,7 @@ import {
   type Bands,
 } from '../engine/signals';
 import { bandsFor } from '../media/bands';
+import { loadVideos, prefetchVideos, probeVideo } from '../media/video';
 import { COMMON_SIGNALS, WiresRoom, type WirePatch } from './rooms/Wires';
 import { BannerView, useBanner } from '../kit/Banner';
 import { Sheet } from '../kit/Sheet';
@@ -518,6 +519,10 @@ export function Stage({
   const reloadImages = useCallback(async () => {
     imagesRef.current = await loadStageImages(castOf(projectRef.current), async (id) =>
       getAsset(id),
+    );
+    await loadVideos(
+      castOf(projectRef.current).map((p) => p.spec),
+      async (id) => getAsset(id),
     );
     dirtyRef.current = true;
   }, []);
@@ -1137,6 +1142,8 @@ export function Stage({
 
         const sim = simRef.current;
         if (sim) {
+          const clips = videoSpecsOf(project);
+          if (clips.length > 0) prefetchVideos(clips, clock);
           const frame = playerRef.current.playing(surface, W, H, project, sim, clock);
           lastPosesRef.current = playerRef.current.lastPoses();
           lastCameraRef.current = frame.camera;
@@ -1160,6 +1167,13 @@ export function Stage({
       }
 
       // Idle: throttled re-sim when the playhead moved, else draw on dirty.
+      // A clip's frames arrive after the still was drawn, so a stage with
+      // clips on it redraws its still a few times a second.
+      const clips = videoSpecsOf(project);
+      if (clips.length > 0) {
+        prefetchVideos(clips, playheadRef.current);
+        if (performance.now() - lastSeekDrawRef.current > 200) dirtyRef.current = true;
+      }
       const wantSeekSim =
         m === 'idle' &&
         seekSimAtRef.current !== playheadRef.current &&
@@ -1346,6 +1360,7 @@ export function Stage({
   const photoInputRef = useRef<HTMLInputElement>(null);
   const snapInputRef = useRef<HTMLInputElement>(null);
   const backdropInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
   const soundFileInputRef = useRef<HTMLInputElement>(null);
 
   /** Where a new cast lands. Everything used to arrive at dead centre, so
@@ -1368,6 +1383,61 @@ export function Stage({
     // Every obvious spot is full. Fan out from the centre, deterministically.
     const n = taken.length;
     return { x: 0.5 + 0.3 * Math.sin(n * 2.4), y: 0.52 + 0.18 * Math.cos(n * 2.4) };
+  };
+
+  /** A clip, as a sheet that plays from the playhead, sized to its own
+   *  shape on the stage's. */
+  const castVideo = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setCasting(true);
+    setCastProgress(null);
+    try {
+      const info = await probeVideo(file);
+      if (!info) {
+        banner.error("couldn't play that video");
+        return;
+      }
+      const ext = (file.name.split('.').pop() ?? 'mp4').toLowerCase();
+      const assetId = await saveAsset(file, ext);
+      const frame = frameRef.current;
+      const stageRatio = frame ? frame.clientWidth / frame.clientHeight : 9 / 16;
+      let w = 0.6;
+      let h = w * stageRatio * (info.height / info.width);
+      if (h > 0.5) {
+        w *= 0.5 / h;
+        h = 0.5;
+      }
+      const id = newId();
+      const spot = freeSpot();
+      commit((p) =>
+        appendEvent(p, {
+          kind: 'CAST',
+          id: newId(),
+          at: 0,
+          puppetId: id,
+          puppet: {
+            type: 'video',
+            assetId,
+            durationS: info.durationS,
+            at: playheadRef.current,
+            w,
+            h,
+          },
+          x: spot.x,
+          y: spot.y,
+          scale: 1,
+          rot: 0,
+        }),
+      );
+      setSelectedId(id);
+      setSheet(null);
+      await reloadImages();
+    } catch {
+      banner.error("couldn't read that video");
+    } finally {
+      setCasting(false);
+    }
   };
 
   const castPhoto = async (files: FileList | null) => {
@@ -2076,6 +2146,7 @@ export function Stage({
     if (kind === 'selfie') return snapInputRef.current?.click();
     if (kind === 'backdrop') return backdropInputRef.current?.click();
     if (kind === 'ink') return setSheet({ kind: 'ink', target: null });
+    if (kind === 'video') return videoInputRef.current?.click();
     setSheet(null);
     if (kind === 'sticker') return castSticker();
     if (kind === 'doodle') return enterMode('doodling');
@@ -2656,6 +2727,17 @@ export function Stage({
         }}
       />
       <input
+        ref={videoInputRef}
+        data-pick="video"
+        type="file"
+        accept="video/*"
+        hidden
+        onChange={(e) => {
+          void castVideo(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <input
         ref={soundFileInputRef}
         type="file"
         accept={SOUND_FILE_ACCEPT}
@@ -2667,4 +2749,12 @@ export function Stage({
       />
     </div>
   );
+}
+
+/** The video sheets on stage, as specs. castOf is memoised per event
+ *  list, so this is a short filter per frame. */
+function videoSpecsOf(project: Project): PuppetSpec[] {
+  return castOf(project)
+    .map((p) => p.spec)
+    .filter((spec) => spec.type === 'video');
 }
